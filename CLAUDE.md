@@ -126,3 +126,12 @@ Distribution channels (all configured in `.goreleaser.yaml`):
   `apps/api/src/routes/`, `apps/worker/src/`, `apps/auth/src/`,
   `apps/gateway/src/`, or `docker-compose.yml`. Catches regressions
   unit tests miss.
+
+## Release + goreleaser gotchas
+
+- **Cut a release**: `git tag cli-v0.1.0 && git push origin cli-v0.1.0` in the **private monorepo**. The `mirror-cli` workflow strips `cli-` and creates `v0.1.0` on the public mirror via a custom SSH step (`s0/git-publish-subdir-action`'s `TAG_PREFIX` only *filters*, doesn't strip). Goreleaser triggers off `v*` on the public side.
+- **Dry-run locally**: `goreleaser release --snapshot --clean --skip=publish` (needs `HOMEBREW_TAP_TOKEN=fake` env var set or the snapshot template fails when a matching private tag exists). `goreleaser check` validates YAML without building.
+- **Use `homebrew_casks`, not `brews`** — `brews` is being phased out in goreleaser 2.x. Also avoid `homebrew_casks.binary` (also deprecated). The new cask format auto-supports Linux via `on_linux`.
+- **Always set `repository.token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"`** on `homebrew_casks` and `scoops` — the default `GITHUB_TOKEN` is scoped to `browzer-cli` only and returns 403 when writing to `homebrew-tap` / `scoop-bucket`.
+- **errcheck idiom** (golangci-lint v2): deferred Close must be `defer func() { _ = f.Close() }()`, not `defer f.Close()`. Same for `_, _ = io.Copy(io.Discard, resp.Body)` on drain-before-retry paths. The action is pinned at `golangci/golangci-lint-action@v8` + `version: v2.5.0` because the default v1.64.8 is built with Go 1.24 and rejects `go 1.25.0` in go.mod.
+- **`go mod tidy` can bump go.mod**: transitive deps like `golang.org/x/term@v0.41.0` require Go 1.25; don't manually downgrade the directive — update the CI `go-version` instead (currently `1.25`).
