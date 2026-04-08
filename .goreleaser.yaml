@@ -82,6 +82,12 @@ homebrew_casks:
       owner: browzeremb
       name: homebrew-tap
       branch: main
+      # Explicit token reference — the default GITHUB_TOKEN is scoped
+      # to browzer-cli and cannot write to homebrew-tap. HOMEBREW_TAP_TOKEN
+      # is a fine-grained PAT with Contents:write on all 3 release-related
+      # repos (browzer-cli, homebrew-tap, scoop-bucket), stored as a
+      # secret on the public browzer-cli repo.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://browzeremb.com"
     description: "Hybrid vector + Graph RAG for your codebase"
     license: "MIT"
@@ -98,6 +104,7 @@ scoops:
       owner: browzeremb
       name: scoop-bucket
       branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://browzeremb.com"
     description: "Hybrid vector + Graph RAG for your codebase"
     license: "MIT"
