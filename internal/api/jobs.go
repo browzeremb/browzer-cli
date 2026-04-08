@@ -75,7 +75,7 @@ func (c *Client) PollBatchStatus(ctx context.Context, batchID string, opts PollB
 			_ = resp.Body.Close()
 		case http.StatusOK:
 			var status BatchStatusResponse
-			if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+			if err := json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(&status); err != nil {
 				_ = resp.Body.Close()
 				return nil, err
 			}

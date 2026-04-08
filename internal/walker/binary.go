@@ -9,6 +9,13 @@ const binaryProbeBytes = 512
 // is treated as binary.
 const binaryNonprintRatio = 0.3
 
+// binaryRatioMinSample is the minimum number of bytes the ratio
+// heuristic needs to be meaningful. Tiny files (under this many bytes)
+// can trip the 0.3 ratio with a single high-bit byte and get
+// misclassified — see review finding S4. For files smaller than this
+// we only fail on the explicit null-byte signal.
+const binaryRatioMinSample = 32
+
 // IsBinaryFile probes the first 512 bytes of absPath and returns true
 // if the file looks binary.
 //
@@ -48,6 +55,11 @@ func IsBinaryFile(absPath string) bool {
 		if !printable {
 			nonPrint++
 		}
+	}
+	if n < binaryRatioMinSample {
+		// Too small for the ratio heuristic to be meaningful — only the
+		// null-byte signal above can flag this file as binary.
+		return false
 	}
 	return float64(nonPrint)/float64(n) > binaryNonprintRatio
 }

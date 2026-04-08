@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/output"
@@ -17,13 +18,20 @@ func registerWorkspace(parent *cobra.Command) *cobra.Command {
 	}
 
 	// list
+	var listFilter string
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List workspaces in the caller organization",
 		Long: `List workspaces in the caller organization.
 
+The optional --filter flag does a case-insensitive substring match
+against each workspace's name AND id, which is much friendlier than
+piping the full list through grep — especially in orgs with hundreds
+of workspaces.
+
 Examples:
   browzer workspace list
+  browzer workspace list --filter rag
   browzer workspace list --json
   browzer workspace list --save ws.json
 ` + output.ExitCodesHelp,
@@ -38,6 +46,19 @@ Examples:
 			if err != nil {
 				return err
 			}
+			// Apply --filter (case-insensitive substring on name OR id).
+			// Done client-side so the API surface stays unchanged and
+			// the same flag works against any backend version.
+			if needle := strings.ToLower(strings.TrimSpace(listFilter)); needle != "" {
+				filtered := ws[:0]
+				for _, w := range ws {
+					if strings.Contains(strings.ToLower(w.Name), needle) ||
+						strings.Contains(strings.ToLower(w.ID), needle) {
+						filtered = append(filtered, w)
+					}
+				}
+				ws = filtered
+			}
 			converted := make([]output.WorkspaceSummary, len(ws))
 			for i, w := range ws {
 				converted[i] = output.WorkspaceSummary{
@@ -48,6 +69,7 @@ Examples:
 			return emitOrFail(ws, output.Options{JSON: jsonFlag, Save: saveFlag}, output.FormatWorkspaceList(converted))
 		},
 	}
+	listCmd.Flags().StringVar(&listFilter, "filter", "", "Substring match (case-insensitive) on name or id")
 	listCmd.Flags().Bool("json", false, "Emit JSON instead of plain text")
 	listCmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
 	ws.AddCommand(listCmd)

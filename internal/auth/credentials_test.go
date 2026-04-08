@@ -79,6 +79,46 @@ func TestClearCredentials(t *testing.T) {
 	}
 }
 
+// TestLoadCredentials_CleansOrphanTmp simulates a SIGINT-during-rename
+// (or any other interruption between WriteFile and Rename) by leaving
+// a `credentials.tmp` file in place. The next LoadCredentials must
+// remove the orphan so the next SaveCredentials can write fresh.
+func TestLoadCredentials_CleansOrphanTmp(t *testing.T) {
+	withTempHome(t)
+	dir := CredentialsDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tmp := CredentialsPath() + ".tmp"
+	if err := os.WriteFile(tmp, []byte("{partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// LoadCredentials returns nil (no real credentials yet) but must
+	// clean up the orphan as a side effect.
+	_ = LoadCredentials()
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("expected orphan tmp removed, got err=%v", err)
+	}
+}
+
+// TestSaveCredentials_PostRenameMode confirms the explicit chmod after
+// rename pins the final file to 0o600 even if the rename inherited a
+// laxer mode.
+func TestSaveCredentials_PostRenameMode(t *testing.T) {
+	withTempHome(t)
+	c := &Credentials{Server: "https://x", AccessToken: "abc", ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339)}
+	if err := SaveCredentials(c); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(CredentialsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("post-rename mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestIsTokenExpiring(t *testing.T) {
 	cases := []struct {
 		name string

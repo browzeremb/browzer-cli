@@ -50,7 +50,10 @@ func LoadProjectConfig(gitRoot string) (*ProjectConfig, error) {
 }
 
 // SaveProjectConfig writes <gitRoot>/.browzer/config.json with the
-// given config. Stamps Version + CreatedAt if absent.
+// given config. Stamps Version + CreatedAt if absent. Writes are
+// atomic (temp file + rename) to honor the repo-wide invariant from
+// packages/cli/CLAUDE.md: a SIGINT mid-sync must never leave the
+// project config half-written.
 func SaveProjectConfig(gitRoot string, cfg *ProjectConfig) error {
 	if cfg.Version == 0 {
 		cfg.Version = ProjectConfigVersion
@@ -62,13 +65,27 @@ func SaveProjectConfig(gitRoot string, cfg *ProjectConfig) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, "config.json")
+	final := filepath.Join(dir, "config.json")
+	tmp := final + ".tmp"
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	// os.Rename is atomic on POSIX and on Windows (>= Go 1.5) when
+	// both paths live on the same filesystem, which they do here
+	// (same .browzer directory).
+	if err := os.Rename(tmp, final); err != nil {
+		// Best-effort cleanup so we don't leave a stale .tmp around.
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // AddCacheDirToGitignore appends `.browzer/.cache/` to <gitRoot>/.gitignore

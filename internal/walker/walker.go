@@ -219,27 +219,43 @@ func readFirstLines(absPath string, maxLines int) (string, bool) {
 	return sb.String(), true
 }
 
-// ignoreMatcher wraps go-gitignore so we can append nested patterns
-// incrementally as we walk. go-gitignore parses a slice of lines, so
-// we accumulate lines and rebuild the compiled matcher on each add.
+// ignoreMatcher accumulates .gitignore lines as the walker descends
+// the tree. The compiled matcher is rebuilt LAZILY on the first
+// matches() call after an add(): the previous implementation
+// recompiled inside every add(), which made the cost O(N²) when many
+// nested .gitignores were touched in a row before any path was
+// matched (a documented gotcha in packages/cli/CLAUDE.md).
+//
+// Lazy compilation eliminates the redundant recompiles inside a burst
+// of add() calls (e.g. root .gitignore + .git/info/exclude both
+// loaded before any matches() runs). It does NOT change semantics:
+// the underlying go-gitignore matcher still sees the same flat list
+// of patterns, so the upstream last-match-wins / negation rules
+// continue to apply across nested files — which a per-frame stack
+// would silently break, because go-gitignore only flips an
+// already-positive match, never re-introduces one.
 type ignoreMatcher struct {
 	lines    []string
 	compiled *gitignore.GitIgnore
+	dirty    bool
 }
 
 func newIgnoreMatcher() *ignoreMatcher {
-	return &ignoreMatcher{
-		compiled: gitignore.CompileIgnoreLines(),
-	}
+	return &ignoreMatcher{compiled: gitignore.CompileIgnoreLines()}
 }
 
 func (m *ignoreMatcher) add(text string) {
 	for _, line := range strings.Split(text, "\n") {
 		m.lines = append(m.lines, strings.TrimRight(line, "\r"))
 	}
-	m.compiled = gitignore.CompileIgnoreLines(m.lines...)
+	// Defer compilation; the next matches() will pick it up.
+	m.dirty = true
 }
 
 func (m *ignoreMatcher) matches(path string) bool {
+	if m.dirty {
+		m.compiled = gitignore.CompileIgnoreLines(m.lines...)
+		m.dirty = false
+	}
 	return m.compiled.MatchesPath(path)
 }

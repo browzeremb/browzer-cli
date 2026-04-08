@@ -17,7 +17,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const cliClientID = "browzer-cli"
+// cliClientID is an alias for auth.DefaultClientID, kept as a local
+// const so login.go reads naturally without an extra qualifier.
+const cliClientID = auth.DefaultClientID
 
 func registerLogin(parent *cobra.Command) {
 	var serverFlag string
@@ -134,13 +136,18 @@ func loginWithDeviceFlow(ctx context.Context, server string, openBrowser bool) e
 		verifyURL = device.VerificationURI
 	}
 
-	fmt.Printf("\nFirst copy your one-time code: %s\nThen open: %s\n\n", device.UserCode, verifyURL)
-
-	if openBrowser && verifyURL != "" {
-		// Re-validate the server-supplied URL before handing it off.
+	// Validate the server-supplied URL BEFORE printing or opening it —
+	// otherwise a compromised server can make the user copy a hijacked
+	// link before we get a chance to reject it.
+	if verifyURL != "" {
 		if _, err := urlvalidate.Validate(verifyURL); err != nil {
 			return cliErrors.Newf("Server returned an unsafe verification URL: %s", err.Error())
 		}
+	}
+
+	fmt.Printf("\nFirst copy your one-time code: %s\nThen open: %s\n\n", device.UserCode, verifyURL)
+
+	if openBrowser && verifyURL != "" {
 		if err := browser.OpenURL(verifyURL); err != nil {
 			fmt.Println("(Could not open browser automatically — visit the URL manually.)")
 		}

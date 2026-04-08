@@ -63,6 +63,10 @@ Examples:
 			defaultName := filepath.Base(gitRoot)
 			name := resolveWorkspaceName(defaultName, nameFlag)
 
+			// init never runs in --json/--save mode without --dry-run
+			// (which short-circuits earlier), so we always honor the
+			// hint here. quiet=false → print to stderr.
+			printColdStartHint(jsonFlag || saveFlag != "")
 			ac, err := requireAuth(600) // cold-start tolerance
 			if err != nil {
 				return err

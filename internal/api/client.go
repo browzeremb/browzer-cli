@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +19,12 @@ import (
 
 // DefaultTimeout matches ky's 30s default in src/lib/api-client.ts.
 const DefaultTimeout = 30 * time.Second
+
+// MaxResponseBytes caps every JSON response body the CLI will decode.
+// 32 MiB is comfortably above the largest plausible workspace/document
+// payload the API returns and well below anything that would OOM a
+// developer machine. A hostile server cannot stream gigabytes into us.
+const MaxResponseBytes = 32 * 1024 * 1024
 
 // Client is a thin wrapper around net/http that injects the bearer
 // token, prepends the base URL, and applies retry/backoff to idempotent
@@ -217,19 +224,25 @@ func (c *Client) deleteCall(ctx context.Context, path string, query url.Values) 
 }
 
 // decodeJSONResponse handles common status codes and decodes the body
-// into out when non-nil.
+// into out when non-nil. The body is wrapped in an io.LimitReader so a
+// hostile or buggy server cannot stream gigabytes into the decoder.
 func decodeJSONResponse(resp *http.Response, out any) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if out == nil {
 			return nil
 		}
-		return json.NewDecoder(resp.Body).Decode(out)
+		return json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(out)
 	}
 	return httpStatusError(resp)
 }
 
 // httpStatusError reads up to 1 KiB of the response body and wraps it
 // in a CliError carrying the appropriate exit code.
+//
+// The server-supplied body excerpt is only echoed when BROWZER_DEBUG=1
+// is set — otherwise we surface the bare HTTP status. This avoids
+// leaking server-side debug payloads (stack traces, internal paths,
+// SQL fragments) into stderr/CI logs by default.
 func httpStatusError(resp *http.Response) error {
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	bodyStr := strings.TrimSpace(string(bodyBytes))
@@ -242,7 +255,7 @@ func httpStatusError(resp *http.Response) error {
 		return cliErrors.WithCode("Not found.", 4)
 	default:
 		msg := fmt.Sprintf("server returned %d", resp.StatusCode)
-		if bodyStr != "" {
+		if bodyStr != "" && os.Getenv("BROWZER_DEBUG") == "1" {
 			msg += ": " + bodyStr
 		}
 		return cliErrors.New(msg)

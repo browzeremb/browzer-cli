@@ -5,6 +5,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -60,7 +61,12 @@ func CredentialsPath() string {
 // profile. Returns nil when the file is missing, malformed, or has no
 // default profile. Never returns an error from this function — callers
 // should treat nil as "not authenticated".
+//
+// As a side-effect, any orphaned `credentials.tmp` left behind by a
+// SIGINT-during-rename is cleaned up here so the next SaveCredentials
+// can write fresh.
 func LoadCredentials() *Credentials {
+	cleanupOrphanTmp()
 	data, err := os.ReadFile(CredentialsPath())
 	if err != nil {
 		return nil
@@ -75,15 +81,35 @@ func LoadCredentials() *Credentials {
 	return &cf.Default
 }
 
+// cleanupOrphanTmp removes a stale credentials.tmp file if one exists.
+// A previous SaveCredentials may have been interrupted between the
+// WriteFile and Rename steps; on the next CLI invocation we want a
+// clean slate. Best-effort: errors are ignored.
+func cleanupOrphanTmp() {
+	tmp := CredentialsPath() + ".tmp"
+	if _, err := os.Lstat(tmp); err == nil {
+		_ = os.Remove(tmp)
+	}
+}
+
 // SaveCredentials writes credentials atomically (temp file + rename)
 // with chmod 600. Ensures the .browzer/ directory exists with chmod 700.
+//
+// Both the directory chmod and the post-rename file chmod are checked:
+// on systems with a permissive umask, an unchecked Chmod failure could
+// leave the credentials world-readable. We treat these as fatal so
+// the caller never persists tokens with bad perms.
 func SaveCredentials(c *Credentials) error {
 	dir := CredentialsDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	// Tighten perms even if the dir already existed with wider bits.
-	_ = os.Chmod(dir, 0o700)
+	// Failure here is fatal: a wide-open ~/.browzer is a token
+	// exfiltration vector on shared hosts.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("chmod %s to 0700: %w", dir, err)
+	}
 
 	final := CredentialsPath()
 	tmp := final + ".tmp"
@@ -95,8 +121,17 @@ func SaveCredentials(c *Credentials) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	_ = os.Chmod(tmp, 0o600)
-	return os.Rename(tmp, final)
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// Re-assert 0600 on the final path. WriteFile + Rename should
+	// preserve the mode, but this is a defense-in-depth pin in case
+	// the filesystem (or a future refactor) loses the bits.
+	if err := os.Chmod(final, 0o600); err != nil {
+		return fmt.Errorf("chmod %s to 0600: %w", final, err)
+	}
+	return nil
 }
 
 // ClearCredentials removes the credentials file. No-op when absent.

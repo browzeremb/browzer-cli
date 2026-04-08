@@ -62,6 +62,7 @@ Examples:
 
 			writeStatus(fmt.Sprintf("→ Workspace: %s\n", project.WorkspaceID))
 
+			printColdStartHint(quiet)
 			ac, err := requireAuth(600) // cold-start tolerance
 			if err != nil {
 				return err

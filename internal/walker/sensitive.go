@@ -55,7 +55,12 @@ var sensitiveKeywords = []string{"credential", "secret", "token"}
 // MUST be called BEFORE any stat/readFile syscall to avoid touching
 // sensitive file metadata.
 func IsSensitive(filePath string) bool {
-	normalized := strings.ReplaceAll(filePath, `\`, "/")
+	// We normalize separators in two steps. filepath.ToSlash handles
+	// the platform separator (a no-op on POSIX), and the explicit
+	// ReplaceAll catches literal backslashes that may have come from
+	// a string built on a different OS — common when paths are
+	// shipped across the wire from Windows clients.
+	normalized := strings.ReplaceAll(filepath.ToSlash(filePath), `\`, "/")
 	for _, p := range sensitivePathPatterns {
 		if p.MatchString(normalized) {
 			return true

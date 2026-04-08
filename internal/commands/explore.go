@@ -110,8 +110,12 @@ Examples:
 					LineRange: e.LineRange, Snippet: e.Snippet, Score: e.Score,
 				}
 			}
+			// Emit the *converted* entries, not the raw api type, so the
+			// JSON shape matches the schema we publish via --schema and
+			// future api.ExploreEntry field renames don't silently
+			// reshape the SKILL contract.
 			return emitOrFail(
-				map[string]any{"entries": entries},
+				map[string]any{"entries": converted},
 				output.Options{JSON: jsonFlag, Save: saveFlag},
 				output.FormatExploreResults(converted),
 			)

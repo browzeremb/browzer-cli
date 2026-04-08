@@ -44,6 +44,22 @@ func requireAuth(timeoutSeconds int) (*api.AuthenticatedClient, error) {
 	return api.NewAuthenticatedClient(timeout)
 }
 
+// printColdStartHint prints a one-line "first run can be slow" notice
+// to stderr so the user understands why init/sync may take several
+// minutes against a freshly-deployed server (the embedding model
+// cold-starts on the first call). Skipped when quiet=true so --json
+// / --save / --no-wait callers never see it interleaved with their
+// machine-readable output.
+//
+// We write to stderr (via output.Errf) for the same reason: stdout is
+// reserved for JSON in non-quiet TTY mode too.
+func printColdStartHint(quiet bool) {
+	if quiet {
+		return
+	}
+	output.Errf("ℹ First run against a freshly-deployed server may take up to ~10 min while the embedding model cold-starts.\n")
+}
+
 // isTTY returns true when stdin is attached to a terminal. Used to
 // gate interactive prompts.
 func isTTY() bool {

@@ -25,6 +25,13 @@ const (
 	// Belt-and-braces ceiling on poll attempts.
 	maxPollCount        = 720
 	slowDownBumpSeconds = 5
+	// maxSlowDownBumps caps how many consecutive slow_down responses
+	// the CLI tolerates before giving up. A hostile server could
+	// otherwise keep us polling at the 60 s ceiling for hours.
+	maxSlowDownBumps = 8
+	// maxAuthResponseBytes caps the success-path JSON decode so a
+	// hostile server cannot stream gigabytes into the CLI's memory.
+	maxAuthResponseBytes = 64 * 1024
 )
 
 const grantType = "urn:ietf:params:oauth:grant-type:device_code"
@@ -68,7 +75,7 @@ func RequestDeviceCode(ctx context.Context, server, clientID string) (*DeviceCod
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +85,8 @@ func RequestDeviceCode(ctx context.Context, server, clientID string) (*DeviceCod
 		return nil, fmt.Errorf("device code request failed: HTTP %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 	var out DeviceCodeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	// Bounded reader: hostile server can't stream gigabytes here.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -94,6 +102,11 @@ func clamp(n, min, max int) int {
 	return n
 }
 
+// DefaultClientID is the OAuth `client_id` the CLI registers under.
+// Single source of truth — every caller (login command, device-flow
+// poll, future refactors) imports this constant.
+const DefaultClientID = "browzer-cli"
+
 // PollForToken polls POST /api/device/token until success or terminal
 // error. Mirrors src/lib/device-flow.ts:pollForToken byte-for-byte:
 // clamps the interval/expiresIn against hostile servers and caps total
@@ -101,13 +114,14 @@ func clamp(n, min, max int) int {
 func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
 	clientID := p.ClientID
 	if clientID == "" {
-		clientID = "browzer-cli"
+		clientID = DefaultClientID
 	}
 
 	interval := clamp(p.Interval, minIntervalSeconds, maxIntervalSeconds)
 	expiresIn := clamp(p.ExpiresIn, minExpiresSeconds, maxExpiresSeconds)
 	startedAt := time.Now()
 	attempt := 0
+	slowDownCount := 0
 
 	for {
 		if attempt > 0 {
@@ -137,14 +151,14 @@ func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := authHTTPClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
 
 		if resp.StatusCode == http.StatusOK {
 			var token TokenResponse
-			err := json.NewDecoder(resp.Body).Decode(&token)
+			err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&token)
 			_ = resp.Body.Close()
 			if err != nil {
 				return nil, err
@@ -163,6 +177,10 @@ func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
 		case "authorization_pending":
 			continue
 		case "slow_down":
+			slowDownCount++
+			if slowDownCount > maxSlowDownBumps {
+				return nil, cliErrors.New("Server keeps asking us to slow down. Run `browzer login` again later.")
+			}
 			interval += slowDownBumpSeconds
 			if interval > maxIntervalSeconds {
 				interval = maxIntervalSeconds

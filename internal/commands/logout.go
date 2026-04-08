@@ -1,11 +1,7 @@
 package commands
 
 import (
-	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
 
 	"github.com/browzeremb/browzer-cli/internal/auth"
 	"github.com/browzeremb/browzer-cli/internal/output"
@@ -27,7 +23,12 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			creds := auth.LoadCredentials()
 			if creds != nil {
-				_ = revokeBestEffort(rootContext(cmd), creds.Server, creds.AccessToken)
+				if err := auth.RevokeBestEffort(rootContext(cmd), creds.Server, creds.AccessToken); err != nil {
+					// Surface to stderr but never fail the command:
+					// the user MUST end up logged out locally even
+					// when the server is unreachable.
+					output.Errf("Warning: could not revoke token server-side (%s). Local credentials will still be cleared.\n", err.Error())
+				}
 			}
 			if err := auth.ClearCredentials(); err != nil {
 				return fmt.Errorf("clear credentials: %w", err)
@@ -37,22 +38,4 @@ Examples:
 		},
 	}
 	parent.AddCommand(cmd)
-}
-
-// revokeBestEffort POSTs the bearer token to /api/device/revoke. Errors
-// are intentionally swallowed — logout must succeed locally even when
-// the server is unreachable.
-func revokeBestEffort(ctx context.Context, server, token string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/api/device/revoke", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return nil
 }
