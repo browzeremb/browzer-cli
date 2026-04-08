@@ -156,7 +156,12 @@ Examples:
 			confirm := confirmName
 			if confirm == "" {
 				if !isTTY() {
-					return cliErrors.New("Workspace name confirmation required (use --confirm-name in non-interactive shells).")
+					return cliErrors.Newf(
+						"Workspace name confirmation required in non-interactive shells.\n"+
+							"Re-run with:\n"+
+							"  browzer workspace delete %s --confirm-name %q",
+						id, target.Name,
+					)
 				}
 				_ = huh.NewInput().
 					Title(fmt.Sprintf("Type the workspace name (%s) to confirm:", target.Name)).

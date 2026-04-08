@@ -45,9 +45,10 @@ func registerExplore(parent *cobra.Command) {
 	var schema bool
 
 	cmd := &cobra.Command{
-		Use:   "explore [query]",
-		Short: "Hybrid graph + vector search across the indexed workspace",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "explore [query]",
+		Aliases: []string{"ask"},
+		Short:   "Hybrid graph + vector search across the indexed workspace",
+		Args:    cobra.MaximumNArgs(1),
 		Long: `Hybrid graph + vector search across the indexed workspace.
 
 Use --schema to print the response JSON schema without making an API call.
