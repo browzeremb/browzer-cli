@@ -115,10 +115,32 @@ Distribution channels (all configured in `.goreleaser.yaml`):
 - **`exec.Command("git", ...)`** inherits the current working dir
   unless `cmd.Dir` is set. `git.FindGitRoot` always sets it.
 - **`go-gitignore` does not have an incremental `Add` API.** The
-  walker's `ignoreMatcher` rebuilds the compiled matcher on every
-  `add()` — fine for the dozen-or-so nested gitignores in a normal
-  repo, but the cost is `O(N²)` in pathological repos with hundreds of
-  nested gitignores.
+  walker's `ignoreMatcher` accumulates lines in a flat slice and
+  recompiles **lazily** (dirty flag) on the next `matches()` call.
+  The cost is still `O(N²)` in pathological repos with hundreds of
+  nested gitignores, but lazy compilation removes the redundant
+  per-`add()` rebuilds inside an add-burst.
+- **DO NOT replace the flat list with a per-frame stack.**
+  `go-gitignore`'s negation only flips an already-positive match
+  within the SAME compiled set, so a child `.gitignore`'s
+  `!important.log` cannot undo a parent's `*.log` ignore from a
+  separate frame. `TestWalkRepo_NestedGitignoreStack` pins this case
+  exactly — do not "optimize" it away.
+- **`walker.IsSensitive` normalizes paths twice** —
+  `filepath.ToSlash` (no-op on POSIX) AND an explicit
+  `strings.ReplaceAll(\\, /)` to catch literal backslashes that
+  travel cross-OS in test fixtures or wire payloads. Drop either
+  and the Windows-style `src\config\.env` test in
+  `sensitive_test.go` fails.
+- **`browzer login --server <url> --key dummy`** is the canonical
+  way to exercise `urlvalidate.Validate` without standing up a
+  server — validation runs before any network call, so reject
+  cases exit fast with the rejection message.
+- **`go test ./...` is slow (~75 s) because of `internal/auth`** —
+  `device_flow_test.go` exercises `PollForToken`'s real `time.After`
+  sleeps (interval is clamped to `minIntervalSeconds=5`). When
+  iterating on a different package, scope with
+  `go test ./internal/<pkg>/...`.
 - **`BROWZER_SERVER` lives in `internal/config`, not `internal/auth`.**
   Importing config from auth is fine; the reverse would create a cycle.
 - **Local CLI regression test**: `.claude/skills/browzer-cli-regression-test/SKILL.md`
