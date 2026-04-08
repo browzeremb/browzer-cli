@@ -6,7 +6,10 @@
 package commands
 
 import (
+	"fmt"
+
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +45,69 @@ func NewRootCommand(version string) *cobra.Command {
 	registerExplore(ws)
 	registerSearch(ws)
 
-	root.SetHelpTemplate(root.HelpTemplate() + "\n" + agentTips + output.ExitCodesHelp + "\n")
+	// Register `{{heading ...}}` as a template function so both the
+	// help and usage templates can colorize section labels without
+	// touching each command's Long/Short text. When color is off the
+	// function is the identity, so piped output stays plain ASCII.
+	cobra.AddTemplateFunc("heading", ui.Heading)
+
+	// Colorized help/usage template — same structure cobra ships with
+	// upstream (kept field-for-field), but with `{{heading ...}}` on
+	// every section title. Changes in cobra's default template would
+	// need a sync here; the payoff is a one-shot palette update.
+	colorizedHelp := `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`
+	colorizedUsage := `{{heading "Usage:"}}{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+{{heading "Aliases:"}}
+  {{.NameAndAliases}}{{end}}{{if .HasExample}}
+
+{{heading "Examples:"}}
+{{.Example}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+{{heading "Available Commands:"}}{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{heading $group.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+{{heading "Additional Commands:"}}{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+{{heading "Flags:"}}
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+{{heading "Global Flags:"}}
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+
+{{heading "Additional help topics:"}}{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
+	root.SetUsageTemplate(colorizedUsage)
+	root.SetHelpTemplate(colorizedHelp + "\n" + agentTips + output.ExitCodesHelp + "\n")
+
+	// Version string: brand banner + plain "<command> <version>".
+	root.SetVersionTemplate(ui.Banner(version) + "\nbrowzer {{.Version}}\n")
+
+	// Prepend the brand banner on the ROOT help screen only. We wrap
+	// the default HelpFunc instead of baking color into SetHelpTemplate
+	// because the template is a plain Go template — it can't call
+	// term.IsTerminal, so ANSI would leak into piped output.
+	// Subcommand help stays clean (no banner) so `browzer init --help`
+	// reads like a proper man page.
+	defaultHelp := root.HelpFunc()
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		if cmd == root {
+			fmt.Fprint(cmd.OutOrStdout(), ui.Banner(version))
+		}
+		defaultHelp(cmd, args)
+	})
+
 	return root
 }
 

@@ -3,10 +3,12 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
@@ -59,14 +61,26 @@ Examples:
 				}
 				ws = filtered
 			}
-			converted := make([]output.WorkspaceSummary, len(ws))
-			for i, w := range ws {
-				converted[i] = output.WorkspaceSummary{
-					ID: w.ID, Name: w.Name, RootPath: w.RootPath,
-					FileCount: w.FileCount, FolderCount: w.FolderCount, SymbolCount: w.SymbolCount,
+			// Human-readable rendering uses a lipgloss table; JSON
+			// path is untouched so agents keep parsing the same shape.
+			human := "No workspaces.\n"
+			if len(ws) > 0 {
+				rows := make([][]string, len(ws))
+				for i, w := range ws {
+					rows[i] = []string{
+						w.ID, w.Name,
+						strconv.Itoa(w.FileCount),
+						strconv.Itoa(w.FolderCount),
+						strconv.Itoa(w.SymbolCount),
+						w.RootPath,
+					}
 				}
+				human = ui.Table(
+					[]string{"ID", "Name", "Files", "Folders", "Symbols", "Root"},
+					rows,
+				)
 			}
-			return emitOrFail(ws, output.Options{JSON: jsonFlag, Save: saveFlag}, output.FormatWorkspaceList(converted))
+			return emitOrFail(ws, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 		},
 	}
 	listCmd.Flags().StringVar(&listFilter, "filter", "", "Substring match (case-insensitive) on name or id")
@@ -155,7 +169,7 @@ Examples:
 			if err := ac.Client.DeleteWorkspace(rootContext(cmd), id); err != nil {
 				return err
 			}
-			fmt.Printf("✓ Deleted workspace %s\n", id)
+			ui.Success(fmt.Sprintf("Deleted workspace %s", id))
 			return nil
 		},
 	}

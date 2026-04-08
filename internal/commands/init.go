@@ -11,6 +11,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/browzeremb/browzer-cli/internal/upload"
 	"github.com/browzeremb/browzer-cli/internal/walker"
 	"github.com/charmbracelet/huh"
@@ -76,87 +77,92 @@ Examples:
 			reusingExisting := existing != nil && force
 			var workspaceID, workspaceName string
 			if reusingExisting {
-				fmt.Printf("→ Reusing workspace %s (--force)\n", existing.WorkspaceID)
+				ui.Arrow(fmt.Sprintf("Reusing workspace %s (--force)", existing.WorkspaceID))
 				workspaceID = existing.WorkspaceID
 				workspaceName = name
 			} else {
+				sp := ui.StartSpinner("Creating workspace...")
 				ws, err := client.CreateWorkspace(ctx, api.CreateWorkspaceRequest{Name: name, RootPath: gitRoot})
 				if err != nil {
+					sp.Failure("Create workspace failed")
 					return cliErrors.Newf("Failed to create workspace (%s).", err.Error())
 				}
 				workspaceID = ws.ID
 				workspaceName = ws.Name
+				sp.Success(fmt.Sprintf("Workspace created: %s", workspaceID))
 			}
 
 			var inflightBatches []string
 
 			rollback := func(reason error) error {
 				if reusingExisting {
-					fmt.Fprintf(os.Stderr, "\n✗ Init failed mid-reparse for workspace %s.\n  Local config and existing server data are unchanged.\n  Retry with `browzer init --force` or `browzer sync`.\n", workspaceID)
+					ui.Failure(fmt.Sprintf("Init failed mid-reparse for workspace %s. Local config and existing server data are unchanged. Retry with `browzer init --force` or `browzer sync`.", workspaceID))
 					return reason
 				}
-				fmt.Fprintf(os.Stderr, "\n✗ Init failed after creating workspace %s — rolling back...\n", workspaceID)
+				ui.Failure(fmt.Sprintf("Init failed after creating workspace %s — rolling back...", workspaceID))
 				rollbackAC, rerr := requireAuth(0)
 				if rerr != nil {
-					fmt.Fprintf(os.Stderr, "  ⚠ Rollback aborted: %v\n", rerr)
+					ui.Warn(fmt.Sprintf("Rollback aborted: %v", rerr))
 					return reason
 				}
 				for _, bid := range inflightBatches {
 					if err := rollbackAC.Client.CancelBatch(ctx, bid); err != nil {
-						fmt.Fprintf(os.Stderr, "  ⚠ Could not cancel batch %s (%v) — proceeding with delete\n", bid, err)
+						ui.Warn(fmt.Sprintf("Could not cancel batch %s (%v) — proceeding with delete", bid, err))
 					} else {
-						fmt.Fprintf(os.Stderr, "  ✓ Cancelled batch %s\n", bid)
+						ui.SuccessTo(os.Stderr, fmt.Sprintf("Cancelled batch %s", bid))
 					}
 				}
 				if err := rollbackAC.Client.DeleteWorkspace(ctx, workspaceID); err != nil {
-					fmt.Fprintf(os.Stderr, "  ⚠ Rollback failed (%v). Run `browzer workspace delete %s` manually.\n", err, workspaceID)
+					ui.Warn(fmt.Sprintf("Rollback failed (%v). Run `browzer workspace delete %s` manually.", err, workspaceID))
 				} else {
-					fmt.Fprintln(os.Stderr, "  ✓ Rolled back")
+					ui.SuccessTo(os.Stderr, "Rolled back")
 				}
 				return reason
 			}
 
 			// 2. Walk + parse code tree.
-			fmt.Print("  Walking code tree... ")
+			sp := ui.StartSpinner("Walking code tree...")
 			tree, err := walker.WalkRepo(gitRoot)
 			if err != nil {
+				sp.Failure("Walk failed")
 				return rollback(err)
 			}
-			fmt.Printf("✓ (%d files)\n", len(tree.Files))
+			sp.Success(fmt.Sprintf("Walked code tree (%d files)", len(tree.Files)))
 
-			fmt.Print("  Parsing code on server... ")
+			sp = ui.StartSpinner("Parsing code on server...")
 			if err := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
 				WorkspaceID: workspaceID,
 				RootPath:    tree.RootPath,
 				Folders:     tree.Folders,
 				Files:       tree.Files,
 			}); err != nil {
-				fmt.Println()
+				sp.Failure("Parse failed")
 				return rollback(err)
 			}
-			fmt.Println("✓")
+			sp.Success("Code parsed")
 
 			// 3. Walk + upload docs (full upload, fresh workspace).
-			fmt.Print("  Walking docs... ")
+			sp = ui.StartSpinner("Walking docs...")
 			docs, err := walker.WalkDocs(gitRoot)
 			if err != nil {
+				sp.Failure("Docs walk failed")
 				return rollback(err)
 			}
-			fmt.Printf("✓ (%d docs)\n", len(docs))
+			sp.Success(fmt.Sprintf("Walked docs (%d files)", len(docs)))
 
 			docsCache := cache.DocsCache{Version: cache.CacheVersion, Files: map[string]cache.CachedDoc{}}
 			if len(docs) > 0 {
-				fmt.Printf("  Uploading %d docs... ", len(docs))
+				sp = ui.StartSpinner(fmt.Sprintf("Uploading %d docs...", len(docs)))
 				res, err := upload.UploadInBatches(ctx, client, workspaceID, docs, &docsCache, func(bid string) {
 					inflightBatches = append(inflightBatches, bid)
 				}, false)
 				if err != nil {
-					fmt.Println()
+					sp.Failure("Upload failed")
 					return rollback(err)
 				}
-				fmt.Println("✓")
+				sp.Success(fmt.Sprintf("Uploaded %d docs", len(docs)))
 				if res.FailedCount > 0 {
-					fmt.Fprintf(os.Stderr, "  ⚠ %d doc(s) failed — see warnings above\n", res.FailedCount)
+					ui.Warn(fmt.Sprintf("%d doc(s) failed — see warnings above", res.FailedCount))
 				}
 			}
 
@@ -165,7 +171,7 @@ Examples:
 				return rollback(err)
 			}
 			if err := config.AddCacheDirToGitignore(gitRoot); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not update .gitignore (%v). Add \".browzer/.cache/\" manually.\n", err)
+				ui.Warn(fmt.Sprintf("Could not update .gitignore (%v). Add \".browzer/.cache/\" manually.", err))
 			}
 
 			if err := config.SaveProjectConfig(gitRoot, &config.ProjectConfig{
@@ -181,10 +187,10 @@ Examples:
 			if reusingExisting {
 				verb = "re-indexed"
 			}
-			fmt.Printf(
-				"\n✓ Workspace %q %s (%s)\n✓ Wrote .browzer/config.json\n\nNext:\n  browzer status\n  browzer search \"...\"\n  browzer explore \"...\"\n",
-				workspaceName, verb, workspaceID,
-			)
+			fmt.Println()
+			ui.Success(fmt.Sprintf("Workspace %q %s (%s)", workspaceName, verb, workspaceID))
+			ui.Success("Wrote .browzer/config.json")
+			fmt.Println("\nNext:\n  browzer status\n  browzer search \"...\"\n  browzer explore \"...\"")
 			return nil
 		},
 	}

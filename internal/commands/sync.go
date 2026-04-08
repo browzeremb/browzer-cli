@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/cache"
@@ -10,6 +9,7 @@ import (
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/git"
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/browzeremb/browzer-cli/internal/upload"
 	"github.com/browzeremb/browzer-cli/internal/walker"
 	"github.com/spf13/cobra"
@@ -54,13 +54,30 @@ Examples:
 
 			ctx := rootContext(cmd)
 			quiet := jsonFlag || saveFlag != "" || noWait
-			writeStatus := func(s string) {
-				if !quiet {
-					fmt.Print(s)
+
+			// startStep returns a spinner when in human-readable mode
+			// and a no-op sentinel when quiet. Callers treat the
+			// return value uniformly so the happy-path reads cleanly.
+			startStep := func(label string) *ui.Spinner {
+				if quiet {
+					return nil
+				}
+				return ui.StartSpinner(label)
+			}
+			finishStep := func(sp *ui.Spinner, okMsg string) {
+				if sp != nil {
+					sp.Success(okMsg)
+				}
+			}
+			failStep := func(sp *ui.Spinner, msg string) {
+				if sp != nil {
+					sp.Failure(msg)
 				}
 			}
 
-			writeStatus(fmt.Sprintf("→ Workspace: %s\n", project.WorkspaceID))
+			if !quiet {
+				ui.Arrow(fmt.Sprintf("Workspace: %s", project.WorkspaceID))
+			}
 
 			printColdStartHint(quiet)
 			ac, err := requireAuth(600) // cold-start tolerance
@@ -69,12 +86,13 @@ Examples:
 			}
 			client := ac.Client
 
-			writeStatus("  Walking code tree... ")
+			sp := startStep("Walking code tree...")
 			tree, err := walker.WalkRepo(gitRoot)
 			if err != nil {
+				failStep(sp, "Walk failed")
 				return err
 			}
-			writeStatus(fmt.Sprintf("✓ (%d files)\n", len(tree.Files)))
+			finishStep(sp, fmt.Sprintf("Walked code tree (%d files)", len(tree.Files)))
 
 			var (
 				docsAdded, docsModified, docsDeleted int
@@ -82,9 +100,10 @@ Examples:
 				docsCache                            cache.DocsCache
 			)
 			if !noDocs {
-				writeStatus("  Walking docs... ")
+				sp := startStep("Walking docs...")
 				docs, err := walker.WalkDocs(gitRoot)
 				if err != nil {
+					failStep(sp, "Docs walk failed")
 					return err
 				}
 				docsCache = cache.Load(gitRoot)
@@ -93,7 +112,7 @@ Examples:
 				docsModified = len(diff.Modified)
 				docsDeleted = len(diff.Deleted)
 				diffPlan = &diff
-				writeStatus(fmt.Sprintf("✓ (+%d ~%d -%d)\n", docsAdded, docsModified, docsDeleted))
+				finishStep(sp, fmt.Sprintf("Walked docs (+%d ~%d -%d)", docsAdded, docsModified, docsDeleted))
 			}
 
 			if dryRun {
@@ -110,16 +129,17 @@ Examples:
 				return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 			}
 
-			writeStatus("  Re-parsing code on server... ")
+			sp = startStep("Re-parsing code on server...")
 			if err := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
 				WorkspaceID: project.WorkspaceID,
 				RootPath:    tree.RootPath,
 				Folders:     tree.Folders,
 				Files:       tree.Files,
 			}); err != nil {
+				failStep(sp, "Parse failed")
 				return err
 			}
-			writeStatus("✓\n")
+			finishStep(sp, "Code re-parsed")
 
 			deletesFailed := 0
 			var inflightBatchIDs []string
@@ -135,21 +155,22 @@ Examples:
 				}
 
 				if len(toUpload) > 0 {
-					writeStatus(fmt.Sprintf("  Uploading %d docs... ", len(toUpload)))
+					sp := startStep(fmt.Sprintf("Uploading %d docs...", len(toUpload)))
 					res, err := upload.UploadInBatches(ctx, client, project.WorkspaceID, toUpload, &newCache, func(bid string) {
 						inflightBatchIDs = append(inflightBatchIDs, bid)
 					}, noWait)
 					if err != nil {
+						failStep(sp, "Upload failed")
 						return err
 					}
-					writeStatus("✓\n")
+					finishStep(sp, fmt.Sprintf("Uploaded %d docs", len(toUpload)))
 					_ = res
 				}
 
 				for _, d := range diffPlan.Deleted {
 					if err := client.DeleteDocument(ctx, d.DocumentID, project.WorkspaceID); err != nil {
 						deletesFailed++
-						fmt.Fprintf(os.Stderr, "  ⚠ delete %s: %v\n", d.RelativePath, err)
+						ui.Warn(fmt.Sprintf("delete %s: %v", d.RelativePath, err))
 					} else {
 						delete(newCache.Files, d.RelativePath)
 					}
@@ -175,7 +196,10 @@ Examples:
 				return cliErrors.Newf("Sync completed with %d delete failure(s) — see warnings above.", deletesFailed)
 			}
 
-			writeStatus("\n✓ Sync complete\n")
+			if !quiet {
+				fmt.Println()
+				ui.Success("Sync complete")
+			}
 
 			if quiet {
 				payload := map[string]any{

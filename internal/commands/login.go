@@ -11,8 +11,8 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/browzeremb/browzer-cli/internal/urlvalidate"
-	"github.com/charmbracelet/huh"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
@@ -117,14 +117,15 @@ func loginWithKey(ctx context.Context, server, keyArg string) error {
 	if err := auth.SaveCredentials(creds); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	fmt.Printf("\n✓ Logged in as %s (%s) via API key.\n", me.Email, me.OrganizationName)
+	fmt.Println()
+	ui.Success(fmt.Sprintf("Logged in as %s (%s) via API key.", me.Email, me.OrganizationName))
 	return nil
 }
 
 // loginWithDeviceFlow runs the full RFC 8628 device flow with optional
 // browser auto-open and TTY confirmation of the resolved identity.
 func loginWithDeviceFlow(ctx context.Context, server string, openBrowser bool) error {
-	fmt.Printf("Initiating device flow against %s...\n", server)
+	ui.Arrow(fmt.Sprintf("Initiating device flow against %s...", server))
 
 	device, err := auth.RequestDeviceCode(ctx, server, cliClientID)
 	if err != nil {
@@ -175,22 +176,6 @@ func loginWithDeviceFlow(ctx context.Context, server string, openBrowser bool) e
 
 	fmt.Printf("\n  Signed in as: %s\n  Organization: %s\n\n", me.Email, me.OrganizationName)
 
-	if isTTY() {
-		var ok bool
-		err := huh.NewConfirm().
-			Title("Is this the correct identity?").
-			Affirmative("Yes").
-			Negative("No").
-			Value(&ok).
-			Run()
-		if err != nil {
-			return cliErrors.New("Login aborted by user.")
-		}
-		if !ok {
-			return cliErrors.New("Login aborted by user.")
-		}
-	}
-
 	creds := &auth.Credentials{
 		Server:         server,
 		AccessToken:    tokens.AccessToken,
@@ -201,6 +186,7 @@ func loginWithDeviceFlow(ctx context.Context, server string, openBrowser bool) e
 	if err := auth.SaveCredentials(creds); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	fmt.Println("\n✓ Logged in.")
+	fmt.Println()
+	ui.Success("Logged in.")
 	return nil
 }

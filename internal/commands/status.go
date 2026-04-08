@@ -2,12 +2,14 @@ package commands
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/browzeremb/browzer-cli/internal/auth"
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -73,13 +75,29 @@ Examples:
 				},
 			}
 
-			human := fmt.Sprintf(
-				"User:         %s\nOrganization: %s\nServer:       %s\nToken expires: %s\n\nWorkspace:    %s (%s)\nRoot:         %s\nFiles:        %d\nFolders:      %d\nSymbols:      %d\n",
-				creds.UserID, creds.OrganizationID, project.Server,
-				formatExpiry(creds.ExpiresAt),
-				project.WorkspaceName, project.WorkspaceID, gitRoot,
-				ws.FileCount, ws.FolderCount, ws.SymbolCount,
+			// Two compact tables: session on top, workspace below.
+			// Renders as bordered brand tables on a TTY and as
+			// tab-separated plain text when stdout is piped.
+			sessionTable := ui.Table(
+				[]string{"Field", "Value"},
+				[][]string{
+					{"User", creds.UserID},
+					{"Organization", creds.OrganizationID},
+					{"Server", project.Server},
+					{"Token expires", formatExpiry(creds.ExpiresAt)},
+				},
 			)
+			workspaceTable := ui.Table(
+				[]string{"Workspace", "Value"},
+				[][]string{
+					{"Name", fmt.Sprintf("%s (%s)", project.WorkspaceName, project.WorkspaceID)},
+					{"Root", gitRoot},
+					{"Files", strconv.Itoa(ws.FileCount)},
+					{"Folders", strconv.Itoa(ws.FolderCount)},
+					{"Symbols", strconv.Itoa(ws.SymbolCount)},
+				},
+			)
+			human := sessionTable + "\n" + workspaceTable
 
 			return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 		},

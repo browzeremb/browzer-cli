@@ -25,16 +25,6 @@ type SearchResult struct {
 	DocumentName string  `json:"documentName"`
 }
 
-// WorkspaceSummary is the row format used by `workspace list`.
-type WorkspaceSummary struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	RootPath     string `json:"rootPath"`
-	FileCount    int    `json:"fileCount"`
-	FolderCount  int    `json:"folderCount"`
-	SymbolCount  int    `json:"symbolCount"`
-}
-
 // FormatExploreResults renders the human-readable form of an explore
 // payload (used when neither --json nor --save is set).
 func FormatExploreResults(entries []ExploreEntry) string {
@@ -66,22 +56,6 @@ func FormatSearchResults(results []SearchResult) string {
 	for _, r := range results {
 		fmt.Fprintf(&sb, "%s score=%.3f\n", r.DocumentName, r.Score)
 		fmt.Fprintf(&sb, "  %s\n", strings.TrimSpace(r.Text))
-	}
-	return sb.String()
-}
-
-// FormatWorkspaceList renders the human form of `workspace list`.
-func FormatWorkspaceList(ws []WorkspaceSummary) string {
-	if len(ws) == 0 {
-		return "No workspaces.\n"
-	}
-	var sb strings.Builder
-	for _, w := range ws {
-		fmt.Fprintf(&sb, "%s  %s  files=%d folders=%d symbols=%d\n",
-			w.ID, w.Name, w.FileCount, w.FolderCount, w.SymbolCount)
-		if w.RootPath != "" {
-			fmt.Fprintf(&sb, "  %s\n", w.RootPath)
-		}
 	}
 	return sb.String()
 }

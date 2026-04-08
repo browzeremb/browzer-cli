@@ -18,12 +18,26 @@ func (c *Client) ListWorkspaces(ctx context.Context) ([]WorkspaceDto, error) {
 }
 
 // CreateWorkspace calls POST /api/workspaces.
+//
+// The server responds with `{ workspaceId, name, rootPath }` (see
+// apps/api/src/routes/api-workspaces.ts) — NOT the `{ id, ... }`
+// shape used by the list endpoint. Decode into a dedicated struct
+// and remap to WorkspaceDto so the rest of the CLI keeps using the
+// canonical `ID` field.
 func (c *Client) CreateWorkspace(ctx context.Context, req CreateWorkspaceRequest) (*WorkspaceDto, error) {
-	var ws WorkspaceDto
-	if err := c.postJSON(ctx, "api/workspaces", req, &ws); err != nil {
+	var raw struct {
+		WorkspaceID string `json:"workspaceId"`
+		Name        string `json:"name"`
+		RootPath    string `json:"rootPath"`
+	}
+	if err := c.postJSON(ctx, "api/workspaces", req, &raw); err != nil {
 		return nil, err
 	}
-	return &ws, nil
+	return &WorkspaceDto{
+		ID:       raw.WorkspaceID,
+		Name:     raw.Name,
+		RootPath: raw.RootPath,
+	}, nil
 }
 
 // DeleteWorkspace calls DELETE /api/workspaces/:id.
