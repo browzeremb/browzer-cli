@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
@@ -51,23 +50,6 @@ func isTTY() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
-// addJSONFlags wires the standard --json / --save flag pair onto cmd
-// and returns pointers the action handler can read.
-func addJSONFlags(cmd *cobra.Command, jsonDefault bool) (*bool, *string) {
-	jsonFlag := jsonDefault
-	saveFlag := ""
-	cmd.Flags().BoolVar(&jsonFlag, "json", jsonDefault, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().StringVar(&saveFlag, "save", "", "Write JSON output to <file> instead of stdout (implies --json)")
-	return &jsonFlag, &saveFlag
-}
-
-// addLimitFlag wires --limit <n> with bounds [1,200].
-func addLimitFlag(cmd *cobra.Command, defaultN int) *int {
-	v := defaultN
-	cmd.Flags().IntVar(&v, "limit", defaultN, "Max results (1-200)")
-	return &v
-}
-
 // validateLimit enforces the [1,200] bound on a --limit flag value.
 func validateLimit(n int) error {
 	if n < 1 || n > 200 {
@@ -84,18 +66,3 @@ func emitOrFail(payload any, opts output.Options, human string) error {
 	return nil
 }
 
-// formatBytes is a tiny human-readable byte formatter for `status`.
-func formatBytes(n int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-	)
-	switch {
-	case n >= MB:
-		return strconv.FormatFloat(float64(n)/float64(MB), 'f', 1, 64) + " MiB"
-	case n >= KB:
-		return strconv.FormatFloat(float64(n)/float64(KB), 'f', 1, 64) + " KiB"
-	default:
-		return strconv.FormatInt(n, 10) + " B"
-	}
-}

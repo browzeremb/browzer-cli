@@ -71,15 +71,15 @@ func (c *Client) PollBatchStatus(ctx context.Context, batchID string, opts PollB
 
 		switch resp.StatusCode {
 		case http.StatusNotModified:
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 		case http.StatusOK:
 			var status BatchStatusResponse
 			if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				return nil, err
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			last = &status
 			if status.ETag != "" {
 				etag = status.ETag
@@ -91,12 +91,12 @@ func (c *Client) PollBatchStatus(ctx context.Context, batchID string, opts PollB
 				return last, nil
 			}
 		case http.StatusNotFound:
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("batch %s not found", batchID)
 		default:
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("polling failed: HTTP %d: %s", resp.StatusCode, string(body))
 		}
 

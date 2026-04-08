@@ -188,7 +188,7 @@ func readFirstLines(absPath string, maxLines int) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	// Allow long lines so we can detect + truncate them ourselves.

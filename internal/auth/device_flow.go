@@ -72,7 +72,7 @@ func RequestDeviceCode(ctx context.Context, server, clientID string) (*DeviceCod
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("device code request failed: HTTP %d: %s", resp.StatusCode, string(bodyBytes))
@@ -145,7 +145,7 @@ func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
 		if resp.StatusCode == http.StatusOK {
 			var token TokenResponse
 			err := json.NewDecoder(resp.Body).Decode(&token)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if err != nil {
 				return nil, err
 			}
@@ -157,7 +157,7 @@ func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
 		}
 		// Try to parse the error code; ignore decode errors.
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		switch errBody.Error {
 		case "authorization_pending":

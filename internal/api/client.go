@@ -150,8 +150,8 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			return resp, nil
 		} else {
 			// Retryable status — drain and close before sleeping.
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 		}
 
 		if attempt < maxAttempts-1 {
