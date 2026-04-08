@@ -8,11 +8,25 @@
 //	2   not authenticated
 //	3   no project
 //	4   not found
+//	5   quota / plan limit exceeded (402, 413)
+//	6   rate limit / concurrency limit (429)
 //	130 SIGINT
 //	143 SIGTERM
 package errors
 
 import "fmt"
+
+// Exit-code constants. Prefer these over bare integers when constructing
+// a CliError so the mapping stays discoverable in one place.
+const (
+	ExitOK         = 0
+	ExitError      = 1
+	ExitAuthError  = 2
+	ExitNoProject  = 3
+	ExitNotFound   = 4
+	ExitQuotaError = 5 // 402 Payment Required, 413 Input Too Large
+	ExitRateLimit  = 6 // 429 Too Many Requests / concurrency cap
+)
 
 // CliError is the base error type carrying an exit code. Wrap any
 // command error in CliError before returning to ensure the right exit
@@ -55,6 +69,23 @@ func NoProject() *CliError {
 		Message:  "No Browzer project here. Run `browzer init` first.",
 		ExitCode: 3,
 	}
+}
+
+// NewQuotaExceededError returns a CliError with exit code 5. Use when
+// the server rejects the request because the caller has exhausted a
+// plan-level quota (402 Payment Required) or exceeded an input-size cap
+// (413 Payload Too Large).
+func NewQuotaExceededError(msg string) *CliError {
+	return &CliError{Message: msg, ExitCode: ExitQuotaError}
+}
+
+// NewRateLimitError returns a CliError with exit code 6 and embeds the
+// Retry-After hint (in seconds) directly into the message when > 0.
+func NewRateLimitError(msg string, retryAfter int) *CliError {
+	if retryAfter > 0 {
+		msg = fmt.Sprintf("%s (retry after %ds)", msg, retryAfter)
+	}
+	return &CliError{Message: msg, ExitCode: ExitRateLimit}
 }
 
 // NotFound returns a CliError with exit code 4. Use when a resource

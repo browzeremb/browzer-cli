@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -244,20 +245,140 @@ func decodeJSONResponse(resp *http.Response, out any) error {
 // leaking server-side debug payloads (stack traces, internal paths,
 // SQL fragments) into stderr/CI logs by default.
 func httpStatusError(resp *http.Response) error {
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	// Read up to 4 KiB so JSON envelopes with `details` survive —
+	// the legacy 1 KiB cap was fine for bare text bodies, but 402/413
+	// envelopes carry structured hints the user needs to see.
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	bodyStr := strings.TrimSpace(string(bodyBytes))
+	env := parseErrorEnvelope(bodyBytes)
+
 	switch resp.StatusCode {
 	case 401:
-		return cliErrors.WithCode("Unauthorized — run `browzer login` again.", 2)
+		return cliErrors.WithCode("Unauthorized — run `browzer login` again.", cliErrors.ExitAuthError)
+	case 402:
+		// Plan quota exhausted — /ask, /search, ingestion hot paths.
+		msg := formatEnvelope("⚠ Cota esgotada", env, bodyStr)
+		if reset := envString(env, "details", "resetAt"); reset != "" {
+			msg += "\nRenova em: " + reset
+		}
+		return cliErrors.NewQuotaExceededError(msg)
 	case 403:
-		return cliErrors.WithCode("Forbidden — your token does not have access to this resource.", 1)
+		// The new `model_restricted_by_plan` error shares 403 with the
+		// legacy "token does not have access" path. Disambiguate via
+		// the envelope's `error` discriminator.
+		if env != nil && env.Error == "model_restricted_by_plan" {
+			return cliErrors.WithCode(formatEnvelope("⛔ Modelo não disponível no seu plano", env, bodyStr), cliErrors.ExitError)
+		}
+		return cliErrors.WithCode("Forbidden — your token does not have access to this resource.", cliErrors.ExitError)
 	case 404:
-		return cliErrors.WithCode("Not found.", 4)
+		return cliErrors.WithCode("Not found.", cliErrors.ExitNotFound)
+	case 413:
+		// Input tokens exceed plan cap.
+		return cliErrors.NewQuotaExceededError(formatEnvelope("⚠ Input muito grande", env, bodyStr))
+	case 423:
+		// Circuit breaker blocked this API key.
+		return cliErrors.WithCode(formatEnvelope("🚫 API key bloqueada", env, bodyStr), cliErrors.ExitAuthError)
+	case 429:
+		retryAfter := 0
+		if h := resp.Header.Get("Retry-After"); h != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(h)); err == nil {
+				retryAfter = n
+			}
+		}
+		// `concurrency_limit_exceeded` is a distinct failure mode —
+		// waiting doesn't help, only fewer inflight requests does.
+		if env != nil && env.Error == "concurrency_limit_exceeded" {
+			return cliErrors.NewRateLimitError("⏱ Muitas requests simultâneas. Aguarde as anteriores finalizarem ou faça upgrade.", 0)
+		}
+		msg := "⏱ Rate limit atingido — reduza o ritmo das requests"
+		if retryAfter > 0 {
+			msg = fmt.Sprintf("⏱ Rate limit atingido — aguarde %ds antes de tentar novamente", retryAfter)
+		}
+		return cliErrors.NewRateLimitError(msg, retryAfter)
 	default:
 		msg := fmt.Sprintf("server returned %d", resp.StatusCode)
 		if bodyStr != "" && os.Getenv("BROWZER_DEBUG") == "1" {
 			msg += ": " + bodyStr
 		}
 		return cliErrors.New(msg)
+	}
+}
+
+// errorEnvelope mirrors the `{ error, message, hint, details, docsUrl }`
+// shape that apps/api now returns for billing/quota failures. `details`
+// is kept as raw JSON (decoded lazily via envString) so we don't have
+// to enumerate every possible sub-key.
+type errorEnvelope struct {
+	Error   string                 `json:"error"`
+	Message string                 `json:"message"`
+	Hint    string                 `json:"hint"`
+	Details map[string]any         `json:"details"`
+	DocsURL string                 `json:"docsUrl"`
+}
+
+// parseErrorEnvelope best-effort decodes the response body. Returns nil
+// if the body is empty or not valid JSON — callers MUST handle nil.
+func parseErrorEnvelope(body []byte) *errorEnvelope {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var env errorEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil
+	}
+	return &env
+}
+
+// formatEnvelope renders an envelope as "prefix: message\n💡 hint".
+// Falls back to the raw body snippet when no envelope is present so the
+// user still sees *something* useful on an unexpected wire shape.
+func formatEnvelope(prefix string, env *errorEnvelope, fallback string) string {
+	if env == nil || (env.Message == "" && env.Hint == "") {
+		if fallback != "" && os.Getenv("BROWZER_DEBUG") == "1" {
+			return prefix + ": " + fallback
+		}
+		return prefix
+	}
+	out := prefix
+	if env.Message != "" {
+		out += ": " + env.Message
+	}
+	if env.Hint != "" {
+		out += "\n💡 " + env.Hint
+	}
+	if env.DocsURL != "" {
+		out += "\n" + env.DocsURL
+	}
+	return out
+}
+
+// envString walks env.Details following the provided key path and
+// returns the leaf as a string. Returns "" on any miss — keeps the
+// call site concise at the cost of silent lookups.
+func envString(env *errorEnvelope, keys ...string) string {
+	if env == nil || len(keys) == 0 {
+		return ""
+	}
+	// First key is the top-level field name — only "details" is
+	// supported today, but routing through a switch keeps the door
+	// open for future top-level fields without breaking callers.
+	if keys[0] != "details" || env.Details == nil {
+		return ""
+	}
+	var cur any = env.Details
+	for _, k := range keys[1:] {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return ""
+		}
+		cur = m[k]
+	}
+	switch v := cur.(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	default:
+		return ""
 	}
 }

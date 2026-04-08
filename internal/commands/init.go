@@ -150,6 +150,17 @@ Examples:
 			}
 			sp.Success(fmt.Sprintf("Walked docs (%d files)", len(docs)))
 
+			// Preflight: ask the server whether the projected chunk
+			// count fits inside the caller's plan before we spend any
+			// upload bandwidth. On `!fits`, the workspace has already
+			// been created above — rollback() tears it back down so
+			// users don't see orphan workspaces on quota failures.
+			if len(docs) > 0 {
+				if err := runPreflight(ctx, client, docs); err != nil {
+					return rollback(err)
+				}
+			}
+
 			docsCache := cache.DocsCache{Version: cache.CacheVersion, Files: map[string]cache.CachedDoc{}}
 			if len(docs) > 0 {
 				sp = ui.StartSpinner(fmt.Sprintf("Uploading %d docs...", len(docs)))

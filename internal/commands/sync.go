@@ -155,6 +155,14 @@ Examples:
 				}
 
 				if len(toUpload) > 0 {
+					// Preflight the delta (Added + Modified) — Deleted
+					// is irrelevant since it frees chunks, not
+					// consumes them. Sync has no workspace rollback:
+					// a quota failure just returns the CliError and
+					// leaves existing server-side content untouched.
+					if err := runPreflight(ctx, client, toUpload); err != nil {
+						return err
+					}
 					sp := startStep(fmt.Sprintf("Uploading %d docs...", len(toUpload)))
 					res, err := upload.UploadInBatches(ctx, client, project.WorkspaceID, toUpload, &newCache, func(bid string) {
 						inflightBatchIDs = append(inflightBatchIDs, bid)
