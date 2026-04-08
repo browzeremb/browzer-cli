@@ -180,7 +180,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSONResponse(resp, out)
 }
 
@@ -199,7 +199,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, out any) e
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSONResponse(resp, out)
 }
 
@@ -209,7 +209,7 @@ func (c *Client) deleteCall(ctx context.Context, path string, query url.Values) 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
