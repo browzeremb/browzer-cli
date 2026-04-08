@@ -1,0 +1,48 @@
+# Go CI for the Browzer CLI.
+#
+# Lives in packages/cli/.github/workflows/ in the private monorepo so
+# the mirror action propagates it to the public repo's .github/workflows/.
+# Both sides run the same checks; failures in either block merges.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Verify deps
+        run: go mod download
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+      - name: Build all targets
+        run: |
+          GOOS=darwin  GOARCH=arm64 go build -o /dev/null ./cmd/browzer
+          GOOS=darwin  GOARCH=amd64 go build -o /dev/null ./cmd/browzer
+          GOOS=linux   GOARCH=arm64 go build -o /dev/null ./cmd/browzer
+          GOOS=linux   GOARCH=amd64 go build -o /dev/null ./cmd/browzer
+          GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/browzer
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m

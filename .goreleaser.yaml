@@ -1,0 +1,111 @@
+# Goreleaser config for the Browzer CLI.
+#
+# Runs in the PUBLIC mirror repo (github.com/browzeremb/browzer-cli) on
+# tag push. The mirror action in the private monorepo propagates tags
+# from packages/cli/ → public.
+#
+# Build matrix produces a single static binary per OS/arch. No CGO so
+# cross-compile is trivial. Strips symbols + dwarf to shave ~30% off
+# the binary; UPX is intentionally NOT used (would break macOS code
+# signing later).
+#
+# Channels: GitHub Releases tarballs + checksums, Homebrew tap, Scoop
+# bucket. The `go install github.com/browzeremb/browzer-cli/cmd/browzer@latest`
+# channel needs no goreleaser config — it works as long as the public
+# mirror has a valid go.mod and a semver tag.
+
+version: 2
+
+project_name: browzer-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: browzer
+    binary: browzer
+    main: ./cmd/browzer
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # Windows on arm64 is not a meaningful target for the CLI yet.
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: ["tar.gz"]
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^chore:"
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - Merge pull request
+
+homebrew_casks:
+  - name: browzer
+    repository:
+      owner: browzeremb
+      name: homebrew-tap
+      branch: main
+    homepage: "https://browzeremb.com"
+    description: "Hybrid vector + Graph RAG for your codebase"
+    license: "MIT"
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/browzer"]
+          end
+
+scoops:
+  - name: browzer
+    repository:
+      owner: browzeremb
+      name: scoop-bucket
+      branch: main
+    homepage: "https://browzeremb.com"
+    description: "Hybrid vector + Graph RAG for your codebase"
+    license: "MIT"
+
+release:
+  github:
+    owner: browzeremb
+    name: browzer-cli
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"

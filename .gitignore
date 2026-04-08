@@ -1,0 +1,4 @@
+# Goreleaser output — built locally via `goreleaser release --snapshot`
+# or in CI. Never committed; the published artifacts live as GitHub
+# Releases in the public mirror repo.
+dist/

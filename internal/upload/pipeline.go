@@ -1,0 +1,162 @@
+// Package upload coordinates the multipart batch upload to
+// POST /api/documents/batch in chunks of UploadBatchSize.
+//
+// Mirrors the legacy src/lib/sync-pipeline.ts:
+//   - hard cap MaxDocBytes per file (5 MiB)
+//   - chunk into batches of UploadBatchSize (50)
+//   - call BatchUploadDocs for each chunk
+//   - poll status when the response is async (HTTP 202), unless --no-wait
+//   - mutate the cache in place with returned documentIds
+//   - per-file errors go to stderr, batch continues
+package upload
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/browzeremb/browzer-cli/internal/api"
+	"github.com/browzeremb/browzer-cli/internal/cache"
+	"github.com/browzeremb/browzer-cli/internal/walker"
+)
+
+// UploadBatchSize is the number of files per multipart request.
+const UploadBatchSize = 50
+
+// MaxDocBytes is the per-file size ceiling. Larger files are skipped
+// with a stderr warning.
+const MaxDocBytes = 5 * 1024 * 1024
+
+// Result is the aggregate outcome of an UploadInBatches call.
+type Result struct {
+	UploadedCount int
+	FailedCount   int
+	BatchIDs      []string // populated when noWait=true
+}
+
+// UploadInBatches reads each file from disk, splits the list into
+// chunks of UploadBatchSize, calls BatchUploadDocs per chunk, and
+// (when noWait=false) polls each async batch to completion.
+//
+// The cache is mutated in place: every successful upload writes
+// {sha256, documentId, size} into c.Files[relativePath].
+//
+// onBatchEnqueued is called once per async batch as soon as the server
+// returns the batchId, BEFORE polling — useful for `init` rollback.
+func UploadInBatches(
+	ctx context.Context,
+	client *api.Client,
+	workspaceID string,
+	files []walker.DocFile,
+	c *cache.DocsCache,
+	onBatchEnqueued func(batchID string),
+	noWait bool,
+) (Result, error) {
+	res := Result{}
+	if len(files) == 0 {
+		return res, nil
+	}
+	if c.Files == nil {
+		c.Files = map[string]cache.CachedDoc{}
+	}
+
+	for start := 0; start < len(files); start += UploadBatchSize {
+		end := start + UploadBatchSize
+		if end > len(files) {
+			end = len(files)
+		}
+		chunk := files[start:end]
+
+		uploads := make([]api.DocumentUpload, 0, len(chunk))
+		// Track which DocFile each upload corresponds to so we can
+		// update the cache by relative path after the round-trip.
+		uploadIdx := make([]int, 0, len(chunk))
+
+		for i, f := range chunk {
+			if f.Size > MaxDocBytes {
+				fmt.Fprintf(os.Stderr, "  ⚠ skipping %s: %d bytes exceeds %d limit\n", f.RelativePath, f.Size, MaxDocBytes)
+				res.FailedCount++
+				continue
+			}
+			content, err := os.ReadFile(f.AbsolutePath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠ read %s: %v\n", f.RelativePath, err)
+				res.FailedCount++
+				continue
+			}
+			uploads = append(uploads, api.DocumentUpload{Name: f.RelativePath, Content: content})
+			uploadIdx = append(uploadIdx, i)
+		}
+
+		if len(uploads) == 0 {
+			continue
+		}
+
+		batch, err := client.BatchUploadDocs(ctx, workspaceID, uploads)
+		if err != nil {
+			res.FailedCount += len(uploads)
+			fmt.Fprintf(os.Stderr, "  ⚠ batch upload failed: %v\n", err)
+			continue
+		}
+
+		switch batch.Kind {
+		case api.BatchKindAsync:
+			if onBatchEnqueued != nil {
+				onBatchEnqueued(batch.BatchID)
+			}
+			res.BatchIDs = append(res.BatchIDs, batch.BatchID)
+			if noWait {
+				// Caller asked for fire-and-forget — record the
+				// batchId and skip polling. Cache stays untouched
+				// because we don't yet know the documentIds.
+				continue
+			}
+			final, err := client.PollBatchStatus(ctx, batch.BatchID, api.PollBatchOptions{})
+			if err != nil {
+				res.FailedCount += len(uploads)
+				fmt.Fprintf(os.Stderr, "  ⚠ poll batch %s: %v\n", batch.BatchID, err)
+				continue
+			}
+			// Update cache from the async ack jobs (which carry the
+			// document IDs assigned at enqueue time).
+			for i, j := range batch.Jobs {
+				if i >= len(uploadIdx) {
+					break
+				}
+				f := chunk[uploadIdx[i]]
+				c.Files[f.RelativePath] = cache.CachedDoc{
+					SHA256:     f.SHA256,
+					DocumentID: j.DocumentID,
+					Size:       f.Size,
+				}
+			}
+			// Count completion from final progress.
+			res.UploadedCount += final.Progress.Completed
+			res.FailedCount += final.Progress.Failed
+		case api.BatchKindSync:
+			// Legacy inline response — uploaded carries the IDs directly.
+			byName := make(map[string]string, len(batch.Uploaded))
+			for _, u := range batch.Uploaded {
+				byName[u.Name] = u.ID
+			}
+			for i, f := range chunk {
+				_ = i
+				id, ok := byName[f.RelativePath]
+				if !ok {
+					continue
+				}
+				c.Files[f.RelativePath] = cache.CachedDoc{
+					SHA256:     f.SHA256,
+					DocumentID: id,
+					Size:       f.Size,
+				}
+				res.UploadedCount++
+			}
+			res.FailedCount += len(batch.Failed)
+			for _, f := range batch.Failed {
+				fmt.Fprintf(os.Stderr, "  ⚠ %s: %s\n", f.Name, f.Error)
+			}
+		}
+	}
+	return res, nil
+}
