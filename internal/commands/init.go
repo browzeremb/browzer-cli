@@ -135,6 +135,9 @@ Examples:
 			if err := config.AddCacheDirToGitignore(gitRoot); err != nil {
 				ui.Warn(fmt.Sprintf("Could not update .gitignore (%v). Add \".browzer/.cache/\" manually.", err))
 			}
+			if err := config.InjectBrowzerSection(gitRoot); err != nil {
+				ui.Warn(fmt.Sprintf("Could not update CLAUDE.md (%v). Add the Browzer KB section manually.", err))
+			}
 
 			// Best-effort plan status — never block init on this. If
 			// the billing endpoint is unreachable, just skip the line.
@@ -151,6 +154,7 @@ Examples:
 			fmt.Println()
 			ui.Success(fmt.Sprintf("Workspace %q created (%s)", ws.Name, ws.ID))
 			ui.Success("Wrote .browzer/config.json")
+			ui.Success("Injected Browzer KB section into CLAUDE.md")
 			fmt.Println("\nNext steps:")
 			fmt.Println("  browzer workspace index    # parse code structure into the workspace graph")
 			fmt.Println("  browzer workspace docs     # pick which documents to embed")
