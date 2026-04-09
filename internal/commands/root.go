@@ -32,7 +32,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerLogout(root)
 	registerInit(root)
 	registerStatus(root)
-	registerSync(root)
+	registerWorkspaceIndex(root) // `browzer index` top-level alias
 	registerExplore(root)
 	registerSearch(root)
 	registerJob(root)
@@ -41,7 +41,8 @@ func NewRootCommand(version string) *cobra.Command {
 	ws := registerWorkspace(root)
 	registerInit(ws)
 	registerStatus(ws)
-	registerSync(ws)
+	registerWorkspaceIndex(ws)
+	registerWorkspaceDocs(ws)
 	registerExplore(ws)
 	registerSearch(ws)
 
@@ -112,13 +113,13 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 }
 
 const agentTips = `Agent-friendly tips:
-  • Canonical form is noun-grouped: ` + "`browzer workspace {init,sync,status,explore,search}`" + `.
-    Top-level aliases (` + "`browzer init`, `browzer sync`, ..." + `) still work for compat.
+  • Canonical form is noun-grouped: ` + "`browzer workspace {init,index,docs,status,explore,search}`" + `.
+    ` + "`browzer index`" + ` is a top-level alias for ` + "`browzer workspace index`" + `.
   • Every read/search command supports --json and --save <file>.
   • Combine --save with --json to write a clean JSON document
     without banners polluting stdout (ideal for Claude SKILLs).
   • ` + "`browzer explore --schema`" + ` discovers the response shape.
   • ` + "`browzer workspace get <id> --save ws.json`" + ` discovers the workspace shape.
-  • ` + "`browzer sync --no-wait --json`" + ` + ` + "`browzer job get <id> --json`" + ` for async polling.
+  • ` + "`browzer workspace index`" + ` re-parses code; ` + "`browzer workspace docs`" + ` interactively re-indexes documents.
   • ` + "`browzer login --key $BROWZER_API_KEY`" + ` for non-interactive login.
 `

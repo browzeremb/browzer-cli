@@ -22,10 +22,9 @@ type DocFile struct {
 	Size int64
 }
 
-var docExtensions = map[string]struct{}{
-	".md":  {},
-	".mdx": {},
-}
+// Document extension set is centralized in classify.go
+// (ClassifyFile / IsDocExtension) so WalkRepo and WalkDocs agree on
+// which files belong in which bucket. Never hardcode extensions here.
 
 // WalkDocs walks rootPath and returns every non-ignored, non-sensitive
 // Markdown document with its content hash. SHA-256 is computed during
@@ -98,8 +97,7 @@ func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, out *[]DocFile, 
 		if IsSensitive(relPath) {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(name))
-		if _, ok := docExtensions[ext]; !ok {
+		if !IsDocExtension(filepath.Ext(name)) {
 			continue
 		}
 		if matcher.matches(relPath) {

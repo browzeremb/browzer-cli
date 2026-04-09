@@ -1,42 +1,63 @@
 package commands
 
 import (
-	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
-	"github.com/browzeremb/browzer-cli/internal/cache"
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
-	"github.com/browzeremb/browzer-cli/internal/upload"
-	"github.com/browzeremb/browzer-cli/internal/walker"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
 
+// registerInit wires `browzer init`.
+//
+// Post-redesign behavior (see packages/cli/CLAUDE.md + the Sub-fase
+// "CLI split" commit series): init is a pure bootstrap. It creates
+// the workspace on the server and writes .browzer/config.json —
+// nothing else. It does NOT walk the repo, does NOT parse the code
+// graph, does NOT upload documents. Those are now the responsibility
+// of `browzer workspace index` and `browzer workspace docs`.
+//
+// The old `--force` flag is gone. The only cases it served were
+// "re-link this directory to a different workspace" (now
+// `browzer workspace relink`) and "disconnect this directory while
+// keeping the server workspace" (now `browzer workspace unlink`).
+// Mixing those semantics into a single `--force` was surprising,
+// especially around plan-slot accounting: users frequently thought
+// --force would free the slot, when in practice it silently held on
+// to the old workspace on the server.
 func registerInit(parent *cobra.Command) {
-	var force bool
 	var nameFlag string
 	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Register the current git repo as a Browzer workspace and index its contents",
-		Long: `Register the current git repository as a Browzer workspace and index its
-contents (code parse + docs upload) in one shot.
+		Short: "Create a Browzer workspace for the current git repo",
+		Long: `Create a Browzer workspace for the current git repository.
 
-If anything fails after the workspace is created, the CLI rolls back by
-calling DELETE /api/workspaces/:id and POST /api/documents/batch/:id/cancel
-on every in-flight batch — keeps the server clean for retries.
+init is a pure bootstrap. It creates the workspace on the server and
+writes .browzer/config.json in the current repo — nothing else. No
+walk, no code parse, no document upload.
+
+After init, the typical flow is:
+
+  browzer workspace index   # parse the code structure (folders/files/symbols)
+  browzer workspace docs    # interactively pick documents to embed
+
+If .browzer/config.json already exists, init refuses to overwrite it.
+Use one of:
+
+  browzer workspace unlink              # disconnect this directory (keeps the server workspace)
+  browzer workspace delete <id>         # delete the workspace on the server (frees your plan slot)
+  browzer workspace relink <id>         # point this directory at a different existing workspace
 
 Examples:
   browzer init --name my-repo
   browzer init --dry-run --json
-  browzer init --dry-run --save plan.json
 ` + output.ExitCodesHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
@@ -47,195 +68,119 @@ Examples:
 				return cliErrors.New("Not inside a git repository. Run `git init` first or change directory.")
 			}
 
-			ctx := rootContext(cmd)
-
 			if dryRun {
 				return runInitDryRun(gitRoot, nameFlag, jsonFlag, saveFlag)
 			}
 
+			// Refuse to clobber an existing binding. See the long
+			// description for the canonical next-step commands.
 			existing, err := config.LoadProjectConfig(gitRoot)
 			if err != nil {
 				return err
 			}
-			if existing != nil && !force {
-				return cliErrors.Newf("Already initialized (workspaceId=%s). Use --force to overwrite.", existing.WorkspaceID)
+			if existing != nil {
+				return cliErrors.Newf(
+					"Already linked to workspace %s.\n"+
+						"Options:\n"+
+						"  browzer workspace unlink                 # disconnect locally (server workspace kept)\n"+
+						"  browzer workspace delete %s   # delete on the server (frees your plan slot)\n"+
+						"  browzer workspace relink <id>            # point this dir at a different workspace",
+					existing.WorkspaceID, existing.WorkspaceID,
+				)
 			}
 
 			defaultName := filepath.Base(gitRoot)
 			name := resolveWorkspaceName(defaultName, nameFlag)
 
-			// init never runs in --json/--save mode without --dry-run
-			// (which short-circuits earlier), so we always honor the
-			// hint here. quiet=false → print to stderr.
-			printColdStartHint(jsonFlag || saveFlag != "")
-			ac, err := requireAuth(600) // cold-start tolerance
+			ctx := rootContext(cmd)
+			ac, err := requireAuth(0)
 			if err != nil {
 				return err
 			}
 			client := ac.Client
 
-			reusingExisting := existing != nil && force
-			var workspaceID, workspaceName string
-			if reusingExisting {
-				ui.Arrow(fmt.Sprintf("Reusing workspace %s (--force)", existing.WorkspaceID))
-				workspaceID = existing.WorkspaceID
-				workspaceName = name
-			} else {
-				sp := ui.StartSpinner("Creating workspace...")
-				ws, err := client.CreateWorkspace(ctx, api.CreateWorkspaceRequest{Name: name, RootPath: gitRoot})
-				if err != nil {
-					sp.Failure("Create workspace failed")
-					return cliErrors.Newf("Failed to create workspace (%s).", err.Error())
-				}
-				workspaceID = ws.ID
-				workspaceName = ws.Name
-				sp.Success(fmt.Sprintf("Workspace created: %s", workspaceID))
-			}
-
-			var inflightBatches []string
-
-			rollback := func(reason error) error {
-				if reusingExisting {
-					ui.Failure(fmt.Sprintf("Init failed mid-reparse for workspace %s. Local config and existing server data are unchanged. Retry with `browzer init --force` or `browzer sync`.", workspaceID))
-					return reason
-				}
-				ui.Failure(fmt.Sprintf("Init failed after creating workspace %s — rolling back...", workspaceID))
-				rollbackAC, rerr := requireAuth(0)
-				if rerr != nil {
-					ui.Warn(fmt.Sprintf("Rollback aborted: %v", rerr))
-					return reason
-				}
-				for _, bid := range inflightBatches {
-					if err := rollbackAC.Client.CancelBatch(ctx, bid); err != nil {
-						ui.Warn(fmt.Sprintf("Could not cancel batch %s (%v) — proceeding with delete", bid, err))
-					} else {
-						ui.SuccessTo(os.Stderr, fmt.Sprintf("Cancelled batch %s", bid))
-					}
-				}
-				if err := rollbackAC.Client.DeleteWorkspace(ctx, workspaceID); err != nil {
-					ui.Warn(fmt.Sprintf("Rollback failed (%v). Run `browzer workspace delete %s` manually.", err, workspaceID))
-				} else {
-					ui.SuccessTo(os.Stderr, "Rolled back")
-				}
-				return reason
-			}
-
-			// 2. Walk + parse code tree.
-			sp := ui.StartSpinner("Walking code tree...")
-			tree, err := walker.WalkRepo(gitRoot)
+			// Create the workspace. If the caller is at their plan
+			// limit, the server returns 409 "workspace limit reached"
+			// which bubbles up as a CliError here. We do NOT try to
+			// auto-list existing workspaces on failure — that's the
+			// user's call via `browzer workspace list` + `delete`.
+			sp := ui.StartSpinner("Creating workspace...")
+			ws, err := client.CreateWorkspace(ctx, api.CreateWorkspaceRequest{Name: name, RootPath: gitRoot})
 			if err != nil {
-				sp.Failure("Walk failed")
-				return rollback(err)
+				sp.Failure("Create workspace failed")
+				return cliErrors.Newf("Failed to create workspace (%s).", err.Error())
 			}
-			sp.Success(fmt.Sprintf("Walked code tree (%d files)", len(tree.Files)))
+			sp.Success(fmt.Sprintf("Workspace created: %s", ws.ID))
 
-			sp = ui.StartSpinner("Parsing code on server...")
-			if err := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
-				WorkspaceID: workspaceID,
-				RootPath:    tree.RootPath,
-				Folders:     tree.Folders,
-				Files:       tree.Files,
+			// Persist the config + add the cache dir to .gitignore
+			// (still needed because `workspace docs` will populate the
+			// SHA-256 cache on its first successful submit).
+			if err := config.SaveProjectConfig(gitRoot, &config.ProjectConfig{
+				Version:       config.ProjectConfigVersion,
+				WorkspaceID:   ws.ID,
+				WorkspaceName: ws.Name,
+				Server:        ac.Credentials.Server,
 			}); err != nil {
-				sp.Failure("Parse failed")
-				return rollback(err)
-			}
-			sp.Success("Code parsed")
-
-			// 3. Walk + upload docs (full upload, fresh workspace).
-			sp = ui.StartSpinner("Walking docs...")
-			docs, err := walker.WalkDocs(gitRoot)
-			if err != nil {
-				sp.Failure("Docs walk failed")
-				return rollback(err)
-			}
-			sp.Success(fmt.Sprintf("Walked docs (%d files)", len(docs)))
-
-			// Preflight: ask the server whether the projected chunk
-			// count fits inside the caller's plan before we spend any
-			// upload bandwidth. On `!fits`, the workspace has already
-			// been created above — rollback() tears it back down so
-			// users don't see orphan workspaces on quota failures.
-			if len(docs) > 0 {
-				if err := runPreflight(ctx, client, docs); err != nil {
-					return rollback(err)
-				}
-			}
-
-			docsCache := cache.DocsCache{Version: cache.CacheVersion, Files: map[string]cache.CachedDoc{}}
-			if len(docs) > 0 {
-				sp = ui.StartSpinner(fmt.Sprintf("Uploading %d docs...", len(docs)))
-				res, err := upload.UploadInBatches(ctx, client, workspaceID, docs, &docsCache, func(bid string) {
-					inflightBatches = append(inflightBatches, bid)
-				}, false)
-				if err != nil {
-					sp.Failure("Upload failed")
-					return rollback(err)
-				}
-				sp.Success(fmt.Sprintf("Uploaded %d docs", len(docs)))
-				if res.FailedCount > 0 {
-					ui.Warn(fmt.Sprintf("%d doc(s) failed — see warnings above", res.FailedCount))
-				}
-			}
-
-			// 4. Persist cache + config + .gitignore.
-			if err := cache.Save(gitRoot, docsCache); err != nil {
-				return rollback(err)
+				// The workspace was already created server-side, so
+				// we now have an orphan on the caller's plan. Surface
+				// the id + the exact recovery command so they don't
+				// have to discover it via `workspace list`.
+				return cliErrors.Newf(
+					"Failed to save .browzer/config.json: %v\n"+
+						"Workspace %s was created on the server and is consuming 1 slot of your plan.\n"+
+						"Recover with: browzer workspace delete %s",
+					err, ws.ID, ws.ID,
+				)
 			}
 			if err := config.AddCacheDirToGitignore(gitRoot); err != nil {
 				ui.Warn(fmt.Sprintf("Could not update .gitignore (%v). Add \".browzer/.cache/\" manually.", err))
 			}
 
-			if err := config.SaveProjectConfig(gitRoot, &config.ProjectConfig{
-				Version:       config.ProjectConfigVersion,
-				WorkspaceID:   workspaceID,
-				WorkspaceName: workspaceName,
-				Server:        ac.Credentials.Server,
-			}); err != nil {
-				return rollback(err)
+			// Best-effort plan status — never block init on this. If
+			// the billing endpoint is unreachable, just skip the line.
+			printPlanStatus(ctx, client)
+
+			if jsonFlag || saveFlag != "" {
+				payload := map[string]any{
+					"workspaceId":   ws.ID,
+					"workspaceName": ws.Name,
+				}
+				return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, "")
 			}
 
-			verb := "created and indexed"
-			if reusingExisting {
-				verb = "re-indexed"
-			}
 			fmt.Println()
-			ui.Success(fmt.Sprintf("Workspace %q %s (%s)", workspaceName, verb, workspaceID))
+			ui.Success(fmt.Sprintf("Workspace %q created (%s)", ws.Name, ws.ID))
 			ui.Success("Wrote .browzer/config.json")
-			fmt.Println("\nNext:\n  browzer status\n  browzer search \"...\"\n  browzer explore \"...\"")
+			fmt.Println("\nNext steps:")
+			fmt.Println("  browzer workspace index    # parse code structure into the workspace graph")
+			fmt.Println("  browzer workspace docs     # pick which documents to embed")
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing .browzer/config.json")
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Workspace name (default: git repo basename)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Walk the repo and report what would be indexed without calling the server")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report what would be created without calling the server")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON")
 	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
 	parent.AddCommand(cmd)
 }
 
+// runInitDryRun prints the name + root that `init` would use without
+// touching the server. Kept trivial on purpose: the old dry-run also
+// walked the tree, but since init no longer walks at all, the useful
+// dry-run signal collapses to "what would we create".
 func runInitDryRun(gitRoot, nameFlag string, jsonFlag bool, saveFlag string) error {
 	defaultName := filepath.Base(gitRoot)
 	name := nameFlag
 	if name == "" {
 		name = defaultName
 	}
-	tree, err := walker.WalkRepo(gitRoot)
-	if err != nil {
-		return err
-	}
-	docs, err := walker.WalkDocs(gitRoot)
-	if err != nil {
-		return err
-	}
 	payload := map[string]any{
 		"mode":          "dry-run",
 		"gitRoot":       gitRoot,
 		"workspaceName": name,
-		"codeFiles":     len(tree.Files),
-		"docs":          len(docs),
 	}
-	human := fmt.Sprintf("Dry run:\n  name:  %s\n  root:  %s\n  code:  %d files\n  docs:  %d files\n", name, gitRoot, len(tree.Files), len(docs))
+	human := fmt.Sprintf("Dry run:\n  name: %s\n  root: %s\n", name, gitRoot)
 	return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 }
 
@@ -259,7 +204,3 @@ func resolveWorkspaceName(defaultName, flagName string) string {
 	}
 	return value
 }
-
-// _ is a compile-time guard ensuring context.Context is referenced even
-// if the file is reorganised — keeps imports stable for refactors.
-var _ = context.Background

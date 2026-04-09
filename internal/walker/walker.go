@@ -152,6 +152,14 @@ func walk(absDir, relDir string, matcher *ignoreMatcher, tree *ParseTreeInput, d
 			continue
 		}
 
+		// Documents (markdown, PDF, ...) are handled by the
+		// `workspace docs` flow via WalkDocs — skip them here so the
+		// structural code graph doesn't double-index them as both
+		// File nodes AND Document nodes.
+		if ClassifyFile(relPath) == ClassDoc {
+			continue
+		}
+
 		absPath := filepath.Join(absDir, name)
 		// I-11: drop binaries.
 		if IsBinaryFile(absPath) {

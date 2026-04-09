@@ -181,6 +181,9 @@ Examples:
 	deleteCmd.Flags().StringVar(&confirmName, "confirm-name", "", "Skip the interactive prompt by passing the workspace name (for non-interactive use)")
 	ws.AddCommand(deleteCmd)
 
+	registerWorkspaceUnlink(ws)
+	registerWorkspaceRelink(ws)
+
 	parent.AddCommand(ws)
 	return ws
 }

@@ -126,3 +126,29 @@ func (c *Client) DeleteDocument(ctx context.Context, documentID, workspaceID str
 	q.Set("workspaceId", workspaceID)
 	return c.deleteCall(ctx, "api/documents/"+documentID, q)
 }
+
+// IndexedDocument is one document currently attached to a workspace,
+// as returned by GET /api/workspaces/:id/documents. The route is tenant
+// and workspace scoped server-side — the CLI can trust the list it gets
+// back is already filtered for the caller.
+type IndexedDocument struct {
+	DocumentID   string `json:"documentId"`
+	RelativePath string `json:"relativePath"`
+	SizeBytes    int64  `json:"sizeBytes"`
+	ChunkCount   int64  `json:"chunkCount"`
+	Status       string `json:"status"`
+}
+
+// ListWorkspaceDocuments calls GET /api/workspaces/:id/documents and
+// returns the documents currently indexed in the workspace. Used by
+// `browzer workspace docs` to pre-check already-indexed items in the
+// interactive picker.
+func (c *Client) ListWorkspaceDocuments(ctx context.Context, workspaceID string) ([]IndexedDocument, error) {
+	var body struct {
+		Documents []IndexedDocument `json:"documents"`
+	}
+	if err := c.getJSON(ctx, "api/workspaces/"+workspaceID+"/documents", nil, &body); err != nil {
+		return nil, err
+	}
+	return body.Documents, nil
+}

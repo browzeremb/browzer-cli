@@ -29,7 +29,7 @@ func TestDualRegistration_LegacyAndNounGroupedShareHandler(t *testing.T) {
 		t.Fatal("workspace subcommand group not registered")
 	}
 
-	dual := []string{"init", "sync", "status", "explore", "search"}
+	dual := []string{"init", "index", "status", "explore", "search"}
 	for _, name := range dual {
 		legacy := findChild(root, name)
 		grouped := findChild(ws, name)
