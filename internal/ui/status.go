@@ -21,10 +21,10 @@ func Success(msg string) {
 // by sites that need stderr routing).
 func SuccessTo(w io.Writer, msg string) {
 	if !colorEnabled() {
-		fmt.Fprintf(w, "✓ %s\n", msg)
+		_, _ = fmt.Fprintf(w, "✓ %s\n", msg)
 		return
 	}
-	fmt.Fprintf(w, "%s %s\n",
+	_, _ = fmt.Fprintf(w, "%s %s\n",
 		styleSuccess.Render("✓"),
 		styleBody.Render(msg),
 	)

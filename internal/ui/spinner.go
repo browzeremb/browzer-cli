@@ -76,7 +76,7 @@ func (s *Spinner) run() {
 	for {
 		// "\r\033[K" = return to col 0 + clear line. Drawing the
 		// frame with styleSuccess keeps the spinner in brand green.
-		fmt.Fprintf(os.Stdout, "\r\033[K  %s %s",
+		_, _ = fmt.Fprintf(os.Stdout, "\r\033[K  %s %s",
 			styleSuccess.Render(spinnerFrames[i]),
 			styleBody.Render(s.label),
 		)
@@ -86,7 +86,7 @@ func (s *Spinner) run() {
 		case <-s.stopCh:
 			// Erase the spinner line so the caller can print its
 			// replacement cleanly.
-			fmt.Fprint(os.Stdout, "\r\033[K")
+			_, _ = fmt.Fprint(os.Stdout, "\r\033[K")
 			return
 		case <-ticker.C:
 		}

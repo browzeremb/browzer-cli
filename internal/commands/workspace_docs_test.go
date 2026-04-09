@@ -61,7 +61,7 @@ func TestMergeDocItems_UnionFlagsAndOrder(t *testing.T) {
 
 	// c.md — both sides.
 	c := items[2]
-	if !(c.HasLocal() && c.Indexed && c.Selected) {
+	if !c.HasLocal() || !c.Indexed || !c.Selected {
 		t.Errorf("c.md should have local+indexed+selected: %+v", c)
 	}
 	if c.LocalHash != "h-c-local" || c.ServerDocumentID != "d-c" {

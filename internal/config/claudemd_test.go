@@ -84,9 +84,6 @@ func TestInjectBrowzerSection_NoTrailingNewlineHandled(t *testing.T) {
 
 	data, _ := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
 	content := string(data)
-	if strings.Contains(content, "# Existing##") || strings.Contains(content, "# Existing\n\n##") {
-		// Fine either way — just must not smash lines together.
-	}
 	if !strings.Contains(content, "# Existing") {
 		t.Fatalf("original content lost:\n%s", content)
 	}

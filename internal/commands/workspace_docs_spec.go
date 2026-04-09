@@ -359,9 +359,7 @@ func applySpecsToItems(items []DocPickerItem, addSpec, removeSpec, replaceSpec *
 		// For --remove we filter unresolved down to "was not indexed"
 		// — if the path IS in the item list but simply isn't indexed,
 		// that's a no-op, not a warning.
-		for _, p := range unresolved {
-			res.UnresolvedRemove = append(res.UnresolvedRemove, p)
-		}
+		res.UnresolvedRemove = append(res.UnresolvedRemove, unresolved...)
 		// Also warn for paths that matched but aren't currently
 		// indexed (user said "remove X" but X was never there).
 		for i := range out {

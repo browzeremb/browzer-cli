@@ -19,7 +19,7 @@ func TestRequestDeviceCode_HappyPath(t *testing.T) {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"device_code":"dc","user_code":"UC","verification_uri":"https://example.com/device","expires_in":600,"interval":5}`)
+		_, _ = fmt.Fprint(w, `{"device_code":"dc","user_code":"UC","verification_uri":"https://example.com/device","expires_in":600,"interval":5}`)
 	}))
 	defer srv.Close()
 
@@ -63,7 +63,7 @@ func TestPollForToken_SlowDownCumulativeCap(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"slow_down"}`)
+		_, _ = fmt.Fprint(w, `{"error":"slow_down"}`)
 	}))
 	defer srv.Close()
 
