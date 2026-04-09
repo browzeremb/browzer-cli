@@ -22,6 +22,7 @@ package commands
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/cache"
@@ -215,41 +216,117 @@ func humanSize(n int64) string {
 // registerWorkspaceDocs wires the `docs` subcommand under its parent.
 func registerWorkspaceDocs(parent *cobra.Command) {
 	var (
-		dryRun bool
-		yes    bool
+		dryRun      bool
+		yes         bool
+		planOnly    bool
+		addRaw      string
+		removeRaw   string
+		replaceRaw  string
+		iKnow       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "docs",
-		Short: "Interactively (re-)index documents into the workspace",
-		Long: `Interactively (re-)index documents into the workspace.
+		Short: "Interactively (re-)index documents, or drive the same flow non-interactively via flags",
+		Long: `(Re-)index documents into the workspace.
 
-Fetches the currently-indexed documents, walks the local doc tree,
-and shows a multi-select picker where already-indexed items come
-pre-checked. On submit, the CLI computes a delta:
+Interactive mode (default, requires TTY):
+  Fetches the currently-indexed documents, walks the local doc tree,
+  and shows a multi-select picker where already-indexed items come
+  pre-checked. On submit, the CLI computes a delta:
 
-  • new checked items        → uploaded
-  • existing checked changed → re-uploaded
-  • existing unchecked       → deleted from the workspace
-  • existing checked same    → no-op
+    • new checked items        → uploaded
+    • existing checked changed → re-uploaded
+    • existing unchecked       → deleted from the workspace
+    • existing checked same    → no-op
+
+Non-interactive mode (for SKILLs / CI / agents):
+  Pass --add, --remove, or --replace with a spec to drive the same
+  delta machinery without opening the TUI. Specs support sentinels
+  (new/all/none), @file references, stdlib globs (no '**'), and
+  comma-separated literal paths.
 
 Live quota check runs server-side via POST /api/ingestion/preflight
 before any upload. If the delta would exceed your plan, the command
 exits non-zero BEFORE mutating the workspace.
 
-Requires an interactive TTY. For scripted usage, pair with --yes.
+Recipes for common agent prompts:
+
+  User prompt                          → Command
+  ─────────────────────────────────────────────────────────────────────
+  "Add docs/a.md and docs/b.md"        → browzer workspace docs --add docs/a.md,docs/b.md --yes
+  "Remove docs/old.md"                 → browzer workspace docs --remove docs/old.md --yes
+  "Index all new docs"                 → browzer workspace docs --add new --yes
+  "Replace with just this one doc"     → browzer workspace docs --replace docs/new.md --i-know-what-im-doing --yes
+  "Show me what's indexed"             → browzer workspace docs --plan --json
+  "Clear all docs from workspace"      → browzer workspace docs --replace none --i-know-what-im-doing --yes
+
+Deletes of 5+ documents require --i-know-what-im-doing.
 
 Examples:
   browzer workspace docs
   browzer workspace docs --dry-run
   browzer workspace docs --yes
+  browzer workspace docs --add docs/intro.md,docs/api.md --yes
+  browzer workspace docs --remove docs/old.md --yes
+  browzer workspace docs --add 'docs/*.md' --yes
+  browzer workspace docs --add @paths.txt --yes
+  browzer workspace docs --plan --json
 ` + output.ExitCodesHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
+			if saveFlag != "" {
+				jsonFlag = true
+			}
 
-			if jsonFlag || saveFlag != "" {
-				return cliErrors.New("`workspace docs` is interactive and does not support --json/--save.")
+			// --- Flag mutual-exclusion validation (early return block).
+			//
+			// We gate the whole non-interactive surface here so the
+			// main RunE body below can assume "at most one mutation
+			// mode is active" and "--plan means read-only".
+			hasAdd := addRaw != ""
+			hasRemove := removeRaw != ""
+			hasReplace := replaceRaw != ""
+			nonInteractive := hasAdd || hasRemove || hasReplace
+			if planOnly {
+				if nonInteractive || yes || dryRun || iKnow {
+					return cliErrors.New("--plan is read-only and cannot be combined with selection/mutation flags.")
+				}
+			}
+			if hasReplace && (hasAdd || hasRemove) {
+				return cliErrors.New("--replace cannot be combined with --add or --remove.")
+			}
+			// Legacy contract: without --plan and without any
+			// selection flag, --json/--save are still unsupported
+			// because the default path is the interactive TUI.
+			if !planOnly && !nonInteractive && (jsonFlag || saveFlag != "") {
+				return cliErrors.New("`workspace docs` is interactive and does not support --json/--save without --plan or --add/--remove/--replace.")
+			}
+
+			// Parse specs eagerly so errors come out before we touch
+			// the network.
+			var addSpec, removeSpec, replaceSpec *SpecResolver
+			if hasAdd {
+				s, err := parseSpec(addRaw, SpecScopeAdd)
+				if err != nil {
+					return cliErrors.Newf("--add: %v", err)
+				}
+				addSpec = s
+			}
+			if hasRemove {
+				s, err := parseSpec(removeRaw, SpecScopeRemove)
+				if err != nil {
+					return cliErrors.Newf("--remove: %v", err)
+				}
+				removeSpec = s
+			}
+			if hasReplace {
+				s, err := parseSpec(replaceRaw, SpecScopeReplace)
+				if err != nil {
+					return cliErrors.Newf("--replace: %v", err)
+				}
+				replaceSpec = s
 			}
 
 			gitRoot, err := requireGitRoot()
@@ -264,8 +341,11 @@ Examples:
 				return cliErrors.NoProject()
 			}
 
-			if !isTTY() && !yes {
-				return cliErrors.New("`workspace docs` requires an interactive terminal. Re-run with --yes to accept the current on-disk state.")
+			// TTY guard: the default interactive path requires a
+			// terminal. Non-interactive mode (--plan or any
+			// selection flag) never needs one.
+			if !isTTY() && !yes && !planOnly && !nonInteractive {
+				return cliErrors.New("`workspace docs` requires an interactive terminal. Re-run with --yes to accept the current on-disk state, or use --add/--remove/--replace/--plan for non-interactive mode.")
 			}
 
 			ctx := rootContext(cmd)
@@ -327,39 +407,84 @@ Examples:
 
 			docsCache := cache.Load(gitRoot)
 
-			// Phase B/C — build picker and run it (or skip on --yes).
-			selected := make([]int, 0, len(items))
-			for i, it := range items {
-				if it.Selected {
-					selected = append(selected, i)
-				}
+			// --- Read-only plan mode: emit the merged state + quota
+			// and exit. No mutations, no confirmation.
+			if planOnly {
+				return emitDocsPlan(items, usage, output.Options{JSON: jsonFlag, Save: saveFlag})
 			}
-			if !yes {
-				options := make([]huh.Option[int], len(items))
+
+			// Phase B/C — either run the TUI picker, or resolve the
+			// non-interactive spec into items[].Selected.
+			if nonInteractive {
+				res, updated := applySpecsToItems(items, addSpec, removeSpec, replaceSpec)
+				items = updated
+				// --add / --replace: unresolved literal paths are a
+				// hard error — the user asked for something that
+				// doesn't exist in the candidate set.
+				if len(res.UnresolvedAdd) > 0 {
+					return cliErrors.Newf("--add: paths not found in workspace candidates: %s", strings.Join(res.UnresolvedAdd, ", "))
+				}
+				if len(res.UnresolvedReplace) > 0 {
+					return cliErrors.Newf("--replace: paths not found in workspace candidates: %s", strings.Join(res.UnresolvedReplace, ", "))
+				}
+				// --remove: not-currently-indexed is a warning, not
+				// a fatal error — agents chain --remove calls and
+				// shouldn't break on already-gone docs.
+				for _, p := range res.UnresolvedRemove {
+					output.Errf("warning: --remove: %q is not currently indexed, skipping\n", p)
+				}
+			} else {
+				selected := make([]int, 0, len(items))
 				for i, it := range items {
-					options[i] = huh.NewOption(formatDocOption(it), i)
+					if it.Selected {
+						selected = append(selected, i)
+					}
 				}
-				ms := huh.NewMultiSelect[int]().
-					Title("Pick documents to keep in the workspace").
-					Description("Toggle with space, submit with enter. Checked items are kept; unchecked indexed items are deleted.").
-					Options(options...).
-					Value(&selected).
-					Height(20)
-				if err := ms.Run(); err != nil {
-					return fmt.Errorf("picker: %w", err)
+				if !yes {
+					options := make([]huh.Option[int], len(items))
+					for i, it := range items {
+						options[i] = huh.NewOption(formatDocOption(it), i)
+					}
+					ms := huh.NewMultiSelect[int]().
+						Title("Pick documents to keep in the workspace").
+						Description("Toggle with space, submit with enter. Checked items are kept; unchecked indexed items are deleted.").
+						Options(options...).
+						Value(&selected).
+						Height(20)
+					if err := ms.Run(); err != nil {
+						return fmt.Errorf("picker: %w", err)
+					}
+				}
+				chosen := make(map[int]bool, len(selected))
+				for _, idx := range selected {
+					chosen[idx] = true
+				}
+				for i := range items {
+					items[i].Selected = chosen[i]
 				}
 			}
 
-			// Apply picker result to items.
-			chosen := make(map[int]bool, len(selected))
-			for _, idx := range selected {
-				chosen[idx] = true
+			deltaPlan := computeDocDelta(items, docsCache)
+
+			// --- Safeguard: large-delete confirmation.
+			if len(deltaPlan.ToDelete) >= 5 && !iKnow {
+				return cliErrors.New(largeDeleteMessage(deltaPlan))
 			}
-			for i := range items {
-				items[i].Selected = chosen[i]
+			// --- Safeguard: non-TTY shells must pass --yes for any
+			// mutation even in non-interactive mode (we refuse the
+			// "stdin isn't a TTY and you didn't confirm" combo).
+			if (!isTTY() || nonInteractive) && !yes {
+				if len(deltaPlan.ToInsert) > 0 || len(deltaPlan.ToReUpload) > 0 || len(deltaPlan.ToDelete) > 0 {
+					if !dryRun {
+						return cliErrors.New("Non-interactive shells require --yes to submit mutations.")
+					}
+				}
 			}
 
-			plan := computeDocDelta(items, docsCache)
+			// Rebind to `plan` so the downstream legacy code (which
+			// historically named the delta `plan`) still compiles
+			// unchanged.
+			plan := deltaPlan
 
 			summary := fmt.Sprintf(
 				"Plan: +%d insert, ~%d re-upload, -%d delete, =%d keep",
@@ -387,8 +512,9 @@ Examples:
 			}
 
 			// Interactive confirm (skippable with --yes). Non-TTY
-			// branch never reaches here — guarded above.
-			if !yes {
+			// and non-interactive mode never reach here — guarded
+			// above or skipped explicitly.
+			if !yes && !nonInteractive {
 				confirm := false
 				err := huh.NewConfirm().
 					Title(summary).
@@ -457,6 +583,19 @@ Examples:
 				return cliErrors.Newf("%d document delete(s) failed — see warnings above.", deletesFailed)
 			}
 
+			// --- Non-interactive submit: emit machine-readable result.
+			if nonInteractive && jsonFlag {
+				// Re-fetch quota so the "after" snapshot reflects the
+				// mutation we just applied. Errors are tolerated — we
+				// fall back to the pre-submit usage snapshot.
+				after := usage
+				if u, uerr := client.BillingUsage(ctx); uerr == nil {
+					after = u
+				}
+				payload := buildSubmitPayload(plan, after)
+				return output.Emit(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, "")
+			}
+
 			fmt.Println()
 			ui.Success("Documents re-indexed")
 
@@ -470,11 +609,175 @@ Examples:
 		},
 	}
 
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the plan without applying it")
-	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the interactive picker and confirm prompt (accepts local state)")
-	cmd.Flags().Bool("json", false, "(unsupported — this command is interactive)")
-	cmd.Flags().String("save", "", "(unsupported — this command is interactive)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the plan without applying it. Example: browzer workspace docs --add docs/a.md --dry-run")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the interactive picker and confirm prompt. Required by non-interactive mutations. Example: browzer workspace docs --yes")
+	cmd.Flags().BoolVar(&planOnly, "plan", false, "Read-only: emit the current merge plan (server docs + local candidates + quota) and exit. Example: browzer workspace docs --plan --json")
+	cmd.Flags().StringVar(&addRaw, "add", "", "Non-interactive: add paths matching <spec>. Supports 'new' sentinel, @file refs, globs, or comma lists. Example: --add docs/a.md,docs/b.md  OR  --add new  OR  --add 'docs/*.md'")
+	cmd.Flags().StringVar(&removeRaw, "remove", "", "Non-interactive: remove indexed paths matching <spec>. Example: --remove docs/old.md  OR  --remove 'legacy/*.md'")
+	cmd.Flags().StringVar(&replaceRaw, "replace", "", "Non-interactive: replace the full selection with <spec>. Sentinels: 'all' (every local file) / 'none' (delete everything). Example: --replace docs/only.md --i-know-what-im-doing")
+	cmd.Flags().BoolVar(&iKnow, "i-know-what-im-doing", false, "Confirm destructive intent — required when the computed delta would delete >= 5 documents.")
+	cmd.Flags().Bool("json", false, "Emit machine-readable JSON. Works with --plan (read-only) and with --add/--remove/--replace (submit result).")
+	cmd.Flags().String("save", "", "Write JSON output to the given file path. Implies --json. Example: --save /tmp/docs-plan.json")
 	parent.AddCommand(cmd)
+}
+
+// docsPlanItemJSON is the per-row shape emitted by --plan. Fields
+// mirror the CLAUDE.md spec exactly; rename-sensitive, don't edit
+// without also updating the SKILL JSON example.
+type docsPlanItemJSON struct {
+	Path             string `json:"path"`
+	Indexed          bool   `json:"indexed"`
+	LocalHash        string `json:"localHash,omitempty"`
+	LocalSize        int64  `json:"localSize,omitempty"`
+	ServerDocumentID string `json:"serverDocumentId,omitempty"`
+	ServerChunks     int64  `json:"serverChunks,omitempty"`
+	ServerBytes      int64  `json:"serverBytes,omitempty"`
+	Status           string `json:"status,omitempty"`
+}
+
+// docsQuotaJSON is the quota block shared by --plan and submit
+// payloads. Workspaces, Chunks, Storage are `BillingCounter`-shaped.
+type docsQuotaJSON struct {
+	Plan       string                 `json:"plan"`
+	Storage    map[string]int64       `json:"storage"`
+	Chunks     map[string]int64       `json:"chunks"`
+	Workspaces map[string]int64       `json:"workspaces"`
+}
+
+// docsPlanJSON is the full --plan payload.
+type docsPlanJSON struct {
+	Items []docsPlanItemJSON `json:"items"`
+	Quota *docsQuotaJSON     `json:"quota,omitempty"`
+}
+
+// docsSubmitEntryJSON represents one row in the submit lists.
+type docsSubmitEntryJSON struct {
+	Path       string `json:"path"`
+	DocumentID string `json:"documentId,omitempty"`
+	Chunks     int64  `json:"chunks,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// docsSubmitJSON is the full submit payload. All lists are
+// always-present arrays (never null) so agent parsers can rely on
+// `.inserted | length` without null-checks.
+type docsSubmitJSON struct {
+	Inserted   []docsSubmitEntryJSON `json:"inserted"`
+	Reuploaded []docsSubmitEntryJSON `json:"reuploaded"`
+	Deleted    []docsSubmitEntryJSON `json:"deleted"`
+	Skipped    []docsSubmitEntryJSON `json:"skipped"`
+	QuotaAfter *docsQuotaJSON        `json:"quotaAfter,omitempty"`
+}
+
+// buildQuotaJSON converts a BillingUsageResponse into the shared
+// quota-block shape. Returns nil when usage is nil so the JSON omits
+// the whole block rather than emitting empty counters.
+func buildQuotaJSON(u *api.BillingUsageResponse) *docsQuotaJSON {
+	if u == nil {
+		return nil
+	}
+	return &docsQuotaJSON{
+		Plan:       u.Plan,
+		Storage:    map[string]int64{"used": u.Storage.Used, "limit": u.Storage.Limit},
+		Chunks:     map[string]int64{"used": u.Chunks.Used, "limit": u.Chunks.Limit},
+		Workspaces: map[string]int64{"used": u.Workspaces.Used, "limit": u.Workspaces.Limit},
+	}
+}
+
+// emitDocsPlan serializes the read-only merge state for --plan. The
+// human fallback prints a compact table so `--plan` without --json is
+// still useful at the terminal.
+func emitDocsPlan(items []DocPickerItem, usage *api.BillingUsageResponse, opts output.Options) error {
+	payload := docsPlanJSON{
+		Items: make([]docsPlanItemJSON, 0, len(items)),
+		Quota: buildQuotaJSON(usage),
+	}
+	for _, it := range items {
+		payload.Items = append(payload.Items, docsPlanItemJSON{
+			Path:             it.RelativePath,
+			Indexed:          it.Indexed,
+			LocalHash:        it.LocalHash,
+			LocalSize:        it.LocalSize,
+			ServerDocumentID: it.ServerDocumentID,
+			ServerChunks:     it.ServerChunkCount,
+			ServerBytes:      it.ServerSizeBytes,
+			Status:           it.ServerStatus,
+		})
+	}
+	var human strings.Builder
+	if !opts.JSON && opts.Save == "" {
+		fmt.Fprintf(&human, "Workspace documents (%d):\n", len(items))
+		for _, it := range items {
+			state := "new"
+			if it.Indexed {
+				state = "indexed"
+			}
+			fmt.Fprintf(&human, "  %-40s  %-8s  %s\n", it.RelativePath, state, humanSize(it.LocalSize))
+		}
+		if usage != nil {
+			fmt.Fprintf(&human, "\nQuota (%s):\n", usage.Plan)
+			fmt.Fprintf(&human, "  Chunks:  %s\n", fmtMeter(usage.Chunks.Used, usage.Chunks.Limit))
+			fmt.Fprintf(&human, "  Storage: %s / %s\n", humanSize(usage.Storage.Used), humanSize(usage.Storage.Limit))
+		}
+	}
+	return output.Emit(payload, opts, human.String())
+}
+
+// buildSubmitPayload renders the plan into the submit JSON shape. We
+// don't have per-file success/failure granularity from
+// upload.UploadInBatches, so we treat the whole plan as applied (the
+// caller only reaches this path when upload + delete returned nil).
+func buildSubmitPayload(plan DocDeltaPlan, usageAfter *api.BillingUsageResponse) docsSubmitJSON {
+	out := docsSubmitJSON{
+		Inserted:   []docsSubmitEntryJSON{},
+		Reuploaded: []docsSubmitEntryJSON{},
+		Deleted:    []docsSubmitEntryJSON{},
+		Skipped:    []docsSubmitEntryJSON{},
+		QuotaAfter: buildQuotaJSON(usageAfter),
+	}
+	for _, it := range plan.ToInsert {
+		out.Inserted = append(out.Inserted, docsSubmitEntryJSON{Path: it.RelativePath})
+	}
+	for _, it := range plan.ToReUpload {
+		out.Reuploaded = append(out.Reuploaded, docsSubmitEntryJSON{
+			Path:       it.RelativePath,
+			DocumentID: it.ServerDocumentID,
+			Chunks:     it.ServerChunkCount,
+		})
+	}
+	for _, it := range plan.ToDelete {
+		out.Deleted = append(out.Deleted, docsSubmitEntryJSON{
+			Path:       it.RelativePath,
+			DocumentID: it.ServerDocumentID,
+		})
+	}
+	for _, it := range plan.ToKeep {
+		out.Skipped = append(out.Skipped, docsSubmitEntryJSON{
+			Path:   it.RelativePath,
+			Reason: "already indexed, hash unchanged",
+		})
+	}
+	return out
+}
+
+// defaultDocsCache returns an empty-but-valid DocsCache so tests (and
+// fallback paths) can feed computeDocDelta without touching disk.
+func defaultDocsCache() cache.DocsCache {
+	return cache.DocsCache{Version: cache.CacheVersion, Files: map[string]cache.CachedDoc{}}
+}
+
+// largeDeleteMessage renders the refusal text shown when a delta
+// contains 5+ deletes and --i-know-what-im-doing was not passed. Pure
+// function so we can pin the exact wording in unit tests.
+func largeDeleteMessage(plan DocDeltaPlan) string {
+	var paths []string
+	for _, d := range plan.ToDelete {
+		paths = append(paths, "  "+d.RelativePath)
+	}
+	return fmt.Sprintf(
+		"this operation would delete %d indexed documents.\nDeletes >= 5 require the --i-know-what-im-doing flag to confirm\nthe destructive intent. Documents that would be deleted:\n\n%s\n\nRe-run with --i-know-what-im-doing to proceed.",
+		len(plan.ToDelete), strings.Join(paths, "\n"),
+	)
 }
 
 // fmtMeter renders a "used/limit" pair where limit==0 is displayed as "∞".
