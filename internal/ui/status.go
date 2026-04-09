@@ -38,10 +38,10 @@ func Failure(msg string) {
 // FailureTo writes a Failure line to an explicit writer.
 func FailureTo(w io.Writer, msg string) {
 	if !colorEnabled() {
-		fmt.Fprintf(w, "✗ %s\n", msg)
+		_, _ = fmt.Fprintf(w, "✗ %s\n", msg)
 		return
 	}
-	fmt.Fprintf(w, "%s %s\n",
+	_, _ = fmt.Fprintf(w, "%s %s\n",
 		styleFailure.Render("✗"),
 		styleBody.Render(msg),
 	)

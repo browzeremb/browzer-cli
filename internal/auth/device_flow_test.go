@@ -95,7 +95,7 @@ func TestPollForToken_ExpiredTokenAborts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"expired_token"}`)
+		_, _ = fmt.Fprint(w, `{"error":"expired_token"}`)
 	}))
 	defer srv.Close()
 
@@ -118,7 +118,7 @@ func TestAuthHTTPClient_IgnoresProxyEnv(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"device_code":"dc","user_code":"UC","verification_uri":"https://x","expires_in":600,"interval":5}`)
+		_, _ = fmt.Fprint(w, `{"device_code":"dc","user_code":"UC","verification_uri":"https://x","expires_in":600,"interval":5}`)
 	}))
 	defer srv.Close()
 

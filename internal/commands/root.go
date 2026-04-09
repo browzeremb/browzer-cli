@@ -104,7 +104,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	defaultHelp := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		if cmd == root {
-			fmt.Fprint(cmd.OutOrStdout(), ui.Banner(version))
+			_, _ = fmt.Fprint(cmd.OutOrStdout(), ui.Banner(version))
 		}
 		defaultHelp(cmd, args)
 	})
