@@ -65,7 +65,7 @@ compat — both forms call the same handlers.
 | `browzer login [--key]`                  | Device-flow OAuth or non-interactive API-key login                    |
 | `browzer logout`                         | Revoke and forget local credentials                                   |
 | `browzer workspace init [--name N]`      | Create a fresh workspace and index this repo                          |
-| `browzer workspace sync [--no-wait]`     | Re-parse code + delta-upload markdown                                 |
+| `browzer workspace sync [flags]`         | Re-index code + delta-upload docs in one step (code first, then docs) |
 | `browzer workspace status`               | Show login + workspace state                                          |
 | `browzer workspace explore <q>`          | Hybrid graph + vector search                                          |
 | `browzer workspace search <q>`           | Vector search over markdown docs                                      |
@@ -73,6 +73,20 @@ compat — both forms call the same handlers.
 | `browzer workspace get <id>`             | Fetch a single workspace JSON (schema-discovery helper)               |
 | `browzer workspace delete <id>`          | Delete a workspace and all its data                                   |
 | `browzer job get <batchId>`              | Inspect an async ingestion batch returned by `sync --no-wait`         |
+
+### `workspace sync` flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--skip-code` | false | Skip the code re-index step |
+| `--skip-docs` | false | Skip the document delta-upload step |
+| `--dry-run` | false | Print what would be done without making changes |
+| `--no-wait` | false | Return immediately after enqueueing (poll with `browzer job get`) |
+| `--json` | false | Output as JSON |
+| `--save <file>` | — | Write JSON output to file (implies `--json`) |
+
+Code index always runs before document upload when both are enabled — Package nodes must exist
+in the graph before entity extraction can create `RELEVANT_TO` edges.
 
 ## Agent-friendly flags
 
