@@ -183,6 +183,7 @@ Examples:
 
 	registerWorkspaceUnlink(ws)
 	registerWorkspaceRelink(ws)
+	registerWorkspaceSync(ws)
 
 	parent.AddCommand(ws)
 	return ws

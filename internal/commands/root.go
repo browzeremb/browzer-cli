@@ -33,6 +33,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerInit(root)
 	registerStatus(root)
 	registerWorkspaceIndex(root) // `browzer index` top-level alias
+	registerWorkspaceSync(root)  // `browzer sync` top-level alias
 	registerExplore(root)
 	registerSearch(root)
 	registerJob(root)
@@ -120,6 +121,7 @@ const agentTips = `Agent-friendly tips:
     without banners polluting stdout (ideal for Claude SKILLs).
   • ` + "`browzer explore --schema`" + ` discovers the response shape.
   • ` + "`browzer workspace get <id> --save ws.json`" + ` discovers the workspace shape.
-  • ` + "`browzer workspace index`" + ` re-parses code; ` + "`browzer workspace docs`" + ` interactively re-indexes documents.
+  • ` + "`browzer workspace sync`" + ` (alias: ` + "`browzer sync`" + `) re-indexes both code and docs non-interactively.
+  • ` + "`browzer workspace index`" + ` re-parses code only; ` + "`browzer workspace docs`" + ` interactively re-indexes documents.
   • ` + "`browzer login --key $BROWZER_API_KEY`" + ` for non-interactive login.
 `
