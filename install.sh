@@ -13,8 +13,6 @@
 #   BROWZER_VERSION   pin a specific tag (e.g. v0.1.0; default: latest)
 #   BROWZER_PREFIX    install dir (default: $HOME/.local/bin)
 #
-# This script is intentionally POSIX-sh, no bashisms — same lineage as
-# rtk/install.sh and rustup-init.sh.
 
 set -eu
 
