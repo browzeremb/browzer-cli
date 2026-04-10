@@ -1,18 +1,14 @@
 // Package commands — "browzer workspace sync" (and the "browzer sync" top-level alias).
 //
-// Combines "browzer workspace index" (code re-parse) and
-// "browzer workspace docs --add all --yes" (document delta) into a single
-// non-interactive command.
+// Reconciles the server's indexed set with the local filesystem: re-uploads
+// changed docs, deletes docs that were removed locally, keeps unchanged docs.
+// Does NOT add new (never-indexed) local files — use "browzer workspace docs"
+// for that.
 //
 // Order is strictly: code index FIRST, then docs. Package nodes must exist
 // in the graph before linkEntitiesToWorkspace runs during entity
 // extraction — reversing the order means RELEVANT_TO edges are never created
 // for documents indexed in the same sync run.
-//
-// The command is always non-interactive: it applies the full local delta
-// (new docs added, changed docs re-uploaded, missing docs deleted) without
-// opening the TUI picker. Use "browzer workspace docs" directly when you
-// want selective control over which documents to include.
 package commands
 
 import (
@@ -47,21 +43,20 @@ func registerWorkspaceSync(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Re-index code and documents in one step (non-interactive)",
+		Short: "Re-index code and sync existing workspace docs (no new adds)",
 		Long: "Re-index both the repository code structure and documents in a single command.\n\n" +
 			"Order of operations (always sequential, never reversed):\n" +
 			"  1. Code index  — WalkRepo -> POST /api/workspaces/parse (same as: browzer workspace index)\n" +
-			"  2. Document sync — apply a full delta against the server's indexed set:\n" +
-			"       * new local files       -> uploaded\n" +
-			"       * changed local files   -> re-uploaded\n" +
-			"       * server-only files     -> deleted from workspace\n" +
-			"       * unchanged local files -> skipped\n\n" +
+			"  2. Document sync — reconcile the server's indexed set with local files:\n" +
+			"       * already-indexed, changed locally → re-uploaded\n" +
+			"       * already-indexed, deleted locally → deleted from workspace\n" +
+			"       * already-indexed, unchanged       → skipped\n" +
+			"       * local-only (never indexed)        → ignored (not added)\n\n" +
+			"sync only operates on documents already in the workspace. To add new\n" +
+			"documents use 'browzer workspace docs' which opens the interactive TUI.\n\n" +
 			"The code step runs first so Package nodes exist when linkEntitiesToWorkspace\n" +
 			"runs during entity extraction. Reversing the order means RELEVANT_TO edges\n" +
 			"are never created for documents indexed in the same sync run.\n\n" +
-			"This command is always non-interactive: it selects ALL local document\n" +
-			"candidates without opening the TUI picker. Use 'browzer workspace docs'\n" +
-			"when you want to choose which documents to include.\n\n" +
 			"Use --skip-code or --skip-docs to run only one half of the sync:\n" +
 			"  browzer workspace sync --skip-docs   # equivalent to: browzer workspace index\n" +
 			"  browzer workspace sync --skip-code   # re-sync docs only (no code re-parse)\n\n" +
@@ -200,13 +195,16 @@ func registerWorkspaceSync(parent *cobra.Command) {
 				items := mergeDocItems(localDocs, serverDocs)
 				docsCache := cache.Load(gitRoot)
 
-				// Non-interactive selection: mark every item that has a local
-				// presence as selected. Server-only items (locally deleted)
-				// remain !Selected so they land in ToDelete via computeDocDelta.
+				// mergeDocItems pre-sets Selected=true for every server-indexed item
+				// and Selected=false for local-only (never-indexed) files. The only
+				// adjustment sync needs: deselect server items whose local file was
+				// removed so they land in ToDelete instead of ToKeep.
 				for i := range items {
-					if items[i].HasLocal() {
-						items[i].Selected = true
+					if items[i].Indexed && !items[i].HasLocal() {
+						items[i].Selected = false // deleted locally → remove from server
 					}
+					// Local-only items (Indexed=false) keep Selected=false and are
+					// intentionally skipped. Use "browzer workspace docs" to add them.
 				}
 
 				docPlan = computeDocDelta(items, docsCache)
