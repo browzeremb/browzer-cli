@@ -97,6 +97,8 @@ Examples:
 			// If the user passes an absolute path, strip the gitRoot prefix.
 			resolved := filePath
 			if filepath.IsAbs(resolved) {
+				// Canonicalize to match gitRoot casing on macOS.
+				resolved = git.RealPath(resolved)
 				rel, relErr := filepath.Rel(gitRoot, resolved)
 				if relErr == nil && !strings.HasPrefix(rel, "..") {
 					resolved = rel
@@ -107,6 +109,7 @@ Examples:
 				// Resolve relative to CWD, then strip workspace root.
 				abs, absErr := filepath.Abs(resolved)
 				if absErr == nil {
+					abs = git.RealPath(abs)
 					rel, relErr := filepath.Rel(gitRoot, abs)
 					if relErr == nil && !strings.HasPrefix(rel, "..") {
 						resolved = rel
