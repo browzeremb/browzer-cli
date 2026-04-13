@@ -103,7 +103,7 @@ Examples:
 				} else {
 					return fmt.Errorf("path is outside the workspace: %s", filePath)
 				}
-			} else {
+			} else if strings.Contains(resolved, "..") {
 				// Resolve relative to CWD, then strip workspace root.
 				abs, absErr := filepath.Abs(resolved)
 				if absErr == nil {
@@ -117,6 +117,7 @@ Examples:
 					return fmt.Errorf("failed to resolve path: %w", absErr)
 				}
 			}
+			// else: already a simple relative path — use as-is (workspace-relative)
 
 			resp, err := ac.Client.FetchDeps(rootContext(cmd), project.WorkspaceID, resolved, reverse, limit)
 			if err != nil {
