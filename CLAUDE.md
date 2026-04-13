@@ -18,7 +18,7 @@ Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
 - `internal/config/env.go` — `DefaultServer` honors `BROWZER_SERVER` env var; defaults to prod.
 - `internal/walker/` — filesystem walker with gitignore + `isSensitive` filtering.
 - `internal/upload/` — multipart upload helpers.
-- `internal/urlvalidate/`, `internal/git/`, `internal/cache/`, `internal/output/`, `internal/ui/`, `internal/errors/` — support packages.
+- `internal/urlvalidate/`, `internal/git/` (includes `RealPath` — macOS case-insensitive path canonicalization), `internal/cache/`, `internal/output/`, `internal/ui/`, `internal/errors/` — support packages.
 
 ## Release flow
 
@@ -39,6 +39,15 @@ Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
 ## Wire-format compatibility
 
 The Go CLI replaced an earlier Node CLI. **Wire format (HTTP routes, JSON shapes, exit codes, file formats) is byte-compatible** with the Node version — changing any of these requires a coordinated server change.
+
+### Recent wire-format additions
+
+- `browzer explore` response now includes `exports`, `imports`, `importedBy`, `lines`, `score`, and `type` fields per entry. Older CLI versions ignore these (Go decoder drops unknown keys).
+- `browzer deps <path>` — new command, calls `GET /api/workspaces/:id/deps`. Flags: `--reverse`, `--limit`, `--json`, `--save`, `--schema`.
+
+### macOS case-sensitivity
+
+`git.RealPath(path)` in `internal/git/git.go` resolves paths to their canonical filesystem casing by walking each component via `os.ReadDir`. Use this before `filepath.Rel(gitRoot, abs)` to avoid mismatches between `os.Getwd` (may return `desktop`) and git (returns `Desktop`). `FindGitRoot` applies it automatically.
 
 ## Auth
 
