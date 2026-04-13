@@ -2,6 +2,7 @@ package walker
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,7 @@ type ParsedFile struct {
 	SizeBytes  int64  `json:"sizeBytes"`
 	ModifiedAt string `json:"modifiedAt"`
 	Content    string `json:"content"`
+	LineCount  int    `json:"lineCount,omitempty"`
 }
 
 // WalkRepo walks rootPath and returns a parse-tree input suitable for
@@ -176,6 +178,8 @@ func walk(absDir, relDir string, matcher *ignoreMatcher, tree *ParseTreeInput, d
 			continue
 		}
 
+		lineCount := countLines(absPath)
+
 		tree.Files = append(tree.Files, ParsedFile{
 			Path:       relPath,
 			Name:       name,
@@ -183,6 +187,7 @@ func walk(absDir, relDir string, matcher *ignoreMatcher, tree *ParseTreeInput, d
 			SizeBytes:  info.Size(),
 			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339Nano),
 			Content:    content,
+			LineCount:  lineCount,
 		})
 	}
 	return nil
@@ -225,6 +230,27 @@ func readFirstLines(absPath string, maxLines int) (string, bool) {
 		return "\n", true
 	}
 	return sb.String(), true
+}
+
+// countLines returns the number of lines in the file at absPath by counting
+// newline bytes in the full file content. Returns 0 on any read error.
+// This always reflects the actual file size — unlike readFirstLines which
+// is capped at maxContentLines.
+func countLines(absPath string) int {
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return 0
+	}
+	if len(data) == 0 {
+		return 0
+	}
+	count := bytes.Count(data, []byte("\n")) + 1
+	// If the file ends with a newline the last "line" is empty; subtract it
+	// to match the conventional definition of line count.
+	if data[len(data)-1] == '\n' {
+		count--
+	}
+	return count
 }
 
 // ignoreMatcher accumulates .gitignore lines as the walker descends

@@ -8,12 +8,24 @@ import (
 // ExploreEntry mirrors the JSON entry returned by GET
 // /api/workspaces/:id/explore. Field names match the wire format.
 type ExploreEntry struct {
-	Path      string `json:"path"`
-	Type      string `json:"type"` // file | folder | symbol
-	Name      string `json:"name"`
-	LineRange string `json:"lineRange,omitempty"`
-	Snippet   string `json:"snippet,omitempty"`
-	Score     float64 `json:"score"`
+	Path       string   `json:"path"`
+	Type       string   `json:"type"` // file | folder | symbol
+	Name       string   `json:"name,omitempty"`
+	LineRange  string   `json:"lineRange,omitempty"`
+	Snippet    string   `json:"snippet,omitempty"`
+	Score      float64  `json:"score"`
+	Exports    []string `json:"exports,omitempty"`
+	Imports    []string `json:"imports,omitempty"`
+	ImportedBy []string `json:"importedBy,omitempty"`
+	Lines      int      `json:"lines,omitempty"`
+}
+
+// DepsResult mirrors the JSON returned by GET /api/workspaces/:id/deps.
+type DepsResult struct {
+	Path       string   `json:"path"`
+	Exports    []string `json:"exports,omitempty"`
+	Imports    []string `json:"imports,omitempty"`
+	ImportedBy []string `json:"importedBy,omitempty"`
 }
 
 // SearchResult mirrors the JSON entry returned by GET
@@ -37,11 +49,46 @@ func FormatExploreResults(entries []ExploreEntry) string {
 		if e.LineRange != "" {
 			fmt.Fprintf(&sb, ":%s", e.LineRange)
 		}
-		fmt.Fprintf(&sb, " [%s] %s score=%.3f\n", e.Type, e.Name, e.Score)
+		fmt.Fprintf(&sb, " [%s] score=%.3f", e.Type, e.Score)
+		if e.Lines > 0 {
+			fmt.Fprintf(&sb, " lines=%d", e.Lines)
+		}
+		sb.WriteString("\n")
+		if len(e.Exports) > 0 {
+			fmt.Fprintf(&sb, "  exports: %s\n", strings.Join(e.Exports, ", "))
+		}
+		if len(e.Imports) > 0 {
+			fmt.Fprintf(&sb, "  imports: %s\n", strings.Join(e.Imports, ", "))
+		}
+		if len(e.ImportedBy) > 0 {
+			fmt.Fprintf(&sb, "  importedBy: %s\n", strings.Join(e.ImportedBy, ", "))
+		}
 		if e.Snippet != "" {
 			for _, line := range strings.Split(strings.TrimRight(e.Snippet, "\n"), "\n") {
 				fmt.Fprintf(&sb, "  %s\n", line)
 			}
+		}
+	}
+	return sb.String()
+}
+
+// FormatDepsResults renders the human-readable form of a deps response.
+func FormatDepsResults(resp DepsResult) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s\n", resp.Path)
+	if len(resp.Exports) > 0 {
+		fmt.Fprintf(&sb, "  Exports (%d): %s\n", len(resp.Exports), strings.Join(resp.Exports, ", "))
+	}
+	if len(resp.Imports) > 0 {
+		fmt.Fprintf(&sb, "  Imports (%d):\n", len(resp.Imports))
+		for _, imp := range resp.Imports {
+			fmt.Fprintf(&sb, "    %s\n", imp)
+		}
+	}
+	if len(resp.ImportedBy) > 0 {
+		fmt.Fprintf(&sb, "  Imported by (%d):\n", len(resp.ImportedBy))
+		for _, ib := range resp.ImportedBy {
+			fmt.Fprintf(&sb, "    %s\n", ib)
 		}
 	}
 	return sb.String()

@@ -25,14 +25,18 @@ const exploreSchemaJSON = `{
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path", "type", "name", "score"],
+        "required": ["path", "type", "score"],
         "properties": {
-          "path":      {"type": "string"},
-          "type":      {"type": "string", "enum": ["file","folder","symbol"]},
-          "name":      {"type": "string"},
-          "lineRange": {"type": "string"},
-          "snippet":   {"type": "string"},
-          "score":     {"type": "number"}
+          "path":       {"type": "string"},
+          "type":       {"type": "string", "enum": ["file","folder","symbol"]},
+          "name":       {"type": "string"},
+          "lineRange":  {"type": "string"},
+          "snippet":    {"type": "string"},
+          "score":      {"type": "number"},
+          "exports":    {"type": "array", "items": {"type": "string"}},
+          "imports":    {"type": "array", "items": {"type": "string"}},
+          "importedBy": {"type": "array", "items": {"type": "string"}},
+          "lines":      {"type": "integer"}
         }
       }
     }
@@ -109,6 +113,8 @@ Examples:
 				converted[i] = output.ExploreEntry{
 					Path: e.Path, Type: e.Type, Name: e.Name,
 					LineRange: e.LineRange, Snippet: e.Snippet, Score: e.Score,
+					Exports: e.Exports, Imports: e.Imports,
+					ImportedBy: e.ImportedBy, Lines: e.Lines,
 				}
 			}
 			// Emit the *converted* entries, not the raw api type, so the

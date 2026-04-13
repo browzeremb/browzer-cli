@@ -55,17 +55,29 @@ type SearchResponse struct {
 
 // ExploreEntry is one entry from GET /api/workspaces/:id/explore.
 type ExploreEntry struct {
-	Path      string  `json:"path"`
-	Type      string  `json:"type"`
-	Name      string  `json:"name"`
-	LineRange string  `json:"lineRange,omitempty"`
-	Snippet   string  `json:"snippet,omitempty"`
-	Score     float64 `json:"score"`
+	Path       string   `json:"path"`
+	Type       string   `json:"type"`
+	Name       string   `json:"name"`
+	LineRange  string   `json:"lineRange,omitempty"`
+	Snippet    string   `json:"snippet,omitempty"`
+	Score      float64  `json:"score"`
+	Exports    []string `json:"exports,omitempty"`
+	Imports    []string `json:"imports,omitempty"`
+	ImportedBy []string `json:"importedBy,omitempty"`
+	Lines      int      `json:"lines,omitempty"`
 }
 
 // ExploreResponse wraps the entries.
 type ExploreResponse struct {
 	Entries []ExploreEntry `json:"entries"`
+}
+
+// DepsResponse wraps the dependency graph for a single file.
+type DepsResponse struct {
+	Path       string   `json:"path"`
+	Exports    []string `json:"exports,omitempty"`
+	Imports    []string `json:"imports,omitempty"`
+	ImportedBy []string `json:"importedBy,omitempty"`
 }
 
 // BatchUploadKind discriminates the two possible POST

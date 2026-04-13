@@ -36,6 +36,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerWorkspaceSync(root)  // `browzer sync` top-level alias
 	registerExplore(root)
 	registerSearch(root)
+	registerDeps(root)
 	registerJob(root)
 
 	// `workspace` subcommand group + canonical noun-grouped re-registration.
@@ -46,6 +47,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerWorkspaceDocs(ws)
 	registerExplore(ws)
 	registerSearch(ws)
+	registerDeps(ws)
 
 	// Register `{{heading ...}}` as a template function so both the
 	// help and usage templates can colorize section labels without
@@ -119,7 +121,7 @@ const agentTips = `Agent-friendly tips:
   • Every read/search command supports --json and --save <file>.
   • Combine --save with --json to write a clean JSON document
     without banners polluting stdout (ideal for Claude SKILLs).
-  • ` + "`browzer explore --schema`" + ` discovers the response shape.
+  • ` + "`browzer explore --schema`" + ` / ` + "`browzer deps --schema`" + ` discovers the response shape.
   • ` + "`browzer workspace get <id> --save ws.json`" + ` discovers the workspace shape.
   • ` + "`browzer workspace sync`" + ` (alias: ` + "`browzer sync`" + `) re-indexes both code and docs non-interactively.
   • ` + "`browzer workspace index`" + ` re-parses code only; ` + "`browzer workspace docs`" + ` interactively re-indexes documents.

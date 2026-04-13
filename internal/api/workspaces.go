@@ -85,6 +85,23 @@ func (c *Client) ExploreWorkspace(ctx context.Context, workspaceID, query string
 	return body.Entries, nil
 }
 
+// FetchDeps returns the dependency graph for a single file in the workspace.
+func (c *Client) FetchDeps(ctx context.Context, workspaceID, path string, reverse bool, limit int) (*DepsResponse, error) {
+	q := url.Values{}
+	q.Set("path", path)
+	if reverse {
+		q.Set("reverse", "true")
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	var body DepsResponse
+	if err := c.getJSON(ctx, "api/workspaces/"+workspaceID+"/deps", q, &body); err != nil {
+		return nil, err
+	}
+	return &body, nil
+}
+
 // GetWorkspace fetches a single workspace via the list endpoint
 // (mirrors the legacy `workspace get` behavior, since the read-by-id
 // route doesn't exist server-side).
