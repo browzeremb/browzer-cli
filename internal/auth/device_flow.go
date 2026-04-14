@@ -111,7 +111,10 @@ const DefaultClientID = "browzer-cli"
 // error. Mirrors src/lib/device-flow.ts:pollForToken byte-for-byte:
 // clamps the interval/expiresIn against hostile servers and caps total
 // attempts at maxPollCount.
-func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
+//
+// clock controls all time operations; pass RealClock{} in production.
+// Tests inject a FakeClock to avoid real wall-clock sleeps.
+func PollForToken(ctx context.Context, p PollParams, clock Clock) (*TokenResponse, error) {
 	clientID := p.ClientID
 	if clientID == "" {
 		clientID = DefaultClientID
@@ -119,7 +122,7 @@ func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
 
 	interval := clamp(p.Interval, minIntervalSeconds, maxIntervalSeconds)
 	expiresIn := clamp(p.ExpiresIn, minExpiresSeconds, maxExpiresSeconds)
-	startedAt := time.Now()
+	startedAt := clock.Now()
 	attempt := 0
 	slowDownCount := 0
 
@@ -128,14 +131,14 @@ func PollForToken(ctx context.Context, p PollParams) (*TokenResponse, error) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(time.Duration(interval) * time.Second):
+			case <-clock.After(time.Duration(interval) * time.Second):
 			}
 		}
 		attempt++
 		if attempt > maxPollCount {
 			return nil, cliErrors.New("Authorization polling exceeded the safety cap. Run `browzer login` again.")
 		}
-		if int(time.Since(startedAt).Seconds()) > expiresIn {
+		if int(clock.Now().Sub(startedAt).Seconds()) > expiresIn {
 			return nil, cliErrors.New("Authorization window timeout. Run `browzer login` again.")
 		}
 

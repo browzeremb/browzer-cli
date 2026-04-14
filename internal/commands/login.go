@@ -160,7 +160,7 @@ func loginWithDeviceFlow(ctx context.Context, server string, openBrowser bool) e
 		DeviceCode: device.DeviceCode,
 		Interval:   device.Interval,
 		ExpiresIn:  device.ExpiresIn,
-	})
+	}, auth.RealClock{})
 	if err != nil {
 		return err
 	}

@@ -6,10 +6,84 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// ---------------------------------------------------------------------------
+// FakeClock — injectable clock for tests; zero real-time sleeps.
+// ---------------------------------------------------------------------------
+
+// FakeClock implements Clock using virtual time. Callers advance time with
+// Advance; pending After channels fire immediately when their deadline is
+// reached by an Advance call.
+type FakeClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	waiters []waiter
+}
+
+type waiter struct {
+	deadline time.Time
+	ch       chan time.Time
+}
+
+// NewFakeClock returns a FakeClock anchored at t.
+func NewFakeClock(t time.Time) *FakeClock {
+	return &FakeClock{now: t}
+}
+
+// Now returns the current virtual time.
+func (f *FakeClock) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now
+}
+
+// After returns a channel that fires once the virtual clock reaches
+// now+d via Advance. It never blocks real wall time.
+func (f *FakeClock) After(d time.Duration) <-chan time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	deadline := f.now.Add(d)
+	// If already past deadline, fire immediately.
+	if !deadline.After(f.now) {
+		ch <- f.now
+		return ch
+	}
+	f.waiters = append(f.waiters, waiter{deadline: deadline, ch: ch})
+	return ch
+}
+
+// Advance moves virtual time forward by d and fires all pending After
+// channels whose deadline has been reached.
+func (f *FakeClock) Advance(d time.Duration) {
+	f.mu.Lock()
+	f.now = f.now.Add(d)
+	now := f.now
+	remaining := f.waiters[:0]
+	var fire []chan time.Time
+	for _, w := range f.waiters {
+		if !w.deadline.After(now) {
+			fire = append(fire, w.ch)
+		} else {
+			remaining = append(remaining, w)
+		}
+	}
+	f.waiters = remaining
+	f.mu.Unlock()
+
+	for _, ch := range fire {
+		ch <- now
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — RequestDeviceCode
+// ---------------------------------------------------------------------------
 
 // TestRequestDeviceCode_HappyPath confirms the success path decodes
 // the canonical RFC 8628 response shape and returns it intact.
@@ -54,9 +128,16 @@ func TestRequestDeviceCode_ResponseSizeBounded(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Tests — PollForToken (use FakeClock to avoid real sleeps)
+// ---------------------------------------------------------------------------
+
 // TestPollForToken_SlowDownCumulativeCap proves the CLI gives up after
 // maxSlowDownBumps consecutive slow_down responses instead of polling
 // at the 60 s ceiling for hours.
+//
+// FakeClock eliminates real sleeps: each Advance(5s) fires the After
+// channel immediately, so the test runs in <1 ms instead of ~75s.
 func TestPollForToken_SlowDownCumulativeCap(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -67,20 +148,41 @@ func TestPollForToken_SlowDownCumulativeCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Use a very small expires window so the test doesn't waste real
-	// wall clock — clamping floors interval at minIntervalSeconds, so
-	// the loop sleeps 5 s between attempts. We accept that and bail
-	// after the cap fires.
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	clk := NewFakeClock(time.Now())
 
-	_, err := PollForToken(ctx, PollParams{
+	// Drive the clock forward in a goroutine: each PollForToken iteration
+	// blocks on clk.After(interval); Advance(interval) unblocks it.
+	// We advance enough to exhaust maxSlowDownBumps (9 advances covers
+	// the first poll + 8 slow-down responses) without hitting expiresIn
+	// (clamped to 60s; we advance 5s * 9 = 45s total).
+	// Drive the clock in a tight loop with tiny advances so that
+	// whenever PollForToken registers an After(5s) waiter, the next
+	// Advance will reach or exceed its deadline. We stop once PollForToken
+	// returns by signalling via pollDone.
+	pollDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-pollDone:
+				return
+			default:
+				clk.Advance(100 * time.Millisecond)
+				// Yield to let PollForToken run and register After waiters.
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	_, err := PollForToken(context.Background(), PollParams{
 		Server:     srv.URL,
 		DeviceCode: "dc",
-		Interval:   1, // clamped to 5
-		ExpiresIn:  1, // clamped to 60
+		Interval:   1, // clamped to minIntervalSeconds (5)
+		ExpiresIn:  1, // clamped to minExpiresSeconds (60)
 		ClientID:   "browzer-cli",
-	})
+	}, clk)
+
+	close(pollDone)
+
 	if err == nil {
 		t.Fatal("expected slow_down cap to abort poll")
 	}
@@ -90,7 +192,7 @@ func TestPollForToken_SlowDownCumulativeCap(t *testing.T) {
 }
 
 // TestPollForToken_ExpiredTokenAborts confirms the terminal
-// `expired_token` response stops polling immediately.
+// `expired_token` response stops polling immediately (no sleep needed).
 func TestPollForToken_ExpiredTokenAborts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -99,16 +201,91 @@ func TestPollForToken_ExpiredTokenAborts(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// FakeClock starts at Now() — no Advance needed because expired_token
+	// is a terminal response that bypasses the sleep select.
 	_, err := PollForToken(context.Background(), PollParams{
 		Server:     srv.URL,
 		DeviceCode: "dc",
 		Interval:   1,
 		ExpiresIn:  60,
-	})
+	}, NewFakeClock(time.Now()))
 	if err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired-token error, got: %v", err)
 	}
 }
+
+// TestPollForToken_HappyPath confirms success on first 200 response.
+func TestPollForToken_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"access_token":"tok","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer srv.Close()
+
+	tok, err := PollForToken(context.Background(), PollParams{
+		Server:     srv.URL,
+		DeviceCode: "dc",
+		Interval:   1,
+		ExpiresIn:  60,
+	}, NewFakeClock(time.Now()))
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if tok.AccessToken != "tok" {
+		t.Fatalf("unexpected token: %+v", tok)
+	}
+}
+
+// TestPollForToken_PendingThenSuccess confirms that authorization_pending
+// responses are retried (with FakeClock advancing) until success.
+func TestPollForToken_PendingThenSuccess(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n < 3 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":"authorization_pending"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"access_token":"tok","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer srv.Close()
+
+	clk := NewFakeClock(time.Now())
+	pollDone2 := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-pollDone2:
+				return
+			default:
+				clk.Advance(100 * time.Millisecond)
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	tok, err := PollForToken(context.Background(), PollParams{
+		Server:     srv.URL,
+		DeviceCode: "dc",
+		Interval:   1, // clamped to 5
+		ExpiresIn:  60,
+	}, clk)
+
+	close(pollDone2)
+
+	if err != nil {
+		t.Fatalf("expected success after pending, got: %v", err)
+	}
+	if tok.AccessToken != "tok" {
+		t.Fatalf("unexpected token: %+v", tok)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests — authHTTPClient security properties
+// ---------------------------------------------------------------------------
 
 // TestAuthHTTPClient_IgnoresProxyEnv confirms the dedicated auth
 // client does NOT honor HTTP_PROXY/HTTPS_PROXY — that would route

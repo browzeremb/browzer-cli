@@ -54,3 +54,4 @@ The Go CLI replaced an earlier Node CLI. **Wire format (HTTP routes, JSON shapes
 
 - `browzer login` triggers the device flow against `apps/auth`. Credentials land in `~/.browzer/credentials` as JSON keyed by profile name (default: `default`).
 - Smoke-test bearer: `jq -r .default.access_token ~/.browzer/credentials`.
+- `PollForToken` accepts a `Clock` interface (`internal/auth/clock.go`). Production callers pass `auth.RealClock{}`; tests inject `FakeClock` (defined in `device_flow_test.go`) to advance virtual time via `Advance(d)` — zero real sleeps, suite runs in <5s.
