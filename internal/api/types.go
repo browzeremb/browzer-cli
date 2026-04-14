@@ -140,6 +140,27 @@ type BatchStatusResponse struct {
 	ETag     string         `json:"etag"`
 }
 
+// AskRequest is the body of POST /ask.
+type AskRequest struct {
+	Question    string `json:"question"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+}
+
+// AskSource is one cited source in the /ask response.
+type AskSource struct {
+	Text         string  `json:"text"`
+	DocumentName string  `json:"documentName"`
+	Score        float64 `json:"score"`
+}
+
+// AskResponse is the body of a successful POST /ask response.
+type AskResponse struct {
+	Answer     string      `json:"answer"`
+	Sources    []AskSource `json:"sources"`
+	CacheHit   bool        `json:"cacheHit"`
+	SourceRefs []string    `json:"sourceRefs"`
+}
+
 // DeviceCodeResponse is the body of POST /api/device/code.
 type DeviceCodeResponse struct {
 	DeviceCode              string `json:"device_code"`

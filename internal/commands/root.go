@@ -36,6 +36,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerWorkspaceSync(root)  // `browzer sync` top-level alias
 	registerExplore(root)
 	registerSearch(root)
+	registerAsk(root)
 	registerDeps(root)
 	registerJob(root)
 

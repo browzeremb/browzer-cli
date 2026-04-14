@@ -44,6 +44,7 @@ The Go CLI replaced an earlier Node CLI. **Wire format (HTTP routes, JSON shapes
 
 - `browzer explore` response now includes `exports`, `imports`, `importedBy`, `lines`, `score`, and `type` fields per entry. Older CLI versions ignore these (Go decoder drops unknown keys).
 - `browzer deps <path>` — new command, calls `GET /api/workspaces/:id/deps`. Flags: `--reverse`, `--limit`, `--json`, `--save`, `--schema`.
+- `browzer ask` — new command (G6 `3fb76e0`), implemented in `internal/commands/ask.go`. Sends `POST /api/ask` with a 3-tier `workspaceId` fallback: (1) `--workspace` flag, (2) `.browzer/config.json` `defaultWorkspaceId`, (3) `GET /api/workspaces` → first result. Never sends an empty `workspaceId` — errors explicitly if no workspace can be resolved. This ensures `apps/api`'s answer cache is engaged on every `ask` call.
 
 ### macOS case-sensitivity
 

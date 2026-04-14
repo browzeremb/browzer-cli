@@ -69,6 +69,8 @@ compat — both forms call the same handlers.
 | `browzer workspace status`               | Show login + workspace state                                          |
 | `browzer workspace explore <q>`          | Hybrid graph + vector search                                          |
 | `browzer workspace search <q>`           | Vector search over markdown docs                                      |
+| `browzer deps <path>`                    | Per-file dependency graph (forward + reverse imports). Flags: `--reverse`, `--limit`, `--json`, `--save`, `--schema` |
+| `browzer ask <question>`                 | End-to-end ask (search + LLM) with 3-tier `workspaceId` fallback: `--workspace` flag → `.browzer/config.json` → first workspace from `GET /api/workspaces` |
 | `browzer workspace list`                 | List workspaces in your org                                           |
 | `browzer workspace get <id>`             | Fetch a single workspace JSON (schema-discovery helper)               |
 | `browzer workspace delete <id>`          | Delete a workspace and all its data                                   |
