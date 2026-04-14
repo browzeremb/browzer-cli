@@ -40,6 +40,9 @@ func NewRootCommand(version string) *cobra.Command {
 	registerDeps(root)
 	registerJob(root)
 
+	// `org` subcommand group.
+	registerOrg(root)
+
 	// `workspace` subcommand group + canonical noun-grouped re-registration.
 	ws := registerWorkspace(root)
 	registerInit(ws)

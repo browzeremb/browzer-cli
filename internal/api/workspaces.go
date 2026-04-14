@@ -117,3 +117,33 @@ func (c *Client) GetWorkspace(ctx context.Context, workspaceID string) (*Workspa
 	}
 	return nil, nil
 }
+
+// WorkspaceDetailDto extends WorkspaceDto with optional nested lists
+// populated when ?include=docs or ?include=files is passed.
+type WorkspaceDetailDto struct {
+	WorkspaceDto
+	Documents []IndexedDocument `json:"documents,omitempty"`
+	Files     []WorkspaceFileDto `json:"files,omitempty"`
+}
+
+// WorkspaceFileDto is one indexed file entry.
+type WorkspaceFileDto struct {
+	Path        string `json:"path"`
+	Language    string `json:"language,omitempty"`
+	SymbolCount int    `json:"symbolCount,omitempty"`
+	Lines       int    `json:"lines,omitempty"`
+}
+
+// GetWorkspaceDetail calls GET /api/workspaces/:id?include=<include>.
+// The include parameter is comma-separated ("docs", "files", or "docs,files").
+func (c *Client) GetWorkspaceDetail(ctx context.Context, workspaceID, include string) (*WorkspaceDetailDto, error) {
+	q := url.Values{}
+	if include != "" {
+		q.Set("include", include)
+	}
+	var out WorkspaceDetailDto
+	if err := c.getJSON(ctx, "api/workspaces/"+workspaceID, q, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

@@ -184,6 +184,9 @@ Examples:
 	registerWorkspaceUnlink(ws)
 	registerWorkspaceRelink(ws)
 	registerWorkspaceSync(ws)
+	registerWorkspaceDocsList(ws)
+	registerWorkspaceFilesList(ws)
+	registerWorkspaceShow(ws)
 
 	parent.AddCommand(ws)
 	return ws
