@@ -90,6 +90,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerDaemon(root)
 	registerConfig(root)
 	registerGain(root)
+	registerPlugin(root)
 
 	// `org` subcommand group.
 	registerOrg(root)
