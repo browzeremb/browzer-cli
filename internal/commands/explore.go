@@ -118,6 +118,19 @@ Examples:
 					ImportedBy: e.ImportedBy, Lines: e.Lines,
 				}
 			}
+			// --ultra: top-3 results, drop verbose metadata.
+			if Ultra && len(converted) > 3 {
+				converted = converted[:3]
+			}
+			if Ultra {
+				for i := range converted {
+					converted[i].Lines = 0
+					converted[i].Score = 0
+					converted[i].Exports = nil
+					converted[i].Imports = nil
+					converted[i].ImportedBy = nil
+				}
+			}
 			// Emit the *converted* entries, not the raw api type, so the
 			// JSON shape matches the schema we publish via --schema and
 			// future api.ExploreEntry field renames don't silently

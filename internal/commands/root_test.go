@@ -3,6 +3,7 @@ package commands
 import (
 	"testing"
 
+	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -83,4 +84,14 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestVerbose_FlagCountIncrements(t *testing.T) {
+	output.Verbose = 0
+	root := NewRootCommand("test")
+	root.SetArgs([]string{"-vv", "--help"})
+	_ = root.Execute()
+	if output.Verbose != 2 {
+		t.Fatalf("Verbose = %d, want 2", output.Verbose)
+	}
 }

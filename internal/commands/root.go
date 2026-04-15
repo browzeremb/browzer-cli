@@ -15,6 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Ultra is the package-level flag for --ultra (compact output across
+// read/explore/search/deps). Set by NewRootCommand's PersistentPreRunE.
+var Ultra bool
+
 // NewRootCommand returns the configured cobra root command. version is
 // injected from main via -ldflags so the published binary reports its
 // own release.
@@ -27,6 +31,12 @@ func NewRootCommand(version string) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	// Verbosity ladder: -v/-vv/-vvv increases output.Verbose (0-3).
+	root.PersistentFlags().CountVarP(&output.Verbose, "verbose", "v", "increase verbosity (-v decisions, -vv subprocess, -vvv raw I/O)")
+
+	// Global --ultra flag: compact output across read/explore/search/deps.
+	root.PersistentFlags().BoolVar(&Ultra, "ultra", false, "ultra-compact output (smaller payloads, fewer fields)")
 
 	// Global --llm flag: suppresses banners, disables colors, no spinners.
 	// Also honored via BROWZER_LLM env so shell wrappers (e.g. Claude
@@ -76,6 +86,10 @@ func NewRootCommand(version string) *cobra.Command {
 	registerDeps(root)
 	registerJob(root)
 	registerUpgrade(root)
+	registerRead(root)
+	registerDaemon(root)
+	registerConfig(root)
+	registerGain(root)
 
 	// `org` subcommand group.
 	registerOrg(root)

@@ -13,8 +13,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/commands"
+	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 )
 
 // version is injected at build time via:
@@ -33,6 +33,10 @@ func main() {
 	}()
 
 	installSignalHandlers()
+
+	// Forward the ldflags-injected version to the daemon start path so
+	// telemetry batches include `cliVersion` in their payload.
+	commands.SetDaemonVersion(version)
 
 	root := commands.NewRootCommand(version)
 	if err := root.Execute(); err != nil {

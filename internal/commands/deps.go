@@ -134,6 +134,16 @@ Examples:
 				ImportedBy: resp.ImportedBy,
 			}
 
+			// --ultra: only direct edges (truncate to top-10).
+			if Ultra {
+				if len(result.Imports) > 10 {
+					result.Imports = result.Imports[:10]
+				}
+				if len(result.ImportedBy) > 10 {
+					result.ImportedBy = result.ImportedBy[:10]
+				}
+			}
+
 			return emitOrFail(
 				result,
 				output.Options{JSON: jsonFlag, Save: saveFlag},

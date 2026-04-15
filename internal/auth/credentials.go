@@ -24,6 +24,11 @@ type Credentials struct {
 	OrganizationID string `json:"organization_id"`
 	UserID         string `json:"user_id"`
 	ExpiresAt      string `json:"expires_at"`
+	// TelemetryConsentAt holds the ISO-8601 timestamp at which the user
+	// consented to CLI telemetry (from /api/auth/me), or nil when they
+	// have not yet consented. The daemon batcher checks this field before
+	// flushing usage buckets to the server.
+	TelemetryConsentAt *string `json:"telemetryConsentAt,omitempty"`
 }
 
 // credentialsFile is the on-disk structure. Keyed by profile name so

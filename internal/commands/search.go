@@ -99,6 +99,16 @@ Examples:
 					Score: r.Score, DocumentName: r.DocumentName,
 				}
 			}
+			// --ultra: top-3 results, drop score metadata.
+			if Ultra && len(converted) > 3 {
+				converted = converted[:3]
+				results = results[:3]
+			}
+			if Ultra {
+				for i := range converted {
+					converted[i].Score = 0
+				}
+			}
 			return emitOrFail(
 				results,
 				output.Options{JSON: jsonFlag, Save: saveFlag},
