@@ -156,27 +156,12 @@ Examples:
 			ui.Success("Wrote .browzer/config.json")
 			ui.Success("Injected Browzer KB section into CLAUDE.md")
 
-			// Install the Claude Code plugin (hooks + skills + agents) under
-			// .claude/plugins/browzer/ so Read auto-rewrite, Glob block, and
-			// the workflow skills work without a separate opt-in step.
-			// Best-effort — users not in a monorepo clone get a warning and
-			// can re-run `browzer plugin install --from <path>` manually.
-			if src, srcErr := resolvePluginSource(""); srcErr == nil {
-				if dst, dstErr := resolvePluginTarget(false); dstErr == nil {
-					if instErr := installPlugin(src, dst); instErr == nil {
-						_ = ensureClaudePluginsIgnored(gitRoot)
-						ui.Success("Installed Claude Code plugin (.claude/plugins/browzer)")
-					} else {
-						ui.Warn(fmt.Sprintf("could not install Claude Code plugin: %v", instErr))
-					}
-				}
-			} else {
-				ui.Info("Claude Code plugin not installed — run `browzer plugin install --from <packages/skills>` after cloning the repo.")
-			}
-
 			fmt.Println("\nNext steps:")
 			fmt.Println("  browzer workspace index    # parse code structure into the workspace graph")
 			fmt.Println("  browzer workspace docs     # pick which documents to embed")
+
+			fmt.Println()
+			printPluginInstructions(cmd)
 			return nil
 		},
 	}
