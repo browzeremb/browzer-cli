@@ -17,6 +17,7 @@ func registerOrgDocs(parent *cobra.Command) {
 
 	registerOrgDocsList(docs)
 	registerOrgDocsShow(docs)
+	registerOrgDocsAdd(docs)
 
 	parent.AddCommand(docs)
 }

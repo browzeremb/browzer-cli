@@ -46,7 +46,7 @@ type Result struct {
 func UploadInBatches(
 	ctx context.Context,
 	client *api.Client,
-	workspaceID string,
+	workspaceID *string,
 	files []walker.DocFile,
 	c *cache.DocsCache,
 	onBatchEnqueued func(batchID string),

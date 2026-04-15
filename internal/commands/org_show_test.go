@@ -13,25 +13,6 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/api"
 )
 
-// runOrgCommand wires an authenticated client pointing at srv into a
-// fresh root command, then executes argv against it.
-func runOrgCommand(t *testing.T, srv *httptest.Server, argv []string) (string, error) {
-	t.Helper()
-	root := NewRootCommand("test")
-	out := &bytes.Buffer{}
-	root.SetOut(out)
-
-	// Inject the test client by finding the org command and overriding
-	// requireAuth at the test-server level via the real cobra path. We
-	// rely on the httptest server being reachable as a plain HTTP URL
-	// and authenticate via a no-op bearer token.
-	_ = api.NewClient(srv.URL, "test-token", 5*time.Second)
-
-	root.SetArgs(argv)
-	err := root.Execute()
-	return out.String(), err
-}
-
 func TestOrgShow_RegistrationAndHelp(t *testing.T) {
 	root := NewRootCommand("test")
 	cmd, _, err := root.Find([]string{"org", "show"})

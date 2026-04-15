@@ -249,7 +249,7 @@ func registerWorkspaceSync(parent *cobra.Command) {
 					if len(toUpload) > 0 {
 						sp = startSpinnerQ(quiet, fmt.Sprintf("Uploading %d doc(s)...", len(toUpload)))
 						_, upErr := upload.UploadInBatches(
-							ctx, client, project.WorkspaceID,
+							ctx, client, &project.WorkspaceID,
 							toWalkerDocs(toUpload), &newCache, nil, false,
 						)
 						if upErr != nil {

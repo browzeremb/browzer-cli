@@ -545,7 +545,7 @@ Examples:
 
 			if len(toUpload) > 0 {
 				sp := ui.StartSpinner(fmt.Sprintf("Uploading %d docs...", len(toUpload)))
-				_, err := upload.UploadInBatches(ctx, client, project.WorkspaceID, toWalkerDocs(toUpload), &newCache, nil, false)
+				_, err := upload.UploadInBatches(ctx, client, &project.WorkspaceID, toWalkerDocs(toUpload), &newCache, nil, false)
 				if err != nil {
 					sp.Failure("Upload failed")
 					return err

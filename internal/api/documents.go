@@ -31,13 +31,16 @@ type DocumentUpload struct {
 //
 // Returns a discriminated union: BatchKindAsync when the server
 // responds 202 with batchId, or BatchKindSync for the legacy 200 shape.
-func (c *Client) BatchUploadDocs(ctx context.Context, workspaceID string, files []DocumentUpload) (*BatchUploadResult, error) {
+func (c *Client) BatchUploadDocs(ctx context.Context, workspaceID *string, files []DocumentUpload) (*BatchUploadResult, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
-	if err := mw.WriteField("workspaceId", workspaceID); err != nil {
-		return nil, err
+	if workspaceID != nil && *workspaceID != "" {
+		if err := mw.WriteField("workspaceId", *workspaceID); err != nil {
+			return nil, err
+		}
 	}
+	// when nil, the server interprets workspaceId as null (org-scope)
 
 	paths := make([]string, len(files))
 	for i, f := range files {
@@ -149,6 +152,9 @@ func (c *Client) ListWorkspaceDocuments(ctx context.Context, workspaceID string)
 	}
 	if err := c.getJSON(ctx, "api/workspaces/"+workspaceID+"/documents", nil, &body); err != nil {
 		return nil, err
+	}
+	if body.Documents == nil {
+		body.Documents = []IndexedDocument{}
 	}
 	return body.Documents, nil
 }
