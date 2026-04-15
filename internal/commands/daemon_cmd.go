@@ -81,7 +81,7 @@ func daemonStartCmd() *cobra.Command {
 				p := exec.Command(exe, "daemon", "start")
 				p.Stdout = nil
 				p.Stderr = nil
-				p.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				detachProcess(p)
 				return p.Start()
 			}
 			sockPath := config.SocketPath(os.Getuid())

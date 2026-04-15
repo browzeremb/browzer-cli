@@ -9,6 +9,22 @@ Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
 - Run its tests with `cd packages/cli && go test ./...`.
 - Build locally with `cd packages/cli && go build -o "$HOME/.local/bin/browzer" ./cmd/browzer`.
 
+## Local verification (REQUIRED before pushing CLI changes)
+
+The CLI's CI runs **four independent checks** that a plain `go test ./...` does NOT cover: `go vet`, `go test -race`, cross-compile for 5 targets (darwin/linux arm64+amd64, windows/amd64), and `golangci-lint v2.5.0`. Each of these has blocked past CI runs because the dev cycle never exercised them locally.
+
+**Always run `make ci` before pushing** — it mirrors the public `browzeremb/browzer-cli` CI exactly:
+
+```bash
+cd packages/cli && make ci
+```
+
+On first run the script auto-installs `golangci-lint v2.5.0` into `$(go env GOPATH)/bin`. If `make ci` passes locally, `.github/workflows/ci.yml` on the public repo will pass too (same commands, same versions). Skipping this step is how you end up pushing a commit that only reveals its problem once it hits the remote runner. The script itself is at `packages/cli/scripts/ci-local.sh` and is the source of truth; the `Makefile` target is just an ergonomic entry point.
+
+## Cross-platform discipline
+
+`cmd/browzer` is built for 5 GOOS/GOARCH combos. Anything Unix-specific (`syscall.SysProcAttr.Setsid`, `os.Getuid()`-derived paths, `/tmp` hardcoding, `unix.*`) MUST be isolated behind `//go:build !windows` / `//go:build windows` file pairs. Pattern: helper file `foo_unix.go` (`//go:build !windows`) exports the function; `foo_windows.go` (`//go:build windows`) provides a no-op or Windows-equivalent stub. Example: `internal/commands/daemon_detach_unix.go` / `daemon_detach_windows.go`. `make ci` catches violations via the windows cross-compile step.
+
 ## Shape
 
 - `cmd/browzer/` — entrypoint (cobra root + subcommand wiring).
