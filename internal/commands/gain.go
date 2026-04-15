@@ -42,7 +42,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("open tracker: %w", err)
 			}
-			defer tr.Close()
+			defer func() { _ = tr.Close() }()
 			rows, err := tr.QueryAggregated(since, by)
 			if err != nil {
 				return err

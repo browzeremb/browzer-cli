@@ -36,8 +36,8 @@ func Rawf(format string, args ...any) {
 // pre-filter / post-filter content.
 func DumpRaw(w io.Writer, header string, body []byte) {
 	if Verbose >= 3 {
-		fmt.Fprintf(w, "--- %s (%d bytes) ---\n", header, len(body))
+		_, _ = fmt.Fprintf(w, "--- %s (%d bytes) ---\n", header, len(body))
 		_, _ = w.Write(body)
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }

@@ -121,7 +121,7 @@ func (t *Tracker) QueryAggregated(since, groupBy string) ([]AggregatedRow, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []AggregatedRow
 	for rows.Next() {
 		var r AggregatedRow
@@ -158,7 +158,7 @@ func (t *Tracker) UnsentBuckets() ([]Bucket, []int64, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type key struct {
 		day, source, filter, model string
@@ -220,7 +220,7 @@ func (t *Tracker) MarkFlushed(ids []int64) error {
 		_ = tx.Rollback()
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	for _, id := range ids {
 		if _, err := stmt.Exec(id); err != nil {
 			_ = tx.Rollback()

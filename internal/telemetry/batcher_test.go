@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 func TestBatcher_FlushesUnsentEvents(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "h.db")
 	tr, _ := tracker.Open(dbPath)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	for i := 0; i < 3; i++ {
 		_ = tr.Record(tracker.Event{
 			TS: time.Now().UTC().Format(time.RFC3339), Source: "hook-read",
@@ -20,11 +21,11 @@ func TestBatcher_FlushesUnsentEvents(t *testing.T) {
 		})
 	}
 
-	calls := 0
+	var calls atomic.Int32
 	send := func(ctx context.Context, b []tracker.Bucket) error {
-		calls++
+		calls.Add(1)
 		if len(b) != 1 {
-			t.Fatalf("buckets = %d", len(b))
+			t.Errorf("buckets = %d", len(b))
 		}
 		return nil
 	}
@@ -36,12 +37,12 @@ func TestBatcher_FlushesUnsentEvents(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if calls > 0 {
+		if calls.Load() > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if calls == 0 {
+	if calls.Load() == 0 {
 		t.Fatal("batcher never invoked send")
 	}
 

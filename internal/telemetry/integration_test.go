@@ -15,7 +15,7 @@ import (
 func TestIntegration_TrackerToServer(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "h.db")
 	tr, _ := tracker.Open(dbPath)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	// Fake server that counts received buckets.
 	var received atomic.Int64

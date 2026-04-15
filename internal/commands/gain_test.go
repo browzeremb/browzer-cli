@@ -12,7 +12,7 @@ import (
 func TestGain_RendersByModel(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "h.db")
 	tr, _ := tracker.Open(dbPath)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	for i := 0; i < 5; i++ {
 		_ = tr.Record(tracker.Event{
@@ -38,7 +38,7 @@ func TestGain_RendersByModel(t *testing.T) {
 func TestGain_UltraOneLine(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "h.db")
 	tr, _ := tracker.Open(dbPath)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	_ = tr.Record(tracker.Event{
 		TS:          time.Now().UTC().Format(time.RFC3339),
 		Source:      "hook-read", InputBytes: 1000, OutputBytes: 200, SavedTokens: 200, SavingsPct: 80,
@@ -58,7 +58,7 @@ func TestGain_UltraOneLine(t *testing.T) {
 func TestGain_UltraShowsTopModel(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "h.db")
 	tr, _ := tracker.Open(dbPath)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	for i := 0; i < 3; i++ {
 		_ = tr.Record(tracker.Event{
 			TS:          time.Now().UTC().Format(time.RFC3339),

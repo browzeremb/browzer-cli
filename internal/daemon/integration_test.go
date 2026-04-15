@@ -16,7 +16,7 @@ func TestIntegration_SessionRegisterThenRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(sockDir)
+	defer func() { _ = os.RemoveAll(sockDir) }()
 	sock := filepath.Join(sockDir, "d.sock")
 	manifestPath := filepath.Join(dir, "manifest.json")
 	transcript := filepath.Join(dir, "session.jsonl")
@@ -43,7 +43,7 @@ func TestIntegration_SessionRegisterThenRead(t *testing.T) {
 			out, level := ApplyFilter(body, p.FilterLevel, p.Path, mf)
 			tmp, _ := os.CreateTemp(dir, "brz-out-*")
 			_, _ = tmp.Write(out)
-			tmp.Close()
+			_ = tmp.Close()
 			return ReadResult{TempPath: tmp.Name(), Filter: level}, nil
 		},
 		Track: func(ctx context.Context, p TrackParams) (map[string]any, error) {

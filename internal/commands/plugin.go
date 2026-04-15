@@ -121,7 +121,7 @@ func newPluginInstallCommand(use string) *cobra.Command {
 					scope = "global"
 				}
 				ui.Success(fmt.Sprintf("Browzer plugin installed (%s): %s", scope, dst))
-				fmt.Fprintln(cmd.OutOrStdout(), "Restart Claude Code (or start a new session) to pick it up.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Restart Claude Code (or start a new session) to pick it up.")
 			}
 			return nil
 		},
@@ -306,7 +306,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -314,7 +314,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	_, err = io.Copy(d, s)
 	return err
 }

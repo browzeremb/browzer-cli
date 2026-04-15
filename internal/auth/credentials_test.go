@@ -32,6 +32,7 @@ func TestSaveAndLoadCredentials(t *testing.T) {
 	got := LoadCredentials()
 	if got == nil {
 		t.Fatal("LoadCredentials returned nil")
+		return
 	}
 	if got.AccessToken != "tok-123" || got.OrganizationID != "org-1" {
 		t.Errorf("round trip mismatch: %+v", got)

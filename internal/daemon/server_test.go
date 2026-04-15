@@ -34,7 +34,7 @@ func TestServer_RespondsToHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	req := `{"jsonrpc":"2.0","id":1,"method":"Health","params":{}}` + "\n"
 	if _, err := conn.Write([]byte(req)); err != nil {

@@ -77,7 +77,7 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 	if err != nil {
 		return fmt.Errorf("dial daemon: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(c.timeout)

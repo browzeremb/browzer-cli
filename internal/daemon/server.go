@@ -161,14 +161,12 @@ type rpcError struct {
 }
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	rdr := bufio.NewReader(conn)
 	for {
 		line, err := rdr.ReadString('\n')
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				// log at -vv (caller-side); silent here
-			}
+			// io.EOF on clean client close is expected; other errors logged caller-side at -vv.
 			return
 		}
 		s.lastReqAt.Store(time.Now().UnixNano())

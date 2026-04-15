@@ -103,7 +103,7 @@ func daemonStartCmd() *cobra.Command {
 			if err := writePID(); err != nil {
 				return err
 			}
-			defer os.Remove(config.PIDPath())
+			defer func() { _ = os.Remove(config.PIDPath()) }()
 
 			// C3: sweep stale /tmp/brz-read-* tempfiles every 60 s.
 			go func() {
@@ -159,10 +159,10 @@ func daemonStartCmd() *cobra.Command {
 						}
 					}
 				}()
-				defer tr.Close()
+				defer func() { _ = tr.Close() }()
 			}
 
-			fmt.Fprintln(cmd.OutOrStderr(), "browzer daemon listening on", sockPath)
+			_, _ = fmt.Fprintln(cmd.OutOrStderr(), "browzer daemon listening on", sockPath)
 			return srv.Serve(ctx)
 		},
 	}
@@ -181,7 +181,7 @@ func daemonStopCmd() *cobra.Command {
 			if err := cli.Shutdown(ctx); err != nil {
 				return fmt.Errorf("shutdown: %w", err)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "ok")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "ok")
 			return nil
 		},
 	}
@@ -197,10 +197,10 @@ func daemonStatusCmd() *cobra.Command {
 			defer cancel()
 			h, err := cli.Health(ctx)
 			if err != nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "not running")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "not running")
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "running uptime=%ds queue=%d db=%s\n", h.UptimeSec, h.QueueLen, h.DBPath)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "running uptime=%ds queue=%d db=%s\n", h.UptimeSec, h.QueueLen, h.DBPath)
 			return nil
 		},
 	}
@@ -340,7 +340,7 @@ func doRead(manifests *daemon.ManifestCache, _ *daemon.SessionCache, p daemon.Re
 	if err != nil {
 		return daemon.ReadResult{}, err
 	}
-	defer tmp.Close()
+	defer func() { _ = tmp.Close() }()
 	if _, err := tmp.Write(out); err != nil {
 		_ = os.Remove(tmp.Name()) // cleanup on partial write
 		return daemon.ReadResult{}, err

@@ -12,7 +12,7 @@ func TestTracker_RecordAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	ev := Event{
 		TS:           time.Now().UTC().Format(time.RFC3339),
@@ -47,7 +47,7 @@ func TestTracker_RetentionDeletes90DayOldRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	old := Event{
 		TS:          time.Now().AddDate(0, 0, -100).UTC().Format(time.RFC3339),
@@ -74,7 +74,7 @@ func TestTracker_RetentionDeletes90DayOldRows(t *testing.T) {
 func TestTracker_UnsentBatchesAndMarkFlushed(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "history.db")
 	tr, _ := Open(db)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	for i := 0; i < 3; i++ {
 		_ = tr.Record(Event{
