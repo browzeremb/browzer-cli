@@ -40,6 +40,12 @@ If .browzer/config.json already exists it will be overwritten — use
 ` + "`browzer workspace unlink`" + ` first if you want the previous binding
 audit-visible.
 
+Agent-friendly:
+  Pair with ` + "`browzer workspace list --json`" + ` to discover the
+  target id first. Relink is the mirror of unlink: unlink clears the
+  binding (keeping server data); relink points at an existing
+  workspace (still keeping server data). Neither creates or deletes.
+
 Examples:
   browzer workspace relink ws-abc123
 ` + output.ExitCodesHelp,

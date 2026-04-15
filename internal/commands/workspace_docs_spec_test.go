@@ -57,6 +57,37 @@ func TestParseSpec_Sentinels(t *testing.T) {
 	}
 }
 
+// TestParseSpec_SentinelErrorMessagesByScope verifies the enriched
+// sentinel-rejection messages carry the valid sentinels for that scope,
+// so agents see an actionable "(accepted: …)" hint instead of a bare
+// refusal.
+func TestParseSpec_SentinelErrorMessagesByScope(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		scope       SpecScope
+		wantContain string
+	}{
+		{"add rejects all lists new", "all", SpecScopeAdd, "accepted: new"},
+		{"add rejects none lists new", "none", SpecScopeAdd, "accepted: new"},
+		{"replace rejects new lists all,none", "new", SpecScopeReplace, "accepted: all, none"},
+		{"remove rejects new says no sentinels accepted", "new", SpecScopeRemove, "no sentinels accepted"},
+		{"remove rejects all says no sentinels accepted", "all", SpecScopeRemove, "no sentinels accepted"},
+		{"remove rejects none says no sentinels accepted", "none", SpecScopeRemove, "no sentinels accepted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseSpec(tc.raw, tc.scope)
+			if err == nil {
+				t.Fatalf("expected error for %q in scope %v", tc.raw, tc.scope)
+			}
+			if !strings.Contains(err.Error(), tc.wantContain) {
+				t.Errorf("error %q missing expected hint %q", err.Error(), tc.wantContain)
+			}
+		})
+	}
+}
+
 // TestParseSpec_CommaListWhitespace verifies whitespace trimming and
 // blank-entry dropping in the comma-list fall-through.
 func TestParseSpec_CommaListWhitespace(t *testing.T) {

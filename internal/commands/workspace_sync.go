@@ -39,6 +39,7 @@ func registerWorkspaceSync(parent *cobra.Command) {
 		dryRun   bool
 		skipCode bool
 		skipDocs bool
+		force    bool
 	)
 
 	cmd := &cobra.Command{
@@ -102,6 +103,16 @@ func registerWorkspaceSync(parent *cobra.Command) {
 				ui.Arrow(fmt.Sprintf("Workspace: %s", project.WorkspaceID))
 			}
 
+			// PR 3 — Fase 0: jobs-in-flight preflight (code path only;
+			// document sync uploads new ingestion jobs and is therefore
+			// not affected by pending parses). Skipped under --force or
+			// --skip-code. See preflightJobsInFlight in workspace_index.go.
+			if !skipCode && !force {
+				if abortErr := preflightJobsInFlight(ctx, client, project.WorkspaceID, quiet); abortErr != nil {
+					return abortErr
+				}
+			}
+
 			// ----------------------------------------------------------------
 			// Shared result accumulators for the final JSON payload.
 			// ----------------------------------------------------------------
@@ -123,16 +134,21 @@ func registerWorkspaceSync(parent *cobra.Command) {
 
 				if !dryRun {
 					sp = startSpinnerQ(quiet, "Re-parsing code on server...")
-					if parseErr := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
+					parseResp, parseErr := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
 						WorkspaceID: project.WorkspaceID,
 						RootPath:    tree.RootPath,
 						Folders:     tree.Folders,
 						Files:       tree.Files,
-					}); parseErr != nil {
+					}, api.ParseWorkspaceOptions{ForceParse: force})
+					if parseErr != nil {
 						finishSpinnerQ(sp, false, "Parse failed")
 						return parseErr
 					}
-					finishSpinnerQ(sp, true, "Code re-parsed")
+					if parseResp != nil && parseResp.Status == "unchanged" {
+						finishSpinnerQ(sp, true, "No changes detected — skipped re-parse")
+					} else {
+						finishSpinnerQ(sp, true, "Code re-parsed")
+					}
 
 					// Stamp LastSyncCommit so "browzer status" can report drift.
 					if head := git.HEAD(gitRoot); head != "" {
@@ -338,6 +354,7 @@ func registerWorkspaceSync(parent *cobra.Command) {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the plan without applying changes")
 	cmd.Flags().BoolVar(&skipCode, "skip-code", false, "Skip the code re-index step (docs only)")
 	cmd.Flags().BoolVar(&skipDocs, "skip-docs", false, "Skip the document sync step (code only, same as browzer workspace index)")
+	cmd.Flags().BoolVar(&force, "force", false, "Skip the jobs-in-flight preflight and bypass the server's parse gate (X-Force-Parse: true)")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of progress text")
 	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
 

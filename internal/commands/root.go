@@ -7,6 +7,8 @@ package commands
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
@@ -26,6 +28,40 @@ func NewRootCommand(version string) *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	// Global --llm flag: suppresses banners, disables colors, no spinners.
+	// Also honored via BROWZER_LLM env so shell wrappers (e.g. Claude
+	// SKILL runners) can opt-in once per session. We set NO_COLOR too so
+	// any third-party lib honoring the convention degrades as well.
+	root.PersistentFlags().Bool("llm", false, "LLM mode: suppress banner, disable colors, no spinners")
+
+	// Pre-scan os.Args + BROWZER_LLM so --help/--version (which bypass
+	// cobra's PersistentPreRunE) still see LLMMode. PersistentPreRunE
+	// below handles the normal command path.
+	applyLLMMode := func(llm bool) {
+		if llm {
+			ui.LLMMode = true
+			_ = os.Setenv("NO_COLOR", "1")
+		}
+	}
+	if envLLMEnabled() {
+		applyLLMMode(true)
+	} else {
+		for _, a := range os.Args[1:] {
+			if a == "--llm" || a == "--llm=true" || a == "--llm=1" {
+				applyLLMMode(true)
+				break
+			}
+		}
+	}
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		llm, _ := cmd.Flags().GetBool("llm")
+		if envLLMEnabled() {
+			llm = true
+		}
+		applyLLMMode(llm)
+		return nil
+	}
+
 	// Top-level: legacy aliases retained for backward compat. The
 	// canonical noun-grouped form lives under `browzer workspace ...`.
 	registerLogin(root)
@@ -39,6 +75,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerAsk(root)
 	registerDeps(root)
 	registerJob(root)
+	registerUpgrade(root)
 
 	// `org` subcommand group.
 	registerOrg(root)
@@ -100,7 +137,16 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	root.SetHelpTemplate(colorizedHelp + "\n" + agentTips + output.ExitCodesHelp + "\n")
 
 	// Version string: brand banner + plain "<command> <version>".
-	root.SetVersionTemplate(ui.Banner(version) + "\nbrowzer {{.Version}}\n")
+	// Register `banner` as a template func so LLMMode (set by
+	// PersistentPreRunE) is evaluated at render time, not at wiring
+	// time — otherwise `--llm --version` would still print the banner.
+	cobra.AddTemplateFunc("banner", func() string {
+		if ui.LLMMode {
+			return ""
+		}
+		return ui.Banner(version) + "\n"
+	})
+	root.SetVersionTemplate(`{{banner}}browzer {{.Version}}` + "\n")
 
 	// Prepend the brand banner on the ROOT help screen only. We wrap
 	// the default HelpFunc instead of baking color into SetHelpTemplate
@@ -110,13 +156,30 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	// reads like a proper man page.
 	defaultHelp := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		if cmd == root {
+		if cmd == root && !ui.LLMMode {
 			_, _ = fmt.Fprint(cmd.OutOrStdout(), ui.Banner(version))
 		}
 		defaultHelp(cmd, args)
 	})
 
 	return root
+}
+
+// envLLMEnabled reports whether BROWZER_LLM requests LLM mode. Presence
+// alone is NOT enough — we parse the value so users can set
+// `BROWZER_LLM=0` (or `false`/`off`/empty) to explicitly disable,
+// unlike NO_COLOR where presence is the signal. The truthy set matches
+// GNU-ish conventions: 1, true, yes, on (case-insensitive).
+func envLLMEnabled() bool {
+	v, ok := os.LookupEnv("BROWZER_LLM")
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 const agentTips = `Agent-friendly tips:

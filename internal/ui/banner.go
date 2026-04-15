@@ -30,6 +30,12 @@ const wordmark = `
 // no-color.org convention, or when TERM=dumb. This is what keeps
 // `browzer ... --json | jq` and CI logs clean.
 func colorEnabled() bool {
+	if LLMMode {
+		return false
+	}
+	if _, llm := os.LookupEnv("BROWZER_LLM"); llm {
+		return false
+	}
 	if _, noColor := os.LookupEnv("NO_COLOR"); noColor {
 		return false
 	}

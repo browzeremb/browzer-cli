@@ -1,6 +1,9 @@
 package commands
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/git"
@@ -8,22 +11,57 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// searchSchemaJSON is the baked-in JSON Schema 2020-12 doc for the
+// search response (an array of SearchResult entries).
+const searchSchemaJSON = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SearchResponse",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["text", "score"],
+    "properties": {
+      "text":         {"type": "string"},
+      "position":     {"type": "integer"},
+      "score":        {"type": "number"},
+      "documentName": {"type": "string"}
+    }
+  }
+}
+`
+
 func registerSearch(parent *cobra.Command) {
 	var limit int
+	var schema bool
 
 	cmd := &cobra.Command{
 		Use:   "search <query>",
-		Short: "Vector search over the indexed markdown documents",
-		Args:  cobra.ExactArgs(1),
-		Long: `Vector search over the indexed markdown documents.
+		Short: "Search indexed MARKDOWN DOCS (ADRs, runbooks, READMEs) — vector-only",
+		Args:  cobra.MaximumNArgs(1),
+		Long: `For code/symbols/imports, use ` + "`browzer explore`" + ` instead.
+
+Vector search over the indexed markdown documents.
+
+Use --schema to print the response JSON schema without making an API call.
 
 Examples:
   browzer search "fastify graph store"
   browzer search "device flow" --json
+  browzer search --schema --save schema.json
 ` + output.ExitCodesHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
+			if schema {
+				if saveFlag != "" {
+					return os.WriteFile(saveFlag, []byte(searchSchemaJSON), 0o644)
+				}
+				fmt.Print(searchSchemaJSON)
+				return nil
+			}
+			if len(args) == 0 || args[0] == "" {
+				return cliErrors.New("search requires a <query> argument (or use --schema)")
+			}
 			query := args[0]
 			if err := validateLimit(limit); err != nil {
 				return err
@@ -70,6 +108,7 @@ Examples:
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", 10, "Max results (1-200)")
+	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the search response and exit")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
 	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
 	parent.AddCommand(cmd)

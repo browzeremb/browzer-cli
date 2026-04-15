@@ -10,6 +10,7 @@
 //	4   not found
 //	5   quota / plan limit exceeded (402, 413)
 //	6   rate limit / concurrency limit (429)
+//	10  CLI outdated (browzer upgrade --check)
 //	130 SIGINT
 //	143 SIGTERM
 package errors
@@ -24,8 +25,9 @@ const (
 	ExitAuthError  = 2
 	ExitNoProject  = 3
 	ExitNotFound   = 4
-	ExitQuotaError = 5 // 402 Payment Required, 413 Input Too Large
-	ExitRateLimit  = 6 // 429 Too Many Requests / concurrency cap
+	ExitQuotaError = 5  // 402 Payment Required, 413 Input Too Large
+	ExitRateLimit  = 6  // 429 Too Many Requests / concurrency cap
+	ExitOutdated   = 10 // `browzer upgrade --check` found a newer release
 )
 
 // CliError is the base error type carrying an exit code. Wrap any

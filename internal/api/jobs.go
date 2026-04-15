@@ -19,6 +19,28 @@ func (c *Client) GetBatchStatus(ctx context.Context, batchID string) (*BatchStat
 	return &b, nil
 }
 
+// WorkspaceJobsResponse mirrors the body of GET /api/workspaces/:id/jobs
+// (PR 3 — preflight gate). Counts ingestion jobs for the workspace
+// across BullMQ states. `OldestEnqueuedAt` is RFC3339 or empty when
+// no jobs are pending.
+type WorkspaceJobsResponse struct {
+	WorkspaceID      string `json:"workspaceId"`
+	Pending          int    `json:"pending"`
+	Processing       int    `json:"processing"`
+	OldestEnqueuedAt string `json:"oldestEnqueuedAt,omitempty"`
+}
+
+// GetWorkspaceJobs calls GET /api/workspaces/:id/jobs — one-shot
+// preflight check used by `browzer index` / `browzer sync` Fase 0 to
+// surface pending ingestion work before re-parsing.
+func (c *Client) GetWorkspaceJobs(ctx context.Context, workspaceID string) (*WorkspaceJobsResponse, error) {
+	var b WorkspaceJobsResponse
+	if err := c.getJSON(ctx, "api/workspaces/"+workspaceID+"/jobs", nil, &b); err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
 // PollBatchOptions tunes the polling loop.
 type PollBatchOptions struct {
 	// TimeoutMs is the hard deadline. Default 30 minutes.

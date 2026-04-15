@@ -1,7 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -45,10 +49,57 @@ func (c *Client) DeleteWorkspace(ctx context.Context, workspaceID string) error 
 	return c.deleteCall(ctx, "api/workspaces/"+workspaceID, nil)
 }
 
+// ParseWorkspaceResponse captures the fields of POST /api/workspaces/parse
+// that the CLI cares about. Only `Status` is populated when the server
+// short-circuits with `{ status: "unchanged" }` (PR 3 fingerprint hit) —
+// the other fields stay zero/empty so callers can branch on `Status`.
+type ParseWorkspaceResponse struct {
+	Status      string `json:"status,omitempty"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+// ParseWorkspaceOptions controls per-call behavior on the
+// POST /api/workspaces/parse client.
+type ParseWorkspaceOptions struct {
+	// ForceParse, when true, sets the `X-Force-Parse: true` header so the
+	// server bypasses the jobs-in-flight gate (PR 3). The CLI sets this
+	// when the user passes `--force` to `index`/`sync`.
+	ForceParse bool
+}
+
 // ParseWorkspace calls POST /api/workspaces/parse with the body shape
 // expected by apps/api: { workspaceId, rootPath, folders, files }.
-func (c *Client) ParseWorkspace(ctx context.Context, req ParseWorkspaceRequest) error {
-	return c.postJSON(ctx, "api/workspaces/parse", req, nil)
+//
+// Returns the decoded response so callers can detect `status: "unchanged"`
+// (fingerprint short-circuit, PR 3) and surface a friendly message
+// instead of pretending a re-parse happened.
+func (c *Client) ParseWorkspace(ctx context.Context, req ParseWorkspaceRequest, opts ParseWorkspaceOptions) (*ParseWorkspaceResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	headers := map[string]string{}
+	if opts.ForceParse {
+		// Server reads this header case-insensitively.
+		headers["X-Force-Parse"] = "true"
+	}
+
+	resp, err := c.doWithHeaders(ctx, http.MethodPost, "api/workspaces/parse", nil, bytes.NewReader(body), "application/json", headers)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var out ParseWorkspaceResponse
+		// 204 / empty body is tolerated — out stays zero-valued.
+		_ = json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(&out)
+		return &out, nil
+	}
+
+	return nil, httpStatusError(resp)
 }
 
 // SearchWorkspace calls GET /api/workspaces/:id/search.

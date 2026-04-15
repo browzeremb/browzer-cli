@@ -78,8 +78,12 @@ func runPreflight(ctx context.Context, client *api.Client, docs []walker.DocFile
 		if resp.Reason != "" {
 			msg += "\n" + resp.Reason
 		}
-		msg += "\n\nAções:" +
-			"\n  • Delete um workspace:  browzer workspace delete" +
+		msg += "\n\nAções:"
+		if available > 0 {
+			msg += "\n  • Indexe só os novos docs: browzer workspace docs --add new --yes"
+		}
+		msg += "\n  • Delete um workspace:  browzer workspace delete" +
+			"\n  • Indexe só alguns docs:  browzer workspace docs --add docs/file1.md,docs/file2.md --yes" +
 			"\n  • Faça upgrade do plano: https://browzeremb.com/dashboard/settings/billing"
 		return cliErrors.NewQuotaExceededError(msg)
 	}

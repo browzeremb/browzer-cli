@@ -498,6 +498,19 @@ Examples:
 			}
 
 			if len(plan.ToInsert) == 0 && len(plan.ToReUpload) == 0 && len(plan.ToDelete) == 0 {
+				// Edge case: workspace is empty on the server AND we
+				// found local candidates, yet nothing made it into the
+				// plan. The most common cause is a non-interactive
+				// --yes run that didn't pass --add/--replace — "sync"
+				// with no selection is a no-op by design, but staying
+				// silent hides the obvious next step from an agent.
+				if len(serverDocs) == 0 && len(localDocs) > 0 && !nonInteractive && yes {
+					ui.Warn(fmt.Sprintf(
+						"Workspace is empty and %d local candidate(s) found. Use 'browzer workspace docs --add new --yes' to index all, or --add <paths> for a subset.",
+						len(localDocs),
+					))
+					return nil
+				}
 				ui.Success("Workspace documents already in sync.")
 				return nil
 			}

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
@@ -11,13 +12,40 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// askSchemaJSON is the baked-in JSON Schema 2020-12 doc for the ask
+// response payload.
+const askSchemaJSON = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskResponse",
+  "type": "object",
+  "required": ["answer"],
+  "properties": {
+    "answer":   {"type": "string"},
+    "cacheHit": {"type": "boolean"},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "documentName": {"type": "string"},
+          "score":        {"type": "number"},
+          "text":         {"type": "string"},
+          "position":     {"type": "integer"}
+        }
+      }
+    }
+  }
+}
+`
+
 func registerAsk(parent *cobra.Command) {
 	var workspaceFlag string
+	var schema bool
 
 	cmd := &cobra.Command{
 		Use:   "ask <question>",
 		Short: "Ask the RAG engine a question about your codebase",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		Long: `Ask the Browzer RAG engine a question about your indexed codebase.
 
 The workspace is resolved in this order:
@@ -26,14 +54,27 @@ The workspace is resolved in this order:
   3. GET /api/workspaces — first workspace returned by the API
   4. Hard error if all fallbacks fail
 
+Use --schema to print the response JSON schema without making an API call.
+
 Examples:
   browzer ask "How does the answer cache work?"
   browzer ask "What does the reranker do?" --workspace ws_abc123
   browzer ask "Show ingestion pipeline" --json
+  browzer ask --schema --save schema.json
 ` + output.ExitCodesHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
+			if schema {
+				if saveFlag != "" {
+					return os.WriteFile(saveFlag, []byte(askSchemaJSON), 0o644)
+				}
+				fmt.Print(askSchemaJSON)
+				return nil
+			}
+			if len(args) == 0 || args[0] == "" {
+				return cliErrors.New("ask requires a <question> argument (or use --schema)")
+			}
 			question := args[0]
 
 			ac, err := requireAuth(0)
@@ -60,6 +101,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&workspaceFlag, "workspace", "", "Workspace ID (overrides .browzer/config.json lookup)")
+	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the ask response and exit")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
 	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
 	parent.AddCommand(cmd)

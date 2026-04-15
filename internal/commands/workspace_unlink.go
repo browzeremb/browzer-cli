@@ -38,6 +38,12 @@ NOT deleted — it keeps its indexed data and continues consuming a
 slot of your plan. If you want to free the slot, run
 ` + "`browzer workspace delete <id>`" + ` instead.
 
+Agent-friendly:
+  Use --yes in non-TTY shells. To rebind this directory to an
+  existing workspace id, use ` + "`browzer workspace relink <id>`" + ` —
+  unlink and relink are the pair that replaces the old
+  ` + "`browzer init --force`" + ` hack.
+
 Examples:
   browzer workspace unlink
   browzer workspace unlink --yes

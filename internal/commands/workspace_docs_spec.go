@@ -94,7 +94,19 @@ func parseSpec(s string, scope SpecScope) (*SpecResolver, error) {
 	// `--remove new` would silently mean "remove a file literally
 	// named 'new'", which is almost certainly not what they meant.
 	if isAnySentinel(s) {
-		return nil, fmt.Errorf("sentinel %q is not allowed for this flag", s)
+		var valid []string
+		switch scope {
+		case SpecScopeAdd:
+			valid = []string{"new"}
+		case SpecScopeReplace:
+			valid = []string{"all", "none"}
+		case SpecScopeRemove:
+			// No sentinels accepted for --remove.
+		}
+		if len(valid) == 0 {
+			return nil, fmt.Errorf("sentinel %q is not allowed for this flag (no sentinels accepted — use a literal path, glob, or @file)", s)
+		}
+		return nil, fmt.Errorf("sentinel %q is not allowed for this flag (accepted: %s)", s, strings.Join(valid, ", "))
 	}
 
 	// (2) @file reference.

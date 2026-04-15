@@ -13,6 +13,18 @@ func registerJob(parent *cobra.Command) {
 	job := &cobra.Command{
 		Use:   "job",
 		Short: "Inspect async ingestion jobs returned by `sync --no-wait`",
+		Long: `Inspect async ingestion batches submitted by ` + "`browzer sync --no-wait`" + `
+(and by ` + "`workspace index`" + ` / ` + "`workspace docs`" + ` when they queue work).
+
+Agent-friendly:
+  Poll 'browzer job get <batchId> --json' until .status is one of
+  "completed", "failed", or "partial". Respect Retry-After on 429.
+  ` + "`sync --no-wait`" + ` prints the batchId on stdout (JSON field:
+  "batchId") — capture it before polling.
+
+Subcommands:
+  get <batchId>   Fetch the status of a specific batch.
+` + output.ExitCodesHelp,
 	}
 
 	getCmd := &cobra.Command{

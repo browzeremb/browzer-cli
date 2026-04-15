@@ -15,6 +15,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
@@ -24,6 +25,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/browzeremb/browzer-cli/internal/walker"
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +33,10 @@ import (
 // parent cobra command. It is called from both the top-level root (as
 // the `browzer index` alias) and the `workspace` subgroup.
 func registerWorkspaceIndex(parent *cobra.Command) {
-	var dryRun bool
+	var (
+		dryRun bool
+		force  bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "index",
@@ -109,6 +114,20 @@ Examples:
 			}
 			client := ac.Client
 
+			// PR 3 — Fase 0: jobs-in-flight preflight.
+			//
+			// Re-parsing while ingestion is mid-flight risks racing the
+			// graph wipe against extraction (see plan PR 3). Surface the
+			// situation BEFORE the walk so we don't waste a few seconds
+			// of work to then bail. `--force` skips the check and sends
+			// X-Force-Parse: true on the parse call so the server gate
+			// bypasses too.
+			if !force {
+				if abortErr := preflightJobsInFlight(ctx, client, project.WorkspaceID, quiet); abortErr != nil {
+					return abortErr
+				}
+			}
+
 			sp := startStep("Walking code tree...")
 			tree, err := walker.WalkRepo(gitRoot)
 			if err != nil {
@@ -128,16 +147,24 @@ Examples:
 			}
 
 			sp = startStep("Re-parsing code on server...")
-			if err := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
+			parseResp, err := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
 				WorkspaceID: project.WorkspaceID,
 				RootPath:    tree.RootPath,
 				Folders:     tree.Folders,
 				Files:       tree.Files,
-			}); err != nil {
+			}, api.ParseWorkspaceOptions{ForceParse: force})
+			if err != nil {
 				failStep(sp, "Parse failed")
 				return err
 			}
-			finishStep(sp, "Code re-parsed")
+			// PR 3 — server short-circuits replays of identical bodies
+			// with `{ status: 'unchanged' }`. Surface that to the user
+			// instead of pretending a re-parse happened.
+			if parseResp != nil && parseResp.Status == "unchanged" {
+				finishStep(sp, "No changes detected — skipped re-parse")
+			} else {
+				finishStep(sp, "Code re-parsed")
+			}
 
 			// Stamp LastSyncCommit so `browzer status` can show drift.
 			// Best-effort — a failure here doesn't undo the server-side
@@ -169,7 +196,66 @@ Examples:
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would happen without calling the server")
+	cmd.Flags().BoolVar(&force, "force", false, "Skip the jobs-in-flight preflight and bypass the server's parse gate (X-Force-Parse: true)")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of progress text")
 	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
 	parent.AddCommand(cmd)
+}
+
+// preflightJobsInFlight is the shared Fase 0 check used by `index` and
+// `sync` (PR 3). Returns nil to proceed; non-nil error aborts the
+// command with a friendly exit code.
+//
+//   - 0 jobs in flight       → nil (proceed).
+//   - jobs in flight + TTY   → interactive confirm, N → ErrAbort sentinel.
+//   - jobs in flight + non-TTY → structured ERR_JOBS_IN_FLIGHT error.
+//
+// A failure of the preflight HTTP call itself is logged as a warning
+// and the function returns nil — abuse of the gate must not be the only
+// thing standing between a user and a parse, and the server-side gate
+// will catch real races anyway.
+func preflightJobsInFlight(ctx context.Context, client *api.Client, workspaceID string, quiet bool) error {
+	jobs, err := client.GetWorkspaceJobs(ctx, workspaceID)
+	if err != nil {
+		// Older server (no /jobs route) or transient blip — don't block.
+		// Server-side gate still catches real races.
+		if !quiet {
+			ui.Warn(fmt.Sprintf("could not check jobs-in-flight (continuing): %v", err))
+		}
+		return nil
+	}
+	total := jobs.Pending + jobs.Processing
+	if total == 0 {
+		return nil
+	}
+
+	msg := fmt.Sprintf(
+		"%d ingestion job(s) still in flight (%d pending, %d processing).",
+		total, jobs.Pending, jobs.Processing,
+	)
+	if jobs.OldestEnqueuedAt != "" {
+		msg += " Oldest enqueued at " + jobs.OldestEnqueuedAt + "."
+	}
+
+	if !isTTY() || quiet {
+		// Non-interactive: surface a structured error so scripts can
+		// react. `--force` bypasses; mention it in the message.
+		return cliErrors.Newf("%s Re-run with --force to bypass.", msg)
+	}
+
+	confirm := false
+	if confirmErr := huh.NewConfirm().
+		Title(msg).
+		Description("Proceed with re-parse anyway?").
+		Affirmative("Proceed").
+		Negative("Cancel").
+		Value(&confirm).
+		Run(); confirmErr != nil {
+		return confirmErr
+	}
+	if !confirm {
+		ui.Warn("Cancelled.")
+		return cliErrors.New("aborted by user")
+	}
+	return nil
 }

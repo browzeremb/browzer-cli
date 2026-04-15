@@ -98,6 +98,95 @@ var retryableMethods = map[string]bool{
 	http.MethodDelete: true,
 }
 
+// doWithHeaders is the underlying request runner that supports custom
+// per-request headers (used by ParseWorkspace's X-Force-Parse plumbing).
+// `do` is a thin wrapper that passes nil headers — the existing
+// callsites are unchanged.
+//
+// The caller is responsible for closing the response body.
+func (c *Client) doWithHeaders(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, headers map[string]string) (*http.Response, error) {
+	full := c.BaseURL + "/" + strings.TrimLeft(path, "/")
+	if len(query) > 0 {
+		full += "?" + query.Encode()
+	}
+
+	const maxAttempts = 4 // 1 initial + 3 retries
+	var resp *http.Response
+
+	// Buffer the body once so we can replay on retry. Non-retryable
+	// methods (POST) skip this and pass the io.Reader through directly.
+	var bodyBuf []byte
+	if body != nil && retryableMethods[method] {
+		var err error
+		bodyBuf, err = io.ReadAll(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	backoffs := []time.Duration{500 * time.Millisecond, 2 * time.Second, 8 * time.Second}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var reqBody io.Reader
+		if bodyBuf != nil {
+			reqBody = bytes.NewReader(bodyBuf)
+		} else {
+			reqBody = body
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, full, reqBody)
+		if err != nil {
+			return nil, err
+		}
+		if c.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		req.Header.Set("Accept", "application/json")
+		if c.UserAgent != "" {
+			req.Header.Set("User-Agent", c.UserAgent)
+		}
+		// Caller-supplied headers (e.g. X-Force-Parse) — applied AFTER
+		// the standard set so callers cannot accidentally clobber the
+		// auth bearer.
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err = c.HTTP.Do(req)
+		if err != nil {
+			// Network-level error: retry only on idempotent verbs.
+			if !retryableMethods[method] || attempt == maxAttempts-1 {
+				return nil, err
+			}
+		} else if !retryableStatuses[resp.StatusCode] || !retryableMethods[method] {
+			return resp, nil
+		} else {
+			// Retryable status — drain and close before sleeping.
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+
+		if attempt < maxAttempts-1 {
+			delay := backoffs[attempt]
+			if delay > 30*time.Second {
+				delay = 30 * time.Second // backoffLimit cap
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	if resp == nil {
+		return nil, errors.New("request failed after retries")
+	}
+	return resp, nil
+}
+
 // do is the core request runner. It builds an absolute URL, attaches
 // auth headers, retries idempotent verbs on transient failures with a
 // capped backoff, and returns the raw http.Response on success.
@@ -252,6 +341,13 @@ func httpStatusError(resp *http.Response) error {
 	bodyStr := strings.TrimSpace(string(bodyBytes))
 	env := parseErrorEnvelope(bodyBytes)
 
+	// Best-effort request-path extraction for contextual hints. Empty
+	// when the server or middleware stripped resp.Request.
+	reqPath := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		reqPath = resp.Request.URL.Path
+	}
+
 	switch resp.StatusCode {
 	case 401:
 		return cliErrors.WithCode("Unauthorized — run `browzer login` again.", cliErrors.ExitAuthError)
@@ -269,12 +365,36 @@ func httpStatusError(resp *http.Response) error {
 		if env != nil && env.Error == "model_restricted_by_plan" {
 			return cliErrors.WithCode(formatEnvelope("⛔ Modelo não disponível no seu plano", env, bodyStr), cliErrors.ExitError)
 		}
-		return cliErrors.WithCode("Forbidden — your token does not have access to this resource.", cliErrors.ExitError)
+		return cliErrors.WithCode(
+			"Forbidden — your token does not have access to this resource.\n"+
+				"Check permissions with 'browzer status --json' or contact your org admin.",
+			cliErrors.ExitError,
+		)
 	case 404:
-		return cliErrors.WithCode("Not found.", cliErrors.ExitNotFound)
+		msg := "Not found."
+		switch {
+		case strings.Contains(reqPath, "/workspaces/"):
+			msg += "\n  • List workspaces:  browzer workspace list --json" +
+				"\n  • Rebind current dir: browzer workspace relink <id>"
+		case strings.Contains(reqPath, "/documents/"):
+			msg += "\n  • Inspect plan:     browzer workspace docs --plan --json"
+		}
+		return cliErrors.WithCode(msg, cliErrors.ExitNotFound)
 	case 413:
 		// Input tokens exceed plan cap.
-		return cliErrors.NewQuotaExceededError(formatEnvelope("⚠ Input muito grande", env, bodyStr))
+		msg := formatEnvelope("⚠ Input muito grande", env, bodyStr)
+		msg += "\nPlan upgrade: https://browzeremb.com/dashboard/settings/billing"
+		return cliErrors.NewQuotaExceededError(msg)
+	case 409:
+		// PR 3 — `jobs_in_flight` from POST /api/workspaces/parse means
+		// ingestion is mid-flight on this workspace; --force bypasses.
+		if env != nil && env.Error == "jobs_in_flight" {
+			return cliErrors.WithCode(
+				formatEnvelope("⏳ Ingestion jobs still in flight — re-run with --force to bypass", env, bodyStr),
+				cliErrors.ExitError,
+			)
+		}
+		return cliErrors.WithCode(formatEnvelope("Conflict", env, bodyStr), cliErrors.ExitError)
 	case 423:
 		// Circuit breaker blocked this API key.
 		return cliErrors.WithCode(formatEnvelope("🚫 API key bloqueada", env, bodyStr), cliErrors.ExitAuthError)
@@ -290,12 +410,36 @@ func httpStatusError(resp *http.Response) error {
 		if env != nil && env.Error == "concurrency_limit_exceeded" {
 			return cliErrors.NewRateLimitError("⏱ Muitas requests simultâneas. Aguarde as anteriores finalizarem ou faça upgrade.", 0)
 		}
+		// PR 3 — `parse_cooldown` is a per-workspace SETNX cap with a
+		// short window. Surface a specific message so users know
+		// retrying immediately won't help; --force bypasses the gate.
+		if env != nil && env.Error == "parse_cooldown" {
+			msg := "⏱ Parse cooldown active (or re-run with --force). See 'browzer workspace index --help'."
+			if retryAfter > 0 {
+				msg = fmt.Sprintf(
+					"⏱ Parse cooldown active (wait %ds, or re-run with --force). See 'browzer workspace index --help'.",
+					retryAfter,
+				)
+			}
+			return cliErrors.NewRateLimitError(msg, retryAfter)
+		}
 		msg := "⏱ Rate limit atingido — reduza o ritmo das requests"
 		if retryAfter > 0 {
 			msg = fmt.Sprintf("⏱ Rate limit atingido — aguarde %ds antes de tentar novamente", retryAfter)
 		}
 		return cliErrors.NewRateLimitError(msg, retryAfter)
 	default:
+		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+			msg := fmt.Sprintf(
+				"Server unavailable (HTTP %d). Try again in a few seconds.\n"+
+					"Persistent? See https://browzeremb.com/status or open an issue at https://github.com/browzeremb/browzer-cli/issues.",
+				resp.StatusCode,
+			)
+			if bodyStr != "" && os.Getenv("BROWZER_DEBUG") == "1" {
+				msg += "\n" + bodyStr
+			}
+			return cliErrors.New(msg)
+		}
 		msg := fmt.Sprintf("server returned %d", resp.StatusCode)
 		if bodyStr != "" && os.Getenv("BROWZER_DEBUG") == "1" {
 			msg += ": " + bodyStr
