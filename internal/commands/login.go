@@ -112,7 +112,8 @@ func loginWithKey(ctx context.Context, server, keyArg string) error {
 		OrganizationID: me.OrganizationID,
 		// Far-future ISO timestamp — API keys have no fixed lifetime
 		// known to the CLI; server-side revocation is the source of truth.
-		ExpiresAt: "2099-12-31T23:59:59Z",
+		ExpiresAt:          "2099-12-31T23:59:59Z",
+		TelemetryConsentAt: me.TelemetryConsentAt,
 	}
 	if err := auth.SaveCredentials(creds); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
@@ -177,11 +178,12 @@ func loginWithDeviceFlow(ctx context.Context, server string, openBrowser bool) e
 	fmt.Printf("\n  Signed in as: %s\n  Organization: %s\n\n", me.Email, me.OrganizationName)
 
 	creds := &auth.Credentials{
-		Server:         server,
-		AccessToken:    tokens.AccessToken,
-		UserID:         me.UserID,
-		OrganizationID: me.OrganizationID,
-		ExpiresAt:      time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).UTC().Format(time.RFC3339),
+		Server:             server,
+		AccessToken:        tokens.AccessToken,
+		UserID:             me.UserID,
+		OrganizationID:     me.OrganizationID,
+		ExpiresAt:          time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).UTC().Format(time.RFC3339),
+		TelemetryConsentAt: me.TelemetryConsentAt,
 	}
 	if err := auth.SaveCredentials(creds); err != nil {
 		return fmt.Errorf("save credentials: %w", err)

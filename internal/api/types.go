@@ -11,6 +11,12 @@ type MeResponse struct {
 	Email            string `json:"email"`
 	OrganizationID   string `json:"organizationId"`
 	OrganizationName string `json:"organizationName"`
+	// TelemetryConsentAt is the ISO-8601 timestamp at which the user
+	// consented to CLI telemetry buckets (0017_telemetry_consent.sql),
+	// or nil when they have not yet consented. Persisted into the
+	// local credentials file so the daemon's telemetry batcher can
+	// gate on it without an extra round-trip on every flush.
+	TelemetryConsentAt *string `json:"telemetryConsentAt,omitempty"`
 }
 
 // WorkspaceDto is one row of GET /api/workspaces or GET /api/workspaces/:id.
