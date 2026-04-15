@@ -49,7 +49,7 @@ Examples:
 			}
 			out := cmd.OutOrStdout()
 			if Ultra || ultra {
-				return renderGainUltra(out, rows, since)
+				return renderGainUltra(out, rows, since, tr)
 			}
 			if jsonOut || save != "" {
 				body, _ := json.MarshalIndent(rows, "", "  ")
@@ -86,7 +86,7 @@ func renderGainTable(out interface{ Write(p []byte) (int, error) }, rows []track
 	return err
 }
 
-func renderGainUltra(out interface{ Write(p []byte) (int, error) }, rows []tracker.AggregatedRow, since string) error {
+func renderGainUltra(out interface{ Write(p []byte) (int, error) }, rows []tracker.AggregatedRow, since string, tr *tracker.Tracker) error {
 	var totalIn, totalSaved int64
 	var totalN int
 	for _, r := range rows {
@@ -97,6 +97,25 @@ func renderGainUltra(out interface{ Write(p []byte) (int, error) }, rows []track
 	pct := 0
 	if totalIn > 0 {
 		pct = int(totalSaved * 100 / (totalIn / 4))
+	}
+
+	// Best-effort: discover the model with the most events in the window.
+	topModel := ""
+	if tr != nil {
+		if modelRows, err := tr.QueryAggregated(since, "model"); err == nil {
+			for _, r := range modelRows {
+				if r.Group != "" && r.Group != "<unknown>" {
+					topModel = r.Group
+					break // QueryAggregated returns sorted by N DESC
+				}
+			}
+		}
+	}
+
+	if topModel != "" {
+		_, err := fmt.Fprintf(out, "%s: -%d%% (%dk saved across %d events, top: %s)\n",
+			since, pct, totalSaved/1000, totalN, topModel)
+		return err
 	}
 	_, err := fmt.Fprintf(out, "%s: -%d%% (%dk saved across %d events)\n", since, pct, totalSaved/1000, totalN)
 	return err

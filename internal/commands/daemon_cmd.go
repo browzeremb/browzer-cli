@@ -3,11 +3,14 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -19,15 +22,42 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// DaemonVersion is the CLI version string forwarded to the telemetry
-// sender as `cliVersion`. Set from `main.go` via `SetDaemonVersion`;
-// defaults to "dev" so unit tests that never call SetDaemonVersion
-// still compile and run.
-var DaemonVersion = "dev"
+// daemonVersion holds the CLI version forwarded to the telemetry sender.
+// Stored as atomic.Value so main's SetDaemonVersion and the batcher
+// goroutine can race-free.
+var daemonVersion atomic.Value // stores string
 
-// SetDaemonVersion is called from `cmd/browzer/main.go` at startup with
-// the ldflags-injected version.
-func SetDaemonVersion(v string) { DaemonVersion = v }
+func init() {
+	daemonVersion.Store("dev")
+}
+
+// SetDaemonVersion is called from cmd/browzer/main.go at startup.
+func SetDaemonVersion(v string) { daemonVersion.Store(v) }
+
+// DaemonVersion returns the current version string.
+func DaemonVersion() string {
+	v, _ := daemonVersion.Load().(string)
+	if v == "" {
+		return "dev"
+	}
+	return v
+}
+
+// consentGatedSend wraps a telemetry SendFn so that consent is re-checked on
+// every flush. If the user revokes consent via the web UI mid-session, the
+// updated credentials file is re-read on the next batcher tick and the flush
+// is skipped — no daemon restart required. Events remain in SQLite so
+// `browzer gain` keeps working.
+func consentGatedSend(realSend telemetry.SendFn) telemetry.SendFn {
+	return func(ctx context.Context, buckets []tracker.Bucket) error {
+		creds := auth.LoadCredentials()
+		if creds == nil || creds.TelemetryConsentAt == nil || *creds.TelemetryConsentAt == "" {
+			// Consent revoked or never granted — skip flush.
+			return nil
+		}
+		return realSend(ctx, buckets)
+	}
+}
 
 func registerDaemon(parent *cobra.Command) {
 	d := &cobra.Command{Use: "daemon", Short: "Manage the Browzer background daemon"}
@@ -67,29 +97,68 @@ func daemonStartCmd() *cobra.Command {
 			srv.Wire(deps)
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
+			if err := checkStaleDaemon(); err != nil {
+				return err
+			}
 			if err := writePID(); err != nil {
 				return err
 			}
 			defer os.Remove(config.PIDPath())
 
-			// Telemetry flusher — best-effort. Runs only when:
-			//   (a) tracker opened successfully, AND
-			//   (b) the current login has `telemetryConsentAt` set on the
-			//       server side (captured into the credentials file during
-			//       `browzer login`).
-			// When either condition is false the flusher is skipped; local
-			// SQLite tracking continues so `browzer gain` keeps working.
+			// C3: sweep stale /tmp/brz-read-* tempfiles every 60 s.
+			go func() {
+				t := time.NewTicker(60 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-t.C:
+						matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "brz-read-*"))
+						for _, f := range matches {
+							info, err := os.Stat(f)
+							if err != nil {
+								continue
+							}
+							if time.Since(info.ModTime()) > 5*time.Minute {
+								_ = os.Remove(f)
+							}
+						}
+					}
+				}
+			}()
+
+			// Telemetry flusher — best-effort. Starts whenever the tracker
+			// is open and credentials contain a server URL. Consent is
+			// re-checked on every flush via consentGatedSend, so a user
+			// who revokes via the web UI mid-session stops flushing within
+			// the next tick without needing a daemon restart.
 			if tr != nil {
-				if creds := auth.LoadCredentials(); creds != nil &&
-					creds.TelemetryConsentAt != nil && *creds.TelemetryConsentAt != "" {
+				creds := auth.LoadCredentials()
+				if creds != nil && creds.Server != "" {
 					sender := telemetry.NewSender(
 						creds.Server+"/api/telemetry/usage",
 						creds.AccessToken,
-						DaemonVersion,
+						DaemonVersion(),
 					)
-					b := telemetry.NewBatcher(tr, sender.Send, telemetry.BatcherOptions{})
+					b := telemetry.NewBatcher(tr, consentGatedSend(sender.Send), telemetry.BatcherOptions{})
 					go b.Run(ctx)
 				}
+				// Periodic retention cleanup: runs once at startup (to clear
+				// stale events from a previous install) then every hour.
+				go func() {
+					_ = tr.Cleanup()
+					tick := time.NewTicker(1 * time.Hour)
+					defer tick.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-tick.C:
+							_ = tr.Cleanup()
+						}
+					}
+				}()
 				defer tr.Close()
 			}
 
@@ -139,6 +208,36 @@ func daemonStatusCmd() *cobra.Command {
 
 func writePID() error {
 	return os.WriteFile(config.PIDPath(), []byte(strconv.Itoa(os.Getpid())), 0o600)
+}
+
+// checkStaleDaemon removes stale PID + socket from a previous daemon
+// crash. Returns nil (proceed) when no stale state exists OR when the
+// previous PID is verified dead. Returns a friendly error when a daemon
+// under the current uid is actually running.
+func checkStaleDaemon() error {
+	pidBytes, err := os.ReadFile(config.PIDPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // fresh state
+	}
+	if err != nil {
+		return fmt.Errorf("read pid file: %w", err)
+	}
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if perr != nil || pid <= 0 {
+		// garbage — treat as stale
+		_ = os.Remove(config.PIDPath())
+		_ = os.Remove(config.SocketPath(os.Getuid()))
+		return nil
+	}
+	// `kill -0 pid` probes without killing. ESRCH = dead.
+	proc, _ := os.FindProcess(pid)
+	if proc == nil || proc.Signal(syscall.Signal(0)) != nil {
+		// dead — clean up stale artifacts
+		_ = os.Remove(config.PIDPath())
+		_ = os.Remove(config.SocketPath(os.Getuid()))
+		return nil
+	}
+	return fmt.Errorf("daemon already running (pid %d); run `browzer daemon stop` first", pid)
 }
 
 // defaultDaemonDeps returns Read/Track/SessionRegister wired to the
@@ -198,9 +297,30 @@ func defaultDaemonDeps() (daemon.Deps, *tracker.Tracker, error) {
 }
 
 func doRead(manifests *daemon.ManifestCache, _ *daemon.SessionCache, p daemon.ReadParams) (daemon.ReadResult, error) {
-	body, err := os.ReadFile(p.Path)
+	// C2: Validate path to prevent traversal into sensitive directories.
+	clean := filepath.Clean(p.Path)
+	if !filepath.IsAbs(clean) {
+		return daemon.ReadResult{}, errors.New("path_must_be_absolute")
+	}
+	home, _ := os.UserHomeDir()
+	sensitivePrefixes := []string{
+		filepath.Join(home, ".browzer"),
+		filepath.Join(home, ".ssh"),
+		filepath.Join(home, ".aws"),
+		filepath.Join(home, ".config"),
+		"/etc",
+		"/root",
+		"/var/log",
+	}
+	for _, prefix := range sensitivePrefixes {
+		if strings.HasPrefix(clean, prefix+string(filepath.Separator)) || clean == prefix {
+			return daemon.ReadResult{}, errors.New("path_outside_workspace")
+		}
+	}
+
+	body, err := os.ReadFile(clean)
 	if err != nil {
-		return daemon.ReadResult{}, fmt.Errorf("read %s: %w", p.Path, err)
+		return daemon.ReadResult{}, fmt.Errorf("read %s: %w", clean, err)
 	}
 
 	// Resolve the per-file manifest entry when a workspaceId is supplied.
@@ -208,20 +328,21 @@ func doRead(manifests *daemon.ManifestCache, _ *daemon.SessionCache, p daemon.Re
 	// entry so ApplyFilter downgrades "aggressive" → "minimal".
 	mf := daemon.ManifestFile{}
 	if p.WorkspaceID != nil && *p.WorkspaceID != "" {
-		if rel, ok := workspaceRelativePath(*p.WorkspaceID, p.Path); ok {
+		if rel, ok := workspaceRelativePath(*p.WorkspaceID, clean); ok {
 			if entry, hit := manifests.FileForPath(*p.WorkspaceID, rel); hit {
 				mf = entry
 			}
 		}
 	}
 
-	out, level := daemon.ApplyFilter(body, p.FilterLevel, mf)
+	out, level := daemon.ApplyFilter(body, p.FilterLevel, clean, mf)
 	tmp, err := os.CreateTemp("", "brz-read-*")
 	if err != nil {
 		return daemon.ReadResult{}, err
 	}
 	defer tmp.Close()
 	if _, err := tmp.Write(out); err != nil {
+		_ = os.Remove(tmp.Name()) // cleanup on partial write
 		return daemon.ReadResult{}, err
 	}
 	saved := (len(body) - len(out)) / 4

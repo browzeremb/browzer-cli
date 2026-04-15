@@ -27,12 +27,8 @@ type Batcher struct {
 	opts BatcherOptions
 }
 
-// NewBatcher constructs a batcher.
-//
-// TODO(follow-up): Wire into daemon_cmd.go's daemonStartCmd().RunE after
-// the Daemon PR (feat/cli-token-economy-daemon) merges. The wiring should
-// gate on creds.TelemetryConsentAt != nil before starting the goroutine.
-// See Task 2 / Task 5.3 in docs/superpowers/plans/2026-04-15-cli-token-economy-tracking.md.
+// NewBatcher constructs a batcher. Callers should gate on
+// creds.TelemetryConsentAt != nil before starting the goroutine via Run.
 func NewBatcher(tr *tracker.Tracker, send SendFn, opts BatcherOptions) *Batcher {
 	if opts.Interval == 0 {
 		opts.Interval = 5 * time.Minute

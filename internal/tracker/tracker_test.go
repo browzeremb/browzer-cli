@@ -57,10 +57,13 @@ func TestTracker_RetentionDeletes90DayOldRows(t *testing.T) {
 	if err := tr.Record(old); err != nil {
 		t.Fatal(err)
 	}
-	// Record a fresh row to trigger the cleanup.
 	fresh := old
 	fresh.TS = time.Now().UTC().Format(time.RFC3339)
 	_ = tr.Record(fresh)
+	// Cleanup is no longer called inside Record; invoke it explicitly.
+	if err := tr.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
 
 	rows, _ := tr.QueryAggregated("365d", "source")
 	if len(rows) != 1 || rows[0].N != 1 {

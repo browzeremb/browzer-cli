@@ -40,7 +40,7 @@ func TestIntegration_SessionRegisterThenRead(t *testing.T) {
 				return ReadResult{}, err
 			}
 			mf, _ := manifests.FileForPath("ws_1", "foo.ts")
-			out, level := ApplyFilter(body, p.FilterLevel, mf)
+			out, level := ApplyFilter(body, p.FilterLevel, p.Path, mf)
 			tmp, _ := os.CreateTemp(dir, "brz-out-*")
 			_, _ = tmp.Write(out)
 			tmp.Close()

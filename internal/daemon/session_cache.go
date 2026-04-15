@@ -3,8 +3,10 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,7 +32,26 @@ func NewSessionCache(pathFor func(string) string) *SessionCache {
 // Register reads the transcript at transcriptPath, extracts the model,
 // caches it in memory + on disk, and returns it.
 func (c *SessionCache) Register(sessionID, transcriptPath string) (*string, error) {
-	model, err := extractModelFromTranscript(transcriptPath)
+	// I11: Validate that transcriptPath is within an expected directory to
+	// prevent a malicious process from making the daemon open arbitrary files.
+	home, _ := os.UserHomeDir()
+	allowedPrefixes := []string{
+		filepath.Join(home, ".claude"),
+		filepath.Clean(os.TempDir()),
+	}
+	clean := filepath.Clean(transcriptPath)
+	allowed := false
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(clean, prefix+string(filepath.Separator)) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, fmt.Errorf("transcript_path_outside_allowed: %s", clean)
+	}
+
+	model, err := extractModelFromTranscript(clean)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}

@@ -32,6 +32,7 @@ type Options struct {
 type Server struct {
 	opts      Options
 	startedAt time.Time
+	mu        sync.Mutex  // guards listener
 	listener  net.Listener
 	handlers  map[string]Handler
 	queueLen  atomic.Int64
@@ -75,7 +76,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	s.mu.Lock()
 	s.listener = l
+	s.mu.Unlock()
 	if err := os.Chmod(s.opts.SocketPath, 0o600); err != nil {
 		_ = l.Close()
 		return fmt.Errorf("chmod socket: %w", err)
@@ -101,8 +104,11 @@ func (s *Server) Serve(ctx context.Context) error {
 // Stop shuts the daemon down idempotently.
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
-		if s.listener != nil {
-			_ = s.listener.Close()
+		s.mu.Lock()
+		l := s.listener
+		s.mu.Unlock()
+		if l != nil {
+			_ = l.Close()
 		}
 		_ = os.Remove(s.opts.SocketPath)
 		close(s.stopped)
@@ -125,6 +131,9 @@ func (s *Server) idleWatcher(ctx context.Context) {
 		case <-t.C:
 			lastNs := s.lastReqAt.Load()
 			if time.Since(time.Unix(0, lastNs)) >= s.opts.IdleTimeout {
+				if s.queueLen.Load() > 0 {
+					continue // request in-flight — wait
+				}
 				s.Stop()
 				return
 			}

@@ -4,7 +4,7 @@ import "testing"
 
 func TestApplyFilter_None_Passthrough(t *testing.T) {
 	in := "function foo() {\n  return 42;\n}\n"
-	out, lvl := ApplyFilter([]byte(in), "none", ManifestFile{Language: "typescript"})
+	out, lvl := ApplyFilter([]byte(in), "none", "foo.ts", ManifestFile{Language: "typescript"})
 	if string(out) != in {
 		t.Fatalf("none should passthrough; got %q", string(out))
 	}
@@ -15,7 +15,7 @@ func TestApplyFilter_None_Passthrough(t *testing.T) {
 
 func TestApplyFilter_Minimal_StripsComments(t *testing.T) {
 	in := "// header\nfunction foo() {\n  /* block */\n  return 42; // tail\n}\n"
-	out, lvl := ApplyFilter([]byte(in), "minimal", ManifestFile{Language: "typescript"})
+	out, lvl := ApplyFilter([]byte(in), "minimal", "foo.ts", ManifestFile{Language: "typescript"})
 	s := string(out)
 	if containsAny(s, "// header", "/* block */", "// tail") {
 		t.Fatalf("minimal should strip comments; got %q", s)
@@ -44,7 +44,7 @@ export class Bar {
 		},
 		Exports: []string{"foo", "Bar"},
 	}
-	out, lvl := ApplyFilter([]byte(in), "aggressive", mf)
+	out, lvl := ApplyFilter([]byte(in), "aggressive", "foo.ts", mf)
 	s := string(out)
 	if !containsAll(s, "export function foo()", "export class Bar") {
 		t.Fatalf("aggressive should keep signatures; got %q", s)
@@ -54,6 +54,26 @@ export class Bar {
 	}
 	if lvl != "aggressive" {
 		t.Fatalf("level = %q", lvl)
+	}
+}
+
+func TestApplyFilter_AutoDetectsMarkdownAsNone(t *testing.T) {
+	// When level=="auto" and the path has a .md extension, ApplyFilter must
+	// resolve to "none" and return the content unchanged regardless of the
+	// ManifestFile language / LineCount fields.
+	in := "# Hello\n\nThis is a markdown document.\n"
+	out, lvl := ApplyFilter([]byte(in), "auto", "README.md", ManifestFile{Language: "markdown", LineCount: 9999})
+	if string(out) != in {
+		t.Fatalf("auto+.md should passthrough; got %q", string(out))
+	}
+	if lvl != "none" {
+		t.Fatalf("auto+.md level = %q, want none", lvl)
+	}
+	// Also verify with an empty path (no extension) that it falls through to
+	// normal resolution (non-empty path behaviour is tested by TestResolveAuto).
+	out2, lvl2 := ApplyFilter([]byte(in), "auto", "", ManifestFile{Language: "typescript", LineCount: 50})
+	if lvl2 != "minimal" {
+		t.Fatalf("auto+empty path, short ts should be minimal; got %q (out=%q)", lvl2, string(out2))
 	}
 }
 

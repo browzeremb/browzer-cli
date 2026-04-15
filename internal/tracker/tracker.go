@@ -63,11 +63,14 @@ func Open(path string) (*Tracker, error) {
 // Close releases the connection.
 func (t *Tracker) Close() error { return t.db.Close() }
 
-// Record inserts one event and runs the 90-day retention sweep on every call.
+// Record inserts one event into SQLite. Retention cleanup is handled
+// separately by Cleanup, which is called from a periodic goroutine in
+// the daemon — not on every write — to avoid per-call DELETE latency in
+// high-frequency hook-read loops.
 func (t *Tracker) Record(e Event) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, err := t.db.Exec(`
+	_, err := t.db.Exec(`
 		INSERT INTO events (ts, source, command, path_hash, input_bytes, output_bytes,
 		                    saved_tokens, savings_pct, filter_level, exec_ms,
 		                    workspace_id, session_id, model, filter_failed)
@@ -76,13 +79,17 @@ func (t *Tracker) Record(e Event) error {
 		e.TS, e.Source, e.Command, e.PathHash, e.InputBytes, e.OutputBytes,
 		e.SavedTokens, e.SavingsPct, e.FilterLevel, e.ExecMs,
 		e.WorkspaceID, e.SessionID, e.Model, boolToInt(e.FilterFailed),
-	); err != nil {
-		return err
-	}
-	if _, err := t.db.Exec(`DELETE FROM events WHERE ts < datetime('now', '-90 days')`); err != nil {
-		return err
-	}
-	return nil
+	)
+	return err
+}
+
+// Cleanup removes events older than 90 days. Intended to be called
+// from a periodic goroutine (see daemon_cmd.go).
+func (t *Tracker) Cleanup() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, err := t.db.Exec(`DELETE FROM events WHERE ts < datetime('now', '-90 days')`)
+	return err
 }
 
 // AggregatedRow is one row of the gain report.

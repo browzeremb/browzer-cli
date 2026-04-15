@@ -55,6 +55,32 @@ func TestGain_UltraOneLine(t *testing.T) {
 	}
 }
 
+func TestGain_UltraShowsTopModel(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "h.db")
+	tr, _ := tracker.Open(dbPath)
+	defer tr.Close()
+	for i := 0; i < 3; i++ {
+		_ = tr.Record(tracker.Event{
+			TS:          time.Now().UTC().Format(time.RFC3339),
+			Source:      "hook-read", InputBytes: 1000, OutputBytes: 200, SavedTokens: 200, SavingsPct: 80,
+			Model: ptrStr("claude-opus-4-6"),
+		})
+	}
+	cmd := newGainCommand(func() string { return dbPath })
+	Ultra = true
+	defer func() { Ultra = false }()
+	cmd.SetArgs([]string{})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !contains(out, "top: claude-opus-4-6") {
+		t.Fatalf("ultra output missing top model: %q", out)
+	}
+}
+
 func ptrStr(s string) *string { return &s }
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {

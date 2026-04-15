@@ -37,9 +37,11 @@ func ResolveAuto(path string, mf ManifestFile) string {
 
 // ApplyFilter applies the requested filter level. Returns the filtered
 // bytes and the effective level used (resolves "auto" to a concrete level).
-func ApplyFilter(in []byte, level string, mf ManifestFile) ([]byte, string) {
+// path is the file's path and is forwarded to ResolveAuto so that non-code
+// extensions (e.g. ".md", ".json") are correctly detected when level=="auto".
+func ApplyFilter(in []byte, level, path string, mf ManifestFile) ([]byte, string) {
 	if level == "" || level == "auto" {
-		level = ResolveAuto("", mf)
+		level = ResolveAuto(path, mf)
 	}
 	switch level {
 	case "none":
