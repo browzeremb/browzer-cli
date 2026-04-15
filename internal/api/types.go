@@ -167,6 +167,38 @@ type AskResponse struct {
 	SourceRefs []string    `json:"sourceRefs"`
 }
 
+// WorkspaceManifestSymbol is one symbol entry in a ManifestFile.
+// Mirrors the server-side shape emitted by
+// `packages/core/src/graph/get-workspace-manifest.ts`.
+type WorkspaceManifestSymbol struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	StartLine int    `json:"startLine"`
+	EndLine   int    `json:"endLine"`
+	Signature string `json:"signature"`
+	Doc       string `json:"doc"`
+}
+
+// WorkspaceManifestFile is the per-file entry keyed by workspace-relative path.
+type WorkspaceManifestFile struct {
+	IndexedAt string                    `json:"indexedAt"`
+	Language  string                    `json:"language"`
+	LineCount int                       `json:"lineCount"`
+	Symbols   []WorkspaceManifestSymbol `json:"symbols"`
+	Imports   []string                  `json:"imports"`
+	Exports   []string                  `json:"exports"`
+}
+
+// WorkspaceManifest is the response body of
+// `GET /api/workspaces/:id/manifest` — consumed by the daemon's
+// manifest cache to drive `filterLevel: "aggressive"` in
+// `browzer read` and the rewrite-read hook.
+type WorkspaceManifest struct {
+	WorkspaceID string                           `json:"workspaceId"`
+	IndexedAt   string                           `json:"indexedAt"`
+	Files       map[string]WorkspaceManifestFile `json:"files"`
+}
+
 // DeviceCodeResponse is the body of POST /api/device/code.
 type DeviceCodeResponse struct {
 	DeviceCode              string `json:"device_code"`

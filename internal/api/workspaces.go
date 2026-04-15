@@ -153,6 +153,19 @@ func (c *Client) FetchDeps(ctx context.Context, workspaceID, path string, revers
 	return &body, nil
 }
 
+// GetWorkspaceManifest fetches the per-file manifest consumed by the
+// daemon's filter engine when the user asks for `filterLevel:
+// "aggressive"`. The CLI caches the response at
+// `~/.browzer/workspaces/<id>/manifest.json`; the daemon reloads it on
+// demand via `ManifestCache.FileForPath`.
+func (c *Client) GetWorkspaceManifest(ctx context.Context, workspaceID string) (*WorkspaceManifest, error) {
+	var body WorkspaceManifest
+	if err := c.getJSON(ctx, "api/workspaces/"+workspaceID+"/manifest", nil, &body); err != nil {
+		return nil, err
+	}
+	return &body, nil
+}
+
 // GetWorkspace fetches a single workspace via the list endpoint
 // (mirrors the legacy `workspace get` behavior, since the read-by-id
 // route doesn't exist server-side).
@@ -173,7 +186,7 @@ func (c *Client) GetWorkspace(ctx context.Context, workspaceID string) (*Workspa
 // populated when ?include=docs or ?include=files is passed.
 type WorkspaceDetailDto struct {
 	WorkspaceDto
-	Documents []IndexedDocument `json:"documents,omitempty"`
+	Documents []IndexedDocument  `json:"documents,omitempty"`
 	Files     []WorkspaceFileDto `json:"files,omitempty"`
 }
 

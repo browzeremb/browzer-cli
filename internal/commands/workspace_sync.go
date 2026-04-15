@@ -154,8 +154,18 @@ func registerWorkspaceSync(parent *cobra.Command) {
 					if head := git.HEAD(gitRoot); head != "" {
 						project.LastSyncCommit = head
 						if saveErr := config.SaveProjectConfig(gitRoot, project); saveErr != nil {
-						ui.Warn(fmt.Sprintf("could not save project config: %v", saveErr))
+							ui.Warn(fmt.Sprintf("could not save project config: %v", saveErr))
+						}
 					}
+
+					// Pull the per-file manifest so the daemon's ManifestCache
+					// can back `filterLevel: "aggressive"` in `browzer read` +
+					// the rewrite-read hook. Best-effort — stale cache just
+					// downgrades aggressive → minimal.
+					if err := pullAndSaveManifest(ctx, client, project.WorkspaceID); err != nil {
+						if !quiet {
+							ui.Warn(fmt.Sprintf("could not cache workspace manifest: %v", err))
+						}
 					}
 				}
 			}

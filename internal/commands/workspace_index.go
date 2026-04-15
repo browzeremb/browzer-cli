@@ -178,6 +178,16 @@ Examples:
 				_ = config.SaveProjectConfig(gitRoot, project)
 			}
 
+			// Pull the per-file manifest so the daemon's ManifestCache
+			// can back `filterLevel: "aggressive"` in `browzer read` +
+			// the rewrite-read hook. Best-effort — stale cache just
+			// downgrades aggressive → minimal.
+			if err := pullAndSaveManifest(ctx, client, project.WorkspaceID); err != nil {
+				if !quiet {
+					ui.Warn(fmt.Sprintf("could not cache workspace manifest: %v", err))
+				}
+			}
+
 			if !quiet {
 				fmt.Println()
 				ui.Success("Code re-indexed")
