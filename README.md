@@ -58,7 +58,7 @@ Pick whichever channel matches your environment.
 curl -fsSL https://browzeremb.com/install.sh | sh
 ```
 
-Detects OS/arch, downloads the matching tarball from the latest GitHub release, verifies the SHA-256 checksum, and drops the binary into `~/.local/bin/browzer`. Pin a tag with `BROWZER_VERSION=v1.0.0`.
+Detects OS/arch, downloads the matching tarball from the latest GitHub release, verifies the SHA-256 checksum, and drops the binary into `~/.local/bin/browzer`. Pin a tag with `BROWZER_VERSION=v1.0.2`.
 
 ### Homebrew (macOS / Linux)
 
