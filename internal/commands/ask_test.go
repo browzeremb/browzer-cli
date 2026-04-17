@@ -131,7 +131,7 @@ func TestResolveWorkspaceID_APIError(t *testing.T) {
 }
 
 // TestFormatAskResponse_WithSources verifies that sources and cache-hit
-// indicator are rendered in the human-readable output.
+// indicator are rendered in the human-readable output (legacy shape, no positions).
 func TestFormatAskResponse_WithSources(t *testing.T) {
 	resp := &api.AskResponse{
 		Answer:   "The answer is 42.",
@@ -154,6 +154,146 @@ func TestFormatAskResponse_NoSources(t *testing.T) {
 	got := formatAskResponse(resp)
 	if got != "Simple answer." {
 		t.Errorf("unexpected output: %q", got)
+	}
+}
+
+// TestFormatAskResponse_WithPositions verifies the new B14/B15 format:
+// "<doc>#chunk<N> (score <S>)" for each position entry.
+func TestFormatAskResponse_WithPositions(t *testing.T) {
+	resp := &api.AskResponse{
+		Answer: "Cache pipeline explained.",
+		Sources: []api.AskSource{
+			{DocumentName: "packages/core/src/search/chain.ts", Score: 0.95, Positions: []int{2, 5}},
+			{DocumentName: "apps/api/src/routes/ask.ts", Score: 0.87, Positions: []int{1}},
+		},
+	}
+	got := formatAskResponse(resp)
+	for _, want := range []string{
+		"packages/core/src/search/chain.ts#chunk2 (score 0.950)",
+		"packages/core/src/search/chain.ts#chunk5 (score 0.950)",
+		"apps/api/src/routes/ask.ts#chunk1 (score 0.870)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatAskResponse output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestFormatAskResponse_PositionsFallback verifies that a source without
+// Positions (older server) still renders gracefully without a "#chunk" suffix.
+func TestFormatAskResponse_PositionsFallback(t *testing.T) {
+	resp := &api.AskResponse{
+		Answer: "Fallback answer.",
+		Sources: []api.AskSource{
+			{DocumentName: "README.md", Score: 0.80},
+		},
+	}
+	got := formatAskResponse(resp)
+	if !strings.Contains(got, "README.md (score 0.800)") {
+		t.Errorf("expected fallback format, got:\n%s", got)
+	}
+	if strings.Contains(got, "#chunk") {
+		t.Errorf("expected no #chunk in fallback format, got:\n%s", got)
+	}
+}
+
+// TestFormatAskResponse_WithTimingAndSourceRefs verifies that AskResponse
+// can carry timing and sourceRefs fields (they are printed only in JSON mode;
+// the human formatter ignores them — this test asserts the struct is populated
+// correctly when decoded from a mock server payload).
+func TestFormatAskResponse_WithTimingAndSourceRefs(t *testing.T) {
+	searchMs := 120
+	resp := &api.AskResponse{
+		Answer:     "Timing answer.",
+		SourceRefs: []string{"1", "3"},
+		Timing:     &api.AskTiming{Search: &searchMs},
+		Sources: []api.AskSource{
+			{DocumentName: "doc.md", Score: 0.9, Positions: []int{1}},
+		},
+	}
+	if len(resp.SourceRefs) != 2 || resp.SourceRefs[0] != "1" || resp.SourceRefs[1] != "3" {
+		t.Errorf("unexpected SourceRefs: %v", resp.SourceRefs)
+	}
+	if resp.Timing == nil || resp.Timing.Search == nil || *resp.Timing.Search != 120 {
+		t.Errorf("unexpected Timing: %+v", resp.Timing)
+	}
+	got := formatAskResponse(resp)
+	if !strings.Contains(got, "doc.md#chunk1") {
+		t.Errorf("expected chunk format in output, got:\n%s", got)
+	}
+}
+
+// TestAsk_ServerPayloadDecoding verifies that the CLI correctly decodes
+// a B14/B15 server payload: deduped sources with positions, sourceRefs, timing.
+func TestAsk_ServerPayloadDecoding(t *testing.T) {
+	payload := map[string]any{
+		"answer": "The cache uses pgvector.",
+		"found":  true,
+		"cached": false,
+		"sourceRefs": []string{"1", "2"},
+		"timing": map[string]any{
+			"search": 95,
+		},
+		"sources": []map[string]any{
+			{
+				"documentName": "packages/core/src/search/answer-cache.ts",
+				"score":        0.93,
+				"positions":    []int{1, 3},
+			},
+			{
+				"documentName": "apps/api/src/routes/ask.ts",
+				"score":        0.81,
+				"positions":    []int{2},
+			},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/workspaces":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspaces": []map[string]any{{"id": "ws-test", "name": "Test"}},
+			})
+		case "/ask":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	ac := newTestClient(t, srv)
+	resp, err := ac.Client.Ask(t.Context(), api.AskRequest{Question: "How does the cache work?", WorkspaceID: "ws-test"})
+	if err != nil {
+		t.Fatalf("Ask failed: %v", err)
+	}
+
+	// Assert no duplicate documentNames in sources.
+	seen := map[string]bool{}
+	for _, s := range resp.Sources {
+		if seen[s.DocumentName] {
+			t.Errorf("duplicate documentName in sources: %q", s.DocumentName)
+		}
+		seen[s.DocumentName] = true
+	}
+
+	// Assert positions populated.
+	if len(resp.Sources) < 1 || len(resp.Sources[0].Positions) == 0 {
+		t.Errorf("expected positions on first source, got: %+v", resp.Sources)
+	}
+
+	// Assert sourceRefs propagated.
+	if len(resp.SourceRefs) != 2 {
+		t.Errorf("expected 2 sourceRefs, got %d: %v", len(resp.SourceRefs), resp.SourceRefs)
+	}
+
+	// Assert timing.search populated.
+	if resp.Timing == nil || resp.Timing.Search == nil {
+		t.Errorf("expected timing.search, got: %+v", resp.Timing)
+	} else if *resp.Timing.Search != 95 {
+		t.Errorf("expected timing.search=95, got %d", *resp.Timing.Search)
 	}
 }
 

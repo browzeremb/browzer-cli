@@ -126,3 +126,23 @@ var DefaultIgnoreDirs = map[string]struct{}{
 	"venv":         {},
 	"env":          {},
 }
+
+// DefaultIgnorePathSuffixes holds multi-component path patterns that should
+// be skipped by default (e.g., test/fixtures/**). Checked via path suffix
+// match, not single directory names.
+var DefaultIgnorePathSuffixes = []string{
+	"test/fixtures",
+}
+
+// IsDefaultIgnoredPath returns true if relPath matches any hardcoded
+// default-ignore path patterns (e.g., test/fixtures). relPath should use
+// forward slashes as separators (call filepath.ToSlash first if needed).
+func IsDefaultIgnoredPath(relPath string) bool {
+	normalized := strings.ReplaceAll(filepath.ToSlash(relPath), `\`, "/")
+	for _, suffix := range DefaultIgnorePathSuffixes {
+		if normalized == suffix || strings.HasSuffix(normalized, "/"+suffix) {
+			return true
+		}
+	}
+	return false
+}

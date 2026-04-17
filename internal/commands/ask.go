@@ -20,8 +20,16 @@ const askSchemaJSON = `{
   "type": "object",
   "required": ["answer"],
   "properties": {
-    "answer":   {"type": "string"},
-    "cacheHit": {"type": "boolean"},
+    "answer":     {"type": "string"},
+    "cacheHit":   {"type": "boolean"},
+    "sourceRefs": {"type": "array", "items": {"type": "string"}},
+    "timing": {
+      "type": "object",
+      "properties": {
+        "search": {"type": "integer"},
+        "graph":  {"type": "integer"}
+      }
+    },
     "sources": {
       "type": "array",
       "items": {
@@ -29,8 +37,7 @@ const askSchemaJSON = `{
         "properties": {
           "documentName": {"type": "string"},
           "score":        {"type": "number"},
-          "text":         {"type": "string"},
-          "position":     {"type": "integer"}
+          "positions":    {"type": "array", "items": {"type": "integer"}}
         }
       }
     }
@@ -146,13 +153,31 @@ func resolveWorkspaceID(cmd *cobra.Command, ac *api.AuthenticatedClient, flagVal
 }
 
 // formatAskResponse renders an AskResponse as human-readable text.
+//
+// Source lines use the new B14/B15 shape when Positions is populated:
+//
+//	<documentName>#chunk<N> (score <S>)
+//
+// For documents with multiple chunks, one line is emitted per chunk
+// position. Older servers that omit Positions fall back to the legacy
+// single-line format:
+//
+//	<documentName> (score <S>)
 func formatAskResponse(resp *api.AskResponse) string {
 	var sb strings.Builder
 	sb.WriteString(resp.Answer)
 	if len(resp.Sources) > 0 {
 		sb.WriteString("\n\nSources:\n")
-		for i, s := range resp.Sources {
-			sb.WriteString(fmt.Sprintf("  %d. %s (score %.3f)\n", i+1, s.DocumentName, s.Score))
+		for _, s := range resp.Sources {
+			if len(s.Positions) > 0 {
+				// New shape: one line per chunk position.
+				for _, pos := range s.Positions {
+					sb.WriteString(fmt.Sprintf("  %s#chunk%d (score %.3f)\n", s.DocumentName, pos, s.Score))
+				}
+			} else {
+				// Fallback: older server shape without positions.
+				sb.WriteString(fmt.Sprintf("  %s (score %.3f)\n", s.DocumentName, s.Score))
+			}
 		}
 	}
 	if resp.CacheHit {

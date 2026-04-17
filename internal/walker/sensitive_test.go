@@ -56,6 +56,40 @@ func TestIsSensitive(t *testing.T) {
 	}
 }
 
+func TestIsDefaultIgnoredPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		// test/fixtures directory at various depths should be excluded
+		{"test/fixtures", true},
+		{"apps/api/test/fixtures", true},
+		{"packages/core/test/fixtures", true},
+
+		// test/ alone should NOT be excluded (only the fixtures subdirectory)
+		{"test", false},
+		{"apps/api/test", false},
+
+		// Other directories should NOT be excluded
+		{"apps/api", false},
+		{"src/routes", false},
+		{"node_modules", false}, // handled by DefaultIgnoreDirs, not path suffixes
+		{"dist", false},         // handled by DefaultIgnoreDirs, not path suffixes
+
+		// Windows path normalization (backslash → forward slash)
+		{`apps\api\test\fixtures`, true},
+		{`test\fixtures`, true},
+		{`apps\api\test`, false},
+	}
+
+	for _, c := range cases {
+		got := IsDefaultIgnoredPath(c.path)
+		if got != c.want {
+			t.Errorf("IsDefaultIgnoredPath(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
 func TestRerootGitignore(t *testing.T) {
 	cases := []struct {
 		text   string

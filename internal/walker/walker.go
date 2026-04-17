@@ -131,6 +131,9 @@ func walk(absDir, relDir string, matcher *ignoreMatcher, tree *ParseTreeInput, d
 			if _, skip := DefaultIgnoreDirs[name]; skip {
 				continue
 			}
+			if IsDefaultIgnoredPath(relPath) {
+				continue
+			}
 			if matcher.matches(relPath + "/") {
 				continue
 			}

@@ -153,10 +153,21 @@ type AskRequest struct {
 }
 
 // AskSource is one cited source in the /ask response.
+// After B14/B15 the server deduplicates by documentName server-side;
+// Positions holds the 1-based chunk indices that came from this document.
 type AskSource struct {
 	Text         string  `json:"text"`
 	DocumentName string  `json:"documentName"`
 	Score        float64 `json:"score"`
+	// Positions lists the 1-based chunk positions from this document.
+	// Present on servers >= B14; nil/empty on older servers.
+	Positions []int `json:"positions,omitempty"`
+}
+
+// AskTiming carries wall-clock durations (ms) for the retrieval stages.
+type AskTiming struct {
+	Search *int `json:"search,omitempty"`
+	Graph  *int `json:"graph,omitempty"`
 }
 
 // AskResponse is the body of a successful POST /ask response.
@@ -165,6 +176,7 @@ type AskResponse struct {
 	Sources    []AskSource `json:"sources"`
 	CacheHit   bool        `json:"cacheHit"`
 	SourceRefs []string    `json:"sourceRefs"`
+	Timing     *AskTiming  `json:"timing,omitempty"`
 }
 
 // WorkspaceManifestSymbol is one symbol entry in a ManifestFile.

@@ -68,20 +68,25 @@ Examples:
 				usage = nil
 			}
 
+			workspacePayload := map[string]any{
+				"id":          project.WorkspaceID,
+				"name":        project.WorkspaceName,
+				"root":        gitRoot,
+				"fileCount":   ws.FileCount,
+				"folderCount": ws.FolderCount,
+				"symbolCount": ws.SymbolCount,
+			}
+			if project.LastSyncCommit != "" {
+				workspacePayload["lastSyncCommit"] = project.LastSyncCommit
+			}
+
 			payload := map[string]any{
 				"user":              map[string]string{"id": creds.UserID},
 				"organization":      map[string]string{"id": creds.OrganizationID},
 				"server":            project.Server,
 				"tokenExpiresAt":    creds.ExpiresAt,
 				"tokenExpiresHuman": formatExpiry(creds.ExpiresAt),
-				"workspace": map[string]any{
-					"id":          project.WorkspaceID,
-					"name":        project.WorkspaceName,
-					"root":        gitRoot,
-					"fileCount":   ws.FileCount,
-					"folderCount": ws.FolderCount,
-					"symbolCount": ws.SymbolCount,
-				},
+				"workspace":         workspacePayload,
 			}
 			if usage != nil {
 				payload["billing"] = usage

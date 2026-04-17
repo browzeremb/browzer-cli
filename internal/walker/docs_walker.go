@@ -82,6 +82,9 @@ func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, out *[]DocFile, 
 			if _, skip := DefaultIgnoreDirs[name]; skip {
 				continue
 			}
+			if IsDefaultIgnoredPath(relPath) {
+				continue
+			}
 			if matcher.matches(relPath + "/") {
 				continue
 			}
