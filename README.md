@@ -37,16 +37,41 @@ Designed to be agent-friendly: every read command supports `--json` and `--save 
 
 ## Token Economy (v0.8.0)
 
-When paired with the Claude Code plugin, `browzer read` replaces built-in `Read`/`Glob`/`Grep` tool calls with daemon-filtered equivalents. Savings reported by `browzer gain` on medium TypeScript/Go repos:
+When paired with the Claude Code plugin, `browzer read` replaces built-in `Read`/`Glob`/`Grep` tool calls with daemon-filtered equivalents. Savings reported by `browzer gain` on medium TypeScript/Go repos (numbers below use the calibrated per-language tokenizer shipped in v1.0.3 — see "How `savedTokens` is calculated" below):
 
 | Operation                | Standard | browzer `read` (`--filter auto`) | Savings |
 | ------------------------ | -------: | -------------------------------: | ------: |
-| `Read` a 2k-line `.ts`   |  ~20,000 |                           ~3,000 |    -85% |
-| `Read` a 500-line `.go`  |   ~5,000 |                             ~900 |    -82% |
-| `Glob` into a large repo |   ~8,000 |                             ~800 |    -90% |
-| `Grep` wide codebase     |  ~15,000 |                           ~2,500 |    -83% |
+| `Read` a 2k-line `.ts`   |  ~33,000 |                           ~5,000 |    -85% |
+| `Read` a 500-line `.go`  |   ~9,300 |                           ~1,700 |    -82% |
+| `Glob` into a large repo |  ~14,000 |                           ~1,400 |    -90% |
+| `Grep` wide codebase     |  ~25,000 |                           ~4,200 |    -83% |
 
 > Actual savings vary by project. Run `browzer gain --since 7d` for your own numbers.
+>
+> Pre-v1.0.3 the daemon used a flat `bytes/4` heuristic that under-reported Claude tokens by ~40%. Historic `browzer gain` rows written before the upgrade reflect the old (lower) numbers; events tracked after v1.0.3 use the calibrated per-language coefficients and match Anthropic billing within ~14% mean absolute error.
+
+### How `savedTokens` is calculated
+
+The daemon does not ship Claude's tokenizer (Anthropic doesn't publish it publicly for Claude 3/4). Instead, `savedTokens` is estimated per-language from the byte delta using coefficients calibrated against Anthropic's `count_tokens` API:
+
+```
+savedTokens = (rawBytes - filteredBytes) / charsPerToken[language]
+```
+
+| Language   | chars/token | Source                                            |
+| ---------- | ----------: | ------------------------------------------------- |
+| typescript |        2.39 | median over N=28 files in the calibration sample  |
+| javascript |        2.22 | N=8                                               |
+| go         |        2.15 | N=12                                              |
+| python     |        2.79 | N=2 (thin sample — may refine with more data)     |
+| markdown   |        2.56 | N=12                                              |
+| json       |        1.97 | N=4                                               |
+| yaml       |        2.36 | N=4                                               |
+| *default*  |        2.36 | overall median when language is unknown           |
+
+Calibration methodology: 70 files × `count_tokens` (claude-opus-4-7), corrected for the 11-token chat wrapper overhead, fit by language. Mean absolute error on the savings delta: **14%** (vs **35%** for the previous flat `÷4` heuristic). Family-4 models (Opus / Sonnet / Haiku) share the same tokenizer, so one model suffices.
+
+The absolute number still diverges from the Anthropic billing figure by single-digit percent — for exact per-request audits, use `count_tokens` directly or inspect the `usage` block the Anthropic API returns on every response.
 
 ## Installation
 
@@ -58,7 +83,7 @@ Pick whichever channel matches your environment.
 curl -fsSL https://browzeremb.com/install.sh | sh
 ```
 
-Detects OS/arch, downloads the matching tarball from the latest GitHub release, verifies the SHA-256 checksum, and drops the binary into `~/.local/bin/browzer`. Pin a tag with `BROWZER_VERSION=v1.0.2`.
+Detects OS/arch, downloads the matching tarball from the latest GitHub release, verifies the SHA-256 checksum, and drops the binary into `~/.local/bin/browzer`. Pin a tag with `BROWZER_VERSION=v1.0.3`.
 
 ### Homebrew (macOS / Linux)
 

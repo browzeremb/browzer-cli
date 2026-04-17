@@ -31,6 +31,68 @@ func init() {
 	daemonVersion.Store("dev")
 }
 
+// charsPerToken is the per-language divisor used to estimate Claude tokens
+// from raw byte deltas. Calibrated 2026-04-17 against claude-opus-4-7 via
+// the Anthropic count_tokens API. Sample: N=70 files in the browzer monorepo,
+// stratified by language × size bucket. See docs/retrospectives/2026-04-17
+// token-calibration notes for methodology.
+//
+// The previous constant (4) under-predicted Claude tokens by ~40% across the
+// board because Claude's BPE tokenizer is denser than the OpenAI 4-chars/token
+// rule of thumb — especially for code. With these coefficients, mean absolute
+// error on the savings delta drops from 35% to 14%.
+var charsPerToken = map[string]float64{
+	"typescript": 2.39,
+	"javascript": 2.22,
+	"go":         2.15,
+	"python":     2.79,
+	"markdown":   2.56,
+	"json":       1.97,
+	"yaml":       2.36,
+}
+
+// defaultCharsPerToken is the overall median across the calibration sample,
+// used when the language is unknown (manifest miss + extension not mapped).
+const defaultCharsPerToken = 2.36
+
+// extLanguage maps a file extension (lowercase, with dot) to the language
+// key used by charsPerToken. Used as a fallback when the workspace manifest
+// does not report a language for the file.
+var extLanguage = map[string]string{
+	".ts":   "typescript",
+	".tsx":  "typescript",
+	".mts":  "typescript",
+	".cts":  "typescript",
+	".js":   "javascript",
+	".jsx":  "javascript",
+	".mjs":  "javascript",
+	".cjs":  "javascript",
+	".go":   "go",
+	".py":   "python",
+	".md":   "markdown",
+	".mdx":  "markdown",
+	".json": "json",
+	".yaml": "yaml",
+	".yml":  "yaml",
+}
+
+// cptFor picks the chars-per-token divisor for a given (manifest language,
+// file path). Prefers the manifest value when non-empty; falls back to
+// extension lookup; finally defaults to defaultCharsPerToken.
+func cptFor(manifestLang, path string) float64 {
+	if manifestLang != "" {
+		if v, ok := charsPerToken[manifestLang]; ok {
+			return v
+		}
+	}
+	if lang, ok := extLanguage[strings.ToLower(filepath.Ext(path))]; ok {
+		if v, ok := charsPerToken[lang]; ok {
+			return v
+		}
+	}
+	return defaultCharsPerToken
+}
+
 // SetDaemonVersion is called from cmd/browzer/main.go at startup.
 func SetDaemonVersion(v string) { daemonVersion.Store(v) }
 
@@ -345,7 +407,7 @@ func doRead(manifests *daemon.ManifestCache, _ *daemon.SessionCache, p daemon.Re
 		_ = os.Remove(tmp.Name()) // cleanup on partial write
 		return daemon.ReadResult{}, err
 	}
-	saved := (len(body) - len(out)) / 4
+	saved := int(float64(len(body)-len(out)) / cptFor(mf.Language, clean))
 	if saved < 0 {
 		saved = 0
 	}
