@@ -20,14 +20,16 @@ import "fmt"
 // Exit-code constants. Prefer these over bare integers when constructing
 // a CliError so the mapping stays discoverable in one place.
 const (
-	ExitOK         = 0
-	ExitError      = 1
-	ExitAuthError  = 2
-	ExitNoProject  = 3
-	ExitNotFound   = 4
-	ExitQuotaError = 5  // 402 Payment Required, 413 Input Too Large
-	ExitRateLimit  = 6  // 429 Too Many Requests / concurrency cap
-	ExitOutdated   = 10 // `browzer upgrade --check` found a newer release
+	ExitOK             = 0
+	ExitError          = 1
+	ExitAuthError      = 2
+	ExitNoProject      = 3
+	ExitNotFound       = 4
+	ExitQuotaError     = 5  // 402 Payment Required, 413 Input Too Large
+	ExitRateLimit      = 6  // 429 Too Many Requests / concurrency cap
+	ExitPartialFailure = 7  // some docs failed ingestion (poll returned partial success)
+	ExitTotalFailure   = 8  // all docs failed ingestion (poll returned no completions)
+	ExitOutdated       = 10 // `browzer upgrade --check` found a newer release
 )
 
 // CliError is the base error type carrying an exit code. Wrap any

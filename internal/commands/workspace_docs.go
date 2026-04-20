@@ -223,6 +223,7 @@ func registerWorkspaceDocs(parent *cobra.Command) {
 		removeRaw   string
 		replaceRaw  string
 		iKnow       bool
+		noWait      bool
 	)
 
 	cmd := &cobra.Command{
@@ -556,14 +557,33 @@ Examples:
 				newCache.Files[k] = v
 			}
 
+			var uploadResult upload.Result
 			if len(toUpload) > 0 {
 				sp := ui.StartSpinner(fmt.Sprintf("Uploading %d docs...", len(toUpload)))
-				_, err := upload.UploadInBatches(ctx, client, &project.WorkspaceID, toWalkerDocs(toUpload), &newCache, nil, false)
+				r, err := upload.UploadInBatches(ctx, client, &project.WorkspaceID, toWalkerDocs(toUpload), &newCache, nil, noWait)
 				if err != nil {
 					sp.Failure("Upload failed")
 					return err
 				}
-				sp.Success(fmt.Sprintf("Uploaded %d docs", len(toUpload)))
+				uploadResult = r
+				if noWait {
+					// --no-wait: exit 0 reflects only the initial POST, not
+					// eventual completion. Per-file ingestion results are
+					// not yet known. Use `browzer job status <batchId>` to
+					// inspect the outcome later.
+					sp.Success(fmt.Sprintf("Enqueued %d docs (batch IDs: %s)", len(toUpload), strings.Join(r.BatchIDs, ", ")))
+				} else if r.FailedCount > 0 {
+					// Default (polling) path: some docs failed ingestion.
+					// Print the per-file summary and mark the spinner as failed.
+					sp.Failure(fmt.Sprintf("⚠ %d of %d docs failed", r.FailedCount, len(toUpload)))
+					for _, name := range r.FailedNames {
+						output.Errf("  ⚠ %s: ingestion failed\n", name)
+					}
+				} else {
+					// All docs completed successfully — defer this headline
+					// until AFTER the poll returns so the timing is truthful.
+					sp.Success(fmt.Sprintf("✓ Uploaded %d docs", r.UploadedCount))
+				}
 			}
 
 			deletesFailed := 0
@@ -594,6 +614,24 @@ Examples:
 
 			if deletesFailed > 0 {
 				return cliErrors.Newf("%d document delete(s) failed — see warnings above.", deletesFailed)
+			}
+
+			// Exit-code taxonomy for ingestion poll failures (default path only;
+			// --no-wait skips the poll so exit 0 reflects only the initial POST):
+			//   7 (ExitPartialFailure) — some docs failed, at least one succeeded
+			//   8 (ExitTotalFailure)   — all docs failed (no completions)
+			if !noWait && uploadResult.FailedCount > 0 {
+				total := uploadResult.UploadedCount + uploadResult.FailedCount
+				if uploadResult.UploadedCount == 0 {
+					return cliErrors.WithCode(
+						fmt.Sprintf("all %d doc(s) failed ingestion — see warnings above.", total),
+						cliErrors.ExitTotalFailure,
+					)
+				}
+				return cliErrors.WithCode(
+					fmt.Sprintf("%d of %d doc(s) failed ingestion — see warnings above.", uploadResult.FailedCount, total),
+					cliErrors.ExitPartialFailure,
+				)
 			}
 
 			// --- Non-interactive submit: emit machine-readable result.
@@ -629,6 +667,7 @@ Examples:
 	cmd.Flags().StringVar(&removeRaw, "remove", "", "Non-interactive: remove indexed paths matching <spec>. Example: --remove docs/old.md  OR  --remove 'legacy/*.md'")
 	cmd.Flags().StringVar(&replaceRaw, "replace", "", "Non-interactive: replace the full selection with <spec>. Sentinels: 'all' (every local file) / 'none' (delete everything). Example: --replace docs/only.md --i-know-what-im-doing")
 	cmd.Flags().BoolVar(&iKnow, "i-know-what-im-doing", false, "Confirm destructive intent — required when the computed delta would delete >= 5 documents.")
+	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Fire-and-forget: enqueue the upload without polling for completion. Exit 0 reflects only the initial POST, not eventual ingestion success or failure. Use `browzer job status <batchId>` to inspect the outcome later.")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON. Works with --plan (read-only) and with --add/--remove/--replace (submit result).")
 	cmd.Flags().String("save", "", "Write JSON output to the given file path. Implies --json. Example: --save /tmp/docs-plan.json")
 	parent.AddCommand(cmd)

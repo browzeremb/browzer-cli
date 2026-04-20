@@ -8,7 +8,7 @@ Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
 - Has its own `go.mod` (module `github.com/browzeremb/browzer-cli`, Go 1.25+) and goreleaser pipeline.
 - Run its tests with `cd packages/cli && go test ./...`.
 - Build locally with `cd packages/cli && go build -o "$HOME/.local/bin/browzer" ./cmd/browzer`.
-- Released as `v1.0.3` (current). v0.8.0 shipped the token-economy subsystem (daemon + tracker + telemetry + hooks + `read`/`gain`/`plugin`/`config` commands); v1.0.0 was the first stable release and shipped the public marketplace-based plugin flow (`/plugin marketplace add browzeremb/skills`) — the old file-drop `browzer plugin install` is now a printer of marketplace instructions. v1.0.3 calibrated the `savedTokens` formula per-language against Claude 4 via `count_tokens` — mean absolute error on the reported savings dropped from 35% to 14%.
+- Released as `v1.0.15` (current — aligned with skills package in `64b637f`). v0.8.0 shipped the token-economy subsystem (daemon + tracker + telemetry + hooks + `read`/`gain`/`plugin`/`config` commands); v1.0.0 was the first stable release and shipped the public marketplace-based plugin flow (`/plugin marketplace add browzeremb/skills`) — the old file-drop `browzer plugin install` is now a printer of marketplace instructions. v1.0.3 calibrated the `savedTokens` formula per-language against Claude 4 via `count_tokens` — mean absolute error on the reported savings dropped from 35% to 14%.
 
 ## Local verification (REQUIRED before pushing CLI changes)
 

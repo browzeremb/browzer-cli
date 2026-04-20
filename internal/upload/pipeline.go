@@ -32,6 +32,12 @@ type Result struct {
 	UploadedCount int
 	FailedCount   int
 	BatchIDs      []string // populated when noWait=true
+	// FailedNames holds the document names (relative paths or server-side
+	// names) that the poll reported as failed. Populated from
+	// BatchStatusResponse.Jobs when Kind == BatchKindAsync and noWait=false.
+	// Empty when noWait=true (poll is skipped) or when Kind == BatchKindSync
+	// (FailedDoc.Name is already emitted to stderr by the caller).
+	FailedNames []string
 }
 
 // UploadInBatches reads each file from disk, splits the list into
@@ -133,6 +139,13 @@ func UploadInBatches(
 			// Count completion from final progress.
 			res.UploadedCount += final.Progress.Completed
 			res.FailedCount += final.Progress.Failed
+			// Collect failed document names from the job list so the
+			// caller can surface them in a per-file stderr summary.
+			for _, j := range final.Jobs {
+				if j.Status == "failed" || j.Error != "" {
+					res.FailedNames = append(res.FailedNames, j.Name)
+				}
+			}
 		case api.BatchKindSync:
 			// Legacy inline response — uploaded carries the IDs directly.
 			byName := make(map[string]string, len(batch.Uploaded))
