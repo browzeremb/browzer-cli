@@ -14,6 +14,7 @@ package commands
 import (
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/cache"
@@ -40,6 +41,7 @@ func registerWorkspaceSync(parent *cobra.Command) {
 		skipCode bool
 		skipDocs bool
 		force    bool
+		noWait   bool
 	)
 
 	cmd := &cobra.Command{
@@ -272,17 +274,38 @@ func registerWorkspaceSync(parent *cobra.Command) {
 					}
 					maps.Copy(newCache.Files, docsCache.Files)
 
+					var uploadResult upload.Result
 					if len(toUpload) > 0 {
 						sp = startSpinnerQ(quiet, fmt.Sprintf("Uploading %d doc(s)...", len(toUpload)))
-						_, upErr := upload.UploadInBatches(
+						r, upErr := upload.UploadInBatches(
 							ctx, client, &project.WorkspaceID,
-							toWalkerDocs(toUpload), &newCache, nil, false,
+							toWalkerDocs(toUpload), &newCache, nil, noWait,
 						)
 						if upErr != nil {
 							finishSpinnerQ(sp, false, "Upload failed")
 							return upErr
 						}
-						finishSpinnerQ(sp, true, fmt.Sprintf("Uploaded %d doc(s)", len(toUpload)))
+						uploadResult = r
+						// Mirrors the workspace_docs.go pattern shipped in
+						// ec37933 — the "Uploaded" headline is deferred until
+						// after the poll returns, so the message reflects
+						// per-doc ingestion outcome instead of a misleading
+						// success based only on the initial POST.
+						switch {
+						case noWait:
+							finishSpinnerQ(sp, true,
+								fmt.Sprintf("Enqueued %d doc(s) (batch IDs: %s)",
+									len(toUpload), strings.Join(r.BatchIDs, ", ")))
+						case r.FailedCount > 0:
+							finishSpinnerQ(sp, false,
+								fmt.Sprintf("⚠ %d of %d doc(s) failed", r.FailedCount, len(toUpload)))
+							for _, name := range r.FailedNames {
+								output.Errf("  ⚠ %s: ingestion failed\n", name)
+							}
+						default:
+							finishSpinnerQ(sp, true,
+								fmt.Sprintf("Uploaded %d doc(s)", r.UploadedCount))
+						}
 					}
 
 					deletesFailed := 0
@@ -325,6 +348,24 @@ func registerWorkspaceSync(parent *cobra.Command) {
 					if deletesFailed > 0 {
 						return cliErrors.Newf("%d document delete(s) failed — see warnings above.", deletesFailed)
 					}
+
+					// Same exit-code taxonomy as workspace_docs.go (ec37933):
+					//   7 (ExitPartialFailure) — some docs failed, at least one succeeded
+					//   8 (ExitTotalFailure)   — all docs failed (no completions)
+					// Skipped under --no-wait since the poll never ran.
+					if !noWait && uploadResult.FailedCount > 0 {
+						total := uploadResult.UploadedCount + uploadResult.FailedCount
+						if uploadResult.UploadedCount == 0 {
+							return cliErrors.WithCode(
+								fmt.Sprintf("all %d doc(s) failed ingestion — see warnings above.", total),
+								cliErrors.ExitTotalFailure,
+							)
+						}
+						return cliErrors.WithCode(
+							fmt.Sprintf("%d of %d doc(s) failed ingestion — see warnings above.", uploadResult.FailedCount, total),
+							cliErrors.ExitPartialFailure,
+						)
+					}
 				}
 
 				// Emit JSON result when requested.
@@ -365,6 +406,7 @@ func registerWorkspaceSync(parent *cobra.Command) {
 	cmd.Flags().BoolVar(&skipCode, "skip-code", false, "Skip the code re-index step (docs only)")
 	cmd.Flags().BoolVar(&skipDocs, "skip-docs", false, "Skip the document sync step (code only, same as browzer workspace index)")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip the jobs-in-flight preflight and bypass the server's parse gate (X-Force-Parse: true)")
+	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Fire-and-forget: enqueue the upload without polling for completion. Exit 0 reflects only the initial POST, not eventual ingestion success or failure. Use `browzer job status <batchId>` to inspect the outcome later.")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of progress text")
 	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
 
