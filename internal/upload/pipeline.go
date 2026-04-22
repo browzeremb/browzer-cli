@@ -31,13 +31,26 @@ const MaxDocBytes = 5 * 1024 * 1024
 type Result struct {
 	UploadedCount int
 	FailedCount   int
-	BatchIDs      []string // populated when noWait=true
+	// SkippedCount counts files the server rejected as benign — e.g.
+	// DocumentDuplicateError when a re-upload's content hash already
+	// exists in the workspace. These are NOT failures; the server
+	// already has the indexed content. Counted separately so the
+	// caller's exit-code logic can ignore them.
+	SkippedCount int
+	BatchIDs     []string // populated when noWait=true
 	// FailedNames holds the document names (relative paths or server-side
-	// names) that the poll reported as failed. Populated from
-	// BatchStatusResponse.Jobs when Kind == BatchKindAsync and noWait=false.
-	// Empty when noWait=true (poll is skipped) or when Kind == BatchKindSync
-	// (FailedDoc.Name is already emitted to stderr by the caller).
+	// names) that the poll reported as failed OR that the batch-ack
+	// `failures[]` array carried with a non-benign reason. Populated
+	// from BatchStatusResponse.Jobs when Kind == BatchKindAsync and
+	// noWait=false. Empty when noWait=true (poll skipped) or when
+	// Kind == BatchKindSync (FailedDoc.Name is already emitted to
+	// stderr by the caller).
 	FailedNames []string
+	// SkippedNames mirrors FailedNames for the benign skip path —
+	// DocumentDuplicateError is the common case. Surfaced to stderr
+	// as a warning (not an error) so users see *why* the sync was a
+	// no-op.
+	SkippedNames []string
 }
 
 // UploadInBatches reads each file from disk, splits the list into
@@ -67,10 +80,7 @@ func UploadInBatches(
 	}
 
 	for start := 0; start < len(files); start += UploadBatchSize {
-		end := start + UploadBatchSize
-		if end > len(files) {
-			end = len(files)
-		}
+		end := min(start+UploadBatchSize, len(files))
 		chunk := files[start:end]
 
 		uploads := make([]api.DocumentUpload, 0, len(chunk))
@@ -111,10 +121,32 @@ func UploadInBatches(
 				onBatchEnqueued(batch.BatchID)
 			}
 			res.BatchIDs = append(res.BatchIDs, batch.BatchID)
+			// Classify per-file rejections surfaced in the 202 ack's
+			// `failures[]` array (server commit 9d3575d, 2026-04-22).
+			// DocumentDuplicateError is benign — the server already has
+			// that content indexed; treat as skipped, not failed.
+			for _, f := range batch.Failures {
+				if f.Reason == "DocumentDuplicateError" {
+					res.SkippedCount++
+					res.SkippedNames = append(res.SkippedNames, f.Name)
+				} else {
+					res.FailedCount++
+					res.FailedNames = append(res.FailedNames,
+						fmt.Sprintf("%s: %s", f.Name, f.Reason))
+				}
+			}
 			if noWait {
 				// Caller asked for fire-and-forget — record the
 				// batchId and skip polling. Cache stays untouched
 				// because we don't yet know the documentIds.
+				continue
+			}
+			// If every file in this chunk was rejected up front (jobs
+			// array empty) the server created zero Document nodes with
+			// this batchId — polling will 404 with "batch not found".
+			// Skip the poll entirely; the failures[] classification
+			// above already accounted for every file.
+			if len(batch.Jobs) == 0 {
 				continue
 			}
 			final, err := client.PollBatchStatus(ctx, batch.BatchID, api.PollBatchOptions{})

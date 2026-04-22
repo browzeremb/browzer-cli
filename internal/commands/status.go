@@ -158,6 +158,25 @@ func renderBillingTable(u *api.BillingUsageResponse) string {
 		[]string{"Users", formatCounter(u.Users, false)},
 		[]string{"API keys", formatCounter(u.APIKeys, false)},
 	)
+	// Daily ingestion counter — only present on servers >= 2026-04-22.
+	// Surfaced so users notice a near-cap state BEFORE `browzer sync`
+	// starts rejecting batches with the misleading "batch not found"
+	// symptom. Shown with the usual used/limit/pct format and, when
+	// available, the ISO reset-at time.
+	if u.IngestionDaily != nil {
+		daily := api.BillingCounter{
+			Used:  u.IngestionDaily.Used,
+			Limit: u.IngestionDaily.Limit,
+		}
+		cell := formatCounter(daily, false)
+		if u.IngestionDaily.ResetAt != nil {
+			hoursLeft := int(time.Until(*u.IngestionDaily.ResetAt).Hours())
+			if hoursLeft > 0 {
+				cell = fmt.Sprintf("%s (resets in %dh)", cell, hoursLeft)
+			}
+		}
+		rows = append(rows, []string{"Ingestion/day", cell})
+	}
 	return ui.Table([]string{"Billing", "Value"}, rows)
 }
 

@@ -103,14 +103,41 @@ type BatchJobInfo struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// BatchFailure is a per-file rejection surfaced by POST /api/documents/batch
+// when the handler's inner try/catch rejected the file before any Document
+// node was created (e.g. DocumentDuplicateError when re-uploading a file
+// whose raw-bytes hash matches an already-stored Document in the same
+// workspace). Added 2026-04-22 (commit 9d3575d) to fix the misleading
+// "batch not found" polling symptom — previously the handler returned
+// {batchId, jobs: []} on an all-failed-inside-loop batch, the CLI polled
+// and got 404 because zero Documents had that batchId in Neo4j.
+//
+// Reason is a machine-readable string carrying the server-side Error's
+// `.name` — callers match on well-known values:
+//   - "DocumentDuplicateError" — file content already indexed; benign,
+//     equivalent to skipped/no-op (the server has the content already).
+//   - others                   — real failure; surface to operator and
+//     treat as an ingestion error for exit-code purposes.
+//
+// Present on servers >= 2026-04-22; nil/empty on older servers (Go
+// decoder drops unknown fields, so this is forward-compatible — older
+// CLIs ignore it, newer CLIs treat absent==empty).
+type BatchFailure struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
 // BatchUploadResult is the discriminated union of async (HTTP 202) and
 // legacy sync (HTTP 200) responses to POST /api/documents/batch.
 type BatchUploadResult struct {
 	Kind BatchUploadKind
 
 	// Set when Kind == BatchKindAsync.
-	BatchID string
-	Jobs    []BatchJobInfo
+	BatchID  string
+	Jobs     []BatchJobInfo
+	// Failures is the per-file rejection list carried alongside Jobs in
+	// the 202 ack. See BatchFailure for semantics.
+	Failures []BatchFailure
 
 	// Set when Kind == BatchKindSync.
 	Uploaded []UploadedDoc

@@ -19,20 +19,39 @@ type BillingCounter struct {
 	Limit int64 `json:"limit"`
 }
 
+// IngestionDailyCounter extends BillingCounter with an optional reset
+// timestamp. Returned by `GET /api/billing/usage` when the api has a
+// Redis client wired (production always does; unit tests and stubs may
+// omit). ResetAt is the ISO-8601 instant at which Redis's PEXPIRE on
+// the day-bucket key fires — i.e. when the daily counter rolls over
+// to zero. nil means the key currently has no TTL (counter stays at
+// zero until the first debit of the day).
+type IngestionDailyCounter struct {
+	Used    int64      `json:"used"`
+	Limit   int64      `json:"limit"`
+	ResetAt *time.Time `json:"reset_at,omitempty"`
+}
+
 // BillingUsageResponse mirrors the envelope apps/api returns.
 // `TrialEndsAt` and `CurrentPeriodEnd` are pointers because the server
 // omits them for non-trial / grandfathered plans.
+//
+// IngestionDaily is a pointer because it is only populated when the
+// api has a Redis client wired — pre-2026-04-22 deployments omit it,
+// and the Go decoder leaves the pointer nil there. Callers MUST
+// nil-check before dereferencing.
 type BillingUsageResponse struct {
-	Plan             string          `json:"plan"`
-	Status           string          `json:"status"`
-	TrialEndsAt      *time.Time      `json:"trial_ends_at,omitempty"`
-	CurrentPeriodEnd *time.Time      `json:"current_period_end,omitempty"`
-	Queries          BillingCounter  `json:"queries"`
-	Chunks           BillingCounter  `json:"chunks"`
-	Storage          BillingCounter  `json:"storage"`
-	Workspaces       BillingCounter  `json:"workspaces"`
-	Users            BillingCounter  `json:"users"`
-	APIKeys          BillingCounter  `json:"api_keys"`
+	Plan             string                 `json:"plan"`
+	Status           string                 `json:"status"`
+	TrialEndsAt      *time.Time             `json:"trial_ends_at,omitempty"`
+	CurrentPeriodEnd *time.Time             `json:"current_period_end,omitempty"`
+	Queries          BillingCounter         `json:"queries"`
+	Chunks           BillingCounter         `json:"chunks"`
+	Storage          BillingCounter         `json:"storage"`
+	Workspaces       BillingCounter         `json:"workspaces"`
+	Users            BillingCounter         `json:"users"`
+	APIKeys          BillingCounter         `json:"api_keys"`
+	IngestionDaily   *IngestionDailyCounter `json:"ingestion_daily,omitempty"`
 }
 
 // BillingUsage calls GET /api/billing/usage. Returns a CliError via

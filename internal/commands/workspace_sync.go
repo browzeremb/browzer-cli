@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/cache"
@@ -264,6 +265,35 @@ func registerWorkspaceSync(parent *cobra.Command) {
 						if preErr := runPreflight(ctx, client, toWalkerDocs(toUpload)); preErr != nil {
 							return preErr
 						}
+						// Proactive warning when the org's daily ingestion
+						// counter is near the per-plan cap. Server-side the
+						// cap is `PLAN_LIMITS[plan].ingestion_daily_max_docs`
+						// (Pro=500, Starter=100, Free=20). Without this
+						// surface users hit the cap mid-sync with a cryptic
+						// 429 and misattribute it to other issues
+						// (2026-04-22 ship loop). Best-effort: silent on
+						// Redis-miss or pre-2026-04-22 servers that omit
+						// the `ingestion_daily` field. Warning only — never
+						// blocks the sync.
+						if u, uErr := client.BillingUsage(ctx); uErr == nil &&
+							u.IngestionDaily != nil && u.IngestionDaily.Limit > 0 {
+							used := u.IngestionDaily.Used
+							limit := u.IngestionDaily.Limit
+							batch := int64(len(toUpload))
+							switch {
+							case used+batch > limit:
+								ui.Warn(fmt.Sprintf(
+									"daily ingestion cap would be exceeded: %d used + %d to upload > %d limit. "+
+										"Some uploads will be rejected. Reset ~%s.",
+									used, batch, limit, fmtResetAt(u.IngestionDaily.ResetAt),
+								))
+							case used >= limit*8/10:
+								ui.Warn(fmt.Sprintf(
+									"daily ingestion counter near cap: %d / %d (resets %s)",
+									used, limit, fmtResetAt(u.IngestionDaily.ResetAt),
+								))
+							}
+						}
 					}
 
 					// Build the new cache before mutations so we always save
@@ -300,8 +330,20 @@ func registerWorkspaceSync(parent *cobra.Command) {
 							finishSpinnerQ(sp, false,
 								fmt.Sprintf("⚠ %d of %d doc(s) failed", r.FailedCount, len(toUpload)))
 							for _, name := range r.FailedNames {
-								output.Errf("  ⚠ %s: ingestion failed\n", name)
+								output.Errf("  ⚠ %s\n", name)
 							}
+							if r.SkippedCount > 0 {
+								output.Errf("  (%d doc(s) skipped — already indexed with same content)\n", r.SkippedCount)
+							}
+						case r.SkippedCount > 0 && r.UploadedCount == 0:
+							// Every file was a no-op duplicate. Not an error — the
+							// workspace is already in sync with the local content.
+							finishSpinnerQ(sp, true,
+								fmt.Sprintf("All %d doc(s) already indexed (no-op)", r.SkippedCount))
+						case r.SkippedCount > 0:
+							finishSpinnerQ(sp, true,
+								fmt.Sprintf("Uploaded %d doc(s), skipped %d already-indexed",
+									r.UploadedCount, r.SkippedCount))
 						default:
 							finishSpinnerQ(sp, true,
 								fmt.Sprintf("Uploaded %d doc(s)", r.UploadedCount))
@@ -434,4 +476,23 @@ func finishSpinnerQ(sp *ui.Spinner, ok bool, msg string) {
 	} else {
 		sp.Failure(msg)
 	}
+}
+
+// fmtResetAt renders an optional ISO-8601 reset instant as a short,
+// human-readable phrase for the daily-ingestion warning. nil means the
+// Redis key has no TTL (counter is at zero for today and the bucket
+// hasn't been created) — in that case "tomorrow 00:00 UTC" is the
+// right expectation but we hedge the phrase as "tomorrow".
+func fmtResetAt(t *time.Time) string {
+	if t == nil {
+		return "tomorrow"
+	}
+	hours := int(time.Until(*t).Hours())
+	if hours <= 0 {
+		return "soon"
+	}
+	if hours < 24 {
+		return fmt.Sprintf("in ~%dh", hours)
+	}
+	return fmt.Sprintf("at %s UTC", t.UTC().Format("2006-01-02 15:04"))
 }

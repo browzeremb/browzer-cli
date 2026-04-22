@@ -90,16 +90,18 @@ func (c *Client) BatchUploadDocs(ctx context.Context, workspaceID *string, files
 
 	if _, hasBatchID := raw["batchId"]; hasBatchID {
 		var ack struct {
-			BatchID string         `json:"batchId"`
-			Jobs    []BatchJobInfo `json:"jobs"`
+			BatchID  string         `json:"batchId"`
+			Jobs     []BatchJobInfo `json:"jobs"`
+			Failures []BatchFailure `json:"failures,omitempty"`
 		}
 		if err := json.Unmarshal(bodyBytes, &ack); err != nil {
 			return nil, err
 		}
 		return &BatchUploadResult{
-			Kind:    BatchKindAsync,
-			BatchID: ack.BatchID,
-			Jobs:    ack.Jobs,
+			Kind:     BatchKindAsync,
+			BatchID:  ack.BatchID,
+			Jobs:     ack.Jobs,
+			Failures: ack.Failures,
 		}, nil
 	}
 
