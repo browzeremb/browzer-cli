@@ -13,7 +13,7 @@ func registerWorkspaceShow(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "show <workspace-id>",
-		Short: "Show full workspace detail including docs and files",
+		Short: "Show workspace detail (docs + files)",
 		Args:  cobra.ExactArgs(1),
 		Long: `Show the full detail of a workspace, including indexed documents and files.
 
@@ -23,8 +23,7 @@ Examples:
   browzer workspace show ws-123
   browzer workspace show ws-123 --json
   browzer workspace show ws-123 --save ws.json
-  browzer workspace show --schema
-` + output.ExitCodesHelp,
+  browzer workspace show --schema`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			saveFlag, _ := cmd.Flags().GetString("save")
 			if schemaFlag {
@@ -50,8 +49,8 @@ Examples:
 			return emitOrFail(detail, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 		},
 	}
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	cmd.Flags().BoolVar(&schemaFlag, "schema", false, "Print the JSON schema of the response and exit")
 	parent.AddCommand(cmd)
 }

@@ -228,7 +228,7 @@ func registerWorkspaceDocs(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "docs",
-		Short: "Interactively (re-)index documents, or drive the same flow non-interactively via flags",
+		Short: "(Re-)index documents (interactive or via flags)",
 		Long: `(Re-)index documents into the workspace.
 
 Interactive mode (default, requires TTY):
@@ -272,8 +272,7 @@ Examples:
   browzer workspace docs --remove docs/old.md --yes
   browzer workspace docs --add 'docs/*.md' --yes
   browzer workspace docs --add @paths.txt --yes
-  browzer workspace docs --plan --json
-` + output.ExitCodesHelp,
+  browzer workspace docs --plan --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")

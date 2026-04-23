@@ -76,8 +76,7 @@ Examples:
   browzer workspace list
   browzer workspace list --filter rag
   browzer workspace list --json
-  browzer workspace list --save ws.json
-` + output.ExitCodesHelp,
+  browzer workspace list --save ws.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -128,20 +127,33 @@ Examples:
 					rows,
 				)
 			}
+
+			// Agent-hint to stderr (keeps stdout JSON pipe clean).
+			// Emitted for any non-empty list to point at the two
+			// canonical next steps: `workspace get <id>` for shape
+			// discovery of a single workspace, or `--filter <sub>`
+			// for narrowing. Skipped on empty results — the human
+			// "No workspaces." (or empty JSON array) already implies
+			// `browzer init` is next.
+			if len(ws) > 0 {
+				output.Errf(
+					"tip: full detail per workspace via `browzer workspace get <id> --save ws.json`; narrow this list with `--filter <substring>`\n",
+				)
+			}
 			return emitOrFail(ws, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 		},
 	}
 	listCmd.Flags().StringVar(&listFilter, "filter", "", "Substring match (case-insensitive) on name or id")
 	listCmd.Flags().BoolVar(&listSchema, "schema", false, "Print the JSON schema of the list response and exit")
 	listCmd.Flags().Bool("json", false, "Emit JSON instead of plain text")
-	listCmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	listCmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	ws.AddCommand(listCmd)
 
 	// get
 	var getSchema bool
 	getCmd := &cobra.Command{
 		Use:   "get <id>",
-		Short: "Fetch a single workspace by id (schema-discovery helper)",
+		Short: "Fetch workspace by id (shape discovery)",
 		Args:  cobra.MaximumNArgs(1),
 		Long: `Fetch a single workspace by id (schema-discovery helper).
 
@@ -152,8 +164,7 @@ Use --schema to print the response JSON schema without making an API call.
 
 Examples:
   browzer workspace get ws-123 --save ws.json
-  browzer workspace get --schema --save schema.json
-` + output.ExitCodesHelp,
+  browzer workspace get --schema --save schema.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			saveFlag, _ := cmd.Flags().GetString("save")
 			if getSchema {
@@ -190,7 +201,7 @@ Examples:
 		},
 	}
 	getCmd.Flags().BoolVar(&getSchema, "schema", false, "Print the JSON schema of the get response and exit")
-	getCmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout")
+	getCmd.Flags().String("save", "", "write JSON to <file>")
 	ws.AddCommand(getCmd)
 
 	// delete
@@ -199,7 +210,12 @@ Examples:
 	deleteCmd := &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Delete a workspace and all its data",
-		Args:  cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("workspace delete requires an <id> argument. Run `browzer workspace list` to see available workspace ids")
+			}
+			return nil
+		},
 		Long: `Delete a workspace and all its data.
 
 Agent-friendly:
@@ -214,8 +230,7 @@ Agent-friendly:
 
 Examples:
   browzer workspace delete ws-123 --confirm-name my-repo
-  browzer workspace delete ws-123 --yes --confirm-name my-repo
-` + output.ExitCodesHelp,
+  browzer workspace delete ws-123 --yes --confirm-name my-repo`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
 			ac, err := requireAuth(0)

@@ -40,7 +40,7 @@ func registerWorkspaceIndex(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "index",
-		Short: "Re-parse the repository's code structure into the workspace graph",
+		Short: "Re-index code into workspace graph",
 		Long: `Re-parse the repository's code structure into the workspace graph.
 
 This is the cheap command: it walks the repo tree and hands the
@@ -56,8 +56,7 @@ picker:
 Examples:
   browzer workspace index
   browzer workspace index --dry-run
-  browzer workspace index --json --save index.json
-` + output.ExitCodesHelp,
+  browzer workspace index --json --save index.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -208,7 +207,7 @@ Examples:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would happen without calling the server")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip the jobs-in-flight preflight and bypass the server's parse gate (X-Force-Parse: true)")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of progress text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }
 

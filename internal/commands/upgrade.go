@@ -51,7 +51,7 @@ func registerUpgrade(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "upgrade",
-		Short: "Check for a newer CLI version and show the upgrade command",
+		Short: "Check for CLI upgrade",
 		Long: `Check whether a newer browzer CLI release is available on GitHub and
 print the install-channel-appropriate upgrade command.
 
@@ -64,8 +64,7 @@ Examples:
   browzer upgrade
   browzer upgrade --check
   browzer upgrade --json --save /tmp/upgrade.json
-  browzer upgrade --schema
-` + output.ExitCodesHelp,
+  browzer upgrade --schema`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -118,8 +117,8 @@ Examples:
 
 	cmd.Flags().BoolVar(&check, "check", false, "Exit 10 if outdated, 0 if current (no auto-install)")
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the upgrade response and exit")
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }
 

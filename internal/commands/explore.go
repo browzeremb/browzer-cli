@@ -50,19 +50,14 @@ func registerExplore(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "explore [query]",
-		Short: "Search indexed CODE (files, symbols, imports) — hybrid graph + vector",
+		Short: "Search indexed code (hybrid graph+vector)",
 		Args:  cobra.MaximumNArgs(1),
 		Long: `For markdown/docs, use ` + "`browzer search`" + ` instead.
-
-Hybrid graph + vector search across the indexed workspace code.
-
-Use --schema to print the response JSON schema without making an API call.
 
 Examples:
   browzer explore "auth middleware"
   browzer explore "*.go" --json
-  browzer explore --schema --save schema.json
-` + output.ExitCodesHelp,
+  browzer explore --schema --save schema.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -145,8 +140,8 @@ Examples:
 
 	cmd.Flags().IntVar(&limit, "limit", 50, "Max results (1-200)")
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the explore response and exit")
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }
 

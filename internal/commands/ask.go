@@ -51,24 +51,17 @@ func registerAsk(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "ask <question>",
-		Short: "Ask the RAG engine a question about your codebase",
+		Short: "Ask a question about your codebase",
 		Args:  cobra.MaximumNArgs(1),
 		Long: `Ask the Browzer RAG engine a question about your indexed codebase.
 
-The workspace is resolved in this order:
-  1. --workspace flag (explicit override)
-  2. .browzer/config.json in the git repository root
-  3. GET /api/workspaces — first workspace returned by the API
-  4. Hard error if all fallbacks fail
-
-Use --schema to print the response JSON schema without making an API call.
+Workspace resolution: --workspace flag → .browzer/config.json → first workspace in org.
 
 Examples:
   browzer ask "How does the answer cache work?"
   browzer ask "What does the reranker do?" --workspace ws_abc123
   browzer ask "Show ingestion pipeline" --json
-  browzer ask --schema --save schema.json
-` + output.ExitCodesHelp,
+  browzer ask --schema --save schema.json  # discover response shape`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -109,8 +102,8 @@ Examples:
 
 	cmd.Flags().StringVar(&workspaceFlag, "workspace", "", "Workspace ID (overrides .browzer/config.json lookup)")
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the ask response and exit")
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }
 

@@ -36,19 +36,14 @@ func registerSearch(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "search <query>",
-		Short: "Search indexed MARKDOWN DOCS (ADRs, runbooks, READMEs) — vector-only",
+		Short: "Search indexed markdown docs (vector)",
 		Args:  cobra.MaximumNArgs(1),
 		Long: `For code/symbols/imports, use ` + "`browzer explore`" + ` instead.
-
-Vector search over the indexed markdown documents.
-
-Use --schema to print the response JSON schema without making an API call.
 
 Examples:
   browzer search "fastify graph store"
   browzer search "device flow" --json
-  browzer search --schema --save schema.json
-` + output.ExitCodesHelp,
+  browzer search --schema --save schema.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -119,7 +114,7 @@ Examples:
 
 	cmd.Flags().IntVar(&limit, "limit", 10, "Max results (1-200)")
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the search response and exit")
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }

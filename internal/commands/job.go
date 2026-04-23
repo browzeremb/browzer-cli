@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
@@ -12,19 +13,19 @@ import (
 func registerJob(parent *cobra.Command) {
 	job := &cobra.Command{
 		Use:   "job",
-		Short: "Inspect async ingestion jobs returned by `sync --no-wait`",
+		Short: "Inspect async ingestion jobs",
 		Long: `Inspect async ingestion batches submitted by ` + "`browzer sync --no-wait`" + `
 (and by ` + "`workspace index`" + ` / ` + "`workspace docs`" + ` when they queue work).
 
-Agent-friendly:
-  Poll 'browzer job get <batchId> --json' until .status is one of
-  "completed", "failed", or "partial". Respect Retry-After on 429.
-  ` + "`sync --no-wait`" + ` prints the batchId on stdout (JSON field:
-  "batchId") — capture it before polling.
-
 Subcommands:
   get <batchId>   Fetch the status of a specific batch.
-` + output.ExitCodesHelp,
+
+Tip: poll ` + "`browzer job get <batchId> --json`" + ` until .status is
+"completed", "failed", or "partial". ` + "`sync --no-wait`" + ` prints
+the batchId on stdout (JSON field "batchId") — capture before polling.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("job requires a subcommand. Try `browzer job get <batchId>` (list from `browzer sync --no-wait`)")
+		},
 	}
 
 	getCmd := &cobra.Command{
@@ -39,8 +40,7 @@ when called by an agent (no human form because the schema is too rich).
 
 Examples:
   browzer job get batch-123
-  browzer job get batch-123 --save status.json
-` + output.ExitCodesHelp,
+  browzer job get batch-123 --save status.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			saveFlag, _ := cmd.Flags().GetString("save")
 			ac, err := requireAuth(0)
@@ -58,7 +58,7 @@ Examples:
 			return emitOrFail(status, output.Options{JSON: true, Save: saveFlag}, "")
 		},
 	}
-	getCmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout")
+	getCmd.Flags().String("save", "", "write JSON to <file>")
 	job.AddCommand(getCmd)
 
 	parent.AddCommand(job)

@@ -44,8 +44,7 @@ Pass file paths directly as arguments.
 Examples:
   browzer org docs add docs/policy.md docs/onboarding.md --yes
   browzer org docs add docs/policy.md --dry-run
-  browzer org docs add docs/policy.md --yes --json
-` + output.ExitCodesHelp,
+  browzer org docs add docs/policy.md --yes --json`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
@@ -159,7 +158,7 @@ Examples:
 
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the confirmation prompt")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the list of files without uploading")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON result")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
 	_ = jsonOut // accessed via cmd.Flags().GetBool("json") inside RunE
 	parent.AddCommand(cmd)
 }

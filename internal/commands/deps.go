@@ -38,19 +38,14 @@ func registerDeps(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "deps <path>",
-		Short: "Show the dependency graph for a single file",
+		Short: "Dependency graph for a single file",
 		Args:  cobra.MaximumNArgs(1),
-		Long: `Show exports, imports, and reverse-imports for a single file in the
-indexed workspace.
-
-Use --reverse to focus on files that import the target.
-Use --schema to print the response JSON schema without making an API call.
+		Long: `Exports, imports, and reverse-imports for a single file.
 
 Examples:
   browzer deps packages/core/src/rag-client/index.ts
   browzer deps ./src/server.ts --reverse --json
-  browzer deps --schema
-` + output.ExitCodesHelp,
+  browzer deps --schema`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -155,7 +150,7 @@ Examples:
 	cmd.Flags().BoolVar(&reverse, "reverse", false, "Focus on reverse imports (files that import the target)")
 	cmd.Flags().IntVar(&limit, "limit", 100, "Max results (1-500)")
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the deps response and exit")
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }

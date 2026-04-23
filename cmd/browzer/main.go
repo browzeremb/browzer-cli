@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/browzeremb/browzer-cli/internal/commands"
@@ -40,7 +41,14 @@ func main() {
 
 	root := commands.NewRootCommand(version)
 	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "\nError: %s\n", err.Error())
+		msg := err.Error()
+		fmt.Fprintf(os.Stderr, "\nError: %s\n", msg)
+		// Unknown command with no close match — point the agent at the
+		// command list. Cobra already appends "Did you mean X?" when a
+		// suggestion exists, so only add the hint when it didn't.
+		if strings.HasPrefix(msg, "unknown command") && !strings.Contains(msg, "Did you mean") {
+			fmt.Fprintf(os.Stderr, "Common commands: init, login, workspace, explore, search, deps, ask. Run `browzer --help` for the full list.\n")
+		}
 		var cliErr *cliErrors.CliError
 		if errors.As(err, &cliErr) {
 			os.Exit(cliErr.ExitCode)

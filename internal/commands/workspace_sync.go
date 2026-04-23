@@ -47,7 +47,7 @@ func registerWorkspaceSync(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Re-index code and sync existing workspace docs (no new adds)",
+		Short: "Re-index code + sync existing docs",
 		Long: "Re-index both the repository code structure and documents in a single command.\n\n" +
 			"Order of operations (always sequential, never reversed):\n" +
 			"  1. Code index  — WalkRepo -> POST /api/workspaces/parse (same as: browzer workspace index)\n" +
@@ -450,7 +450,7 @@ func registerWorkspaceSync(parent *cobra.Command) {
 	cmd.Flags().BoolVar(&force, "force", false, "Skip the jobs-in-flight preflight and bypass the server's parse gate (X-Force-Parse: true)")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Fire-and-forget: enqueue the upload without polling for completion. Exit 0 reflects only the initial POST, not eventual ingestion success or failure. Use `browzer job status <batchId>` to inspect the outcome later.")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of progress text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 
 	parent.AddCommand(cmd)
 }

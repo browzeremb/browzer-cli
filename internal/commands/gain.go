@@ -28,7 +28,7 @@ func newGainCommand(dbPathFn func() string) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "gain",
-		Short: "Report token savings from local Browzer activity",
+		Short: "Report token savings",
 		Long: `Aggregates events from ~/.browzer/history.db.
 
 Examples:

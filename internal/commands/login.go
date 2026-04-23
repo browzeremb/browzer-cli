@@ -10,7 +10,6 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/auth"
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
-	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/browzeremb/browzer-cli/internal/urlvalidate"
 	"github.com/pkg/browser"
@@ -29,7 +28,7 @@ func registerLogin(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate the CLI against a Browzer server",
+		Short: "Authenticate (device flow or --key)",
 		Long: `Authenticate the CLI against a Browzer server.
 
 Without --key, runs the OAuth 2.0 device flow (RFC 8628):
@@ -42,8 +41,7 @@ Examples:
   browzer login
   browzer login --server http://localhost:8080
   browzer login --key $BROWZER_API_KEY                # non-interactive
-  BROWZER_API_KEY=... browzer login --key ''          # picks up env fallback
-` + output.ExitCodesHelp,
+  BROWZER_API_KEY=... browzer login --key ''          # picks up env fallback`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Resolve --server: explicit flag → env → default.
 			rawServer := serverFlag

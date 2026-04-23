@@ -22,8 +22,7 @@ Examples:
   browzer workspace files-list ws-123
   browzer workspace files-list ws-123 --json
   browzer workspace files-list ws-123 --save files.json
-  browzer workspace files-list --schema
-` + output.ExitCodesHelp,
+  browzer workspace files-list --schema`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			saveFlag, _ := cmd.Flags().GetString("save")
 			if schemaFlag {
@@ -56,8 +55,8 @@ Examples:
 			return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 		},
 	}
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	cmd.Flags().BoolVar(&schemaFlag, "schema", false, "Print the JSON schema of the response and exit")
 	parent.AddCommand(cmd)
 }

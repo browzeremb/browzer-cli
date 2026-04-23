@@ -9,6 +9,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/auth"
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
+	"github.com/browzeremb/browzer-cli/internal/git"
 	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/spf13/cobra"
@@ -17,14 +18,13 @@ import (
 func registerStatus(parent *cobra.Command) {
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show Browzer login and workspace status",
+		Short: "Show login + workspace status",
 		Long: `Show Browzer login and workspace status.
 
 Examples:
   browzer status
   browzer status --json
-  browzer status --json --save status.json
-` + output.ExitCodesHelp,
+  browzer status --json --save status.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -92,6 +92,18 @@ Examples:
 				payload["billing"] = usage
 			}
 
+			// Actionable recommendations for agents consuming --json.
+			// Derived purely from already-loaded state so there's no
+			// extra network hop. Empty slice (not nil) on the happy
+			// path so agents can `.recommendations.length === 0`.
+			recommendations := buildStatusRecommendations(
+				gitRoot,
+				project.LastSyncCommit,
+				ws.FileCount,
+				creds.ExpiresAt,
+			)
+			payload["recommendations"] = recommendations
+
 			// Two compact tables: session on top, workspace below.
 			// Renders as bordered brand tables on a TTY and as
 			// tab-separated plain text when stdout is piped.
@@ -123,7 +135,7 @@ Examples:
 		},
 	}
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON on stdout")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }
 
@@ -211,6 +223,61 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// buildStatusRecommendations derives actionable next-step hints from
+// already-loaded status state. Returns a slice the JSON payload can
+// embed so agents consuming `browzer status --json` can branch on
+// `recommendations.length === 0` for the happy path.
+//
+// Each recommendation carries:
+//
+//	kind   — stable machine-readable tag for programmatic checks
+//	action — the exact shell command to run
+//	reason — one-sentence human-facing explanation
+//
+// Checks (best-effort; any individual failure silently skips the hint
+// rather than breaking the status payload):
+//
+//	stale_index     — working tree ahead of lastSyncCommit
+//	empty_workspace — zero indexed files (never synced, or cleared)
+//	token_expiring  — bearer token has <7 days of validity left
+func buildStatusRecommendations(
+	gitRoot, lastSyncCommit string,
+	fileCount int,
+	tokenExpiresAt string,
+) []map[string]string {
+	recs := []map[string]string{}
+
+	if s := git.CheckStaleness(gitRoot, lastSyncCommit); s.Stale {
+		recs = append(recs, map[string]string{
+			"kind":   "stale_index",
+			"action": "browzer workspace sync",
+			"reason": fmt.Sprintf("working tree is %d commit(s) ahead of the indexed snapshot", s.CommitsBehind),
+		})
+	}
+
+	if fileCount == 0 {
+		recs = append(recs, map[string]string{
+			"kind":   "empty_workspace",
+			"action": "browzer workspace index",
+			"reason": "workspace has zero indexed files",
+		})
+	}
+
+	if tokenExpiresAt != "" {
+		if exp, err := time.Parse(time.RFC3339Nano, tokenExpiresAt); err == nil {
+			if days := int(time.Until(exp).Hours() / 24); days >= 0 && days < 7 {
+				recs = append(recs, map[string]string{
+					"kind":   "token_expiring",
+					"action": "browzer login",
+					"reason": fmt.Sprintf("bearer token expires in %d day(s)", days),
+				})
+			}
+		}
+	}
+
+	return recs
 }
 
 // formatExpiry mirrors src/commands/status.ts:formatExpiry — humanises

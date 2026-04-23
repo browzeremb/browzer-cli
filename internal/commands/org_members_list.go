@@ -24,8 +24,7 @@ Examples:
   browzer org members list
   browzer org members list --json
   browzer org members list --save members.json
-  browzer org members list --schema
-` + output.ExitCodesHelp,
+  browzer org members list --schema`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			saveFlag, _ := cmd.Flags().GetString("save")
 			if schemaFlag {
@@ -54,8 +53,8 @@ Examples:
 			return emitOrFail(resp, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 		},
 	}
-	listCmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of plain text")
-	listCmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	listCmd.Flags().Bool("json", false, "emit JSON")
+	listCmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	listCmd.Flags().BoolVar(&schemaFlag, "schema", false, "Print the JSON schema of the response and exit")
 	members.AddCommand(listCmd)
 

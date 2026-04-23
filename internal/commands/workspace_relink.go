@@ -5,7 +5,6 @@ import (
 
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
-	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +26,7 @@ import (
 func registerWorkspaceRelink(ws *cobra.Command) {
 	cmd := &cobra.Command{
 		Use:   "relink <id>",
-		Short: "Point the current directory at an existing Browzer workspace",
+		Short: "Bind current dir to existing workspace",
 		Args:  cobra.ExactArgs(1),
 		Long: `Point the current directory at an existing Browzer workspace.
 
@@ -47,8 +46,7 @@ Agent-friendly:
   workspace (still keeping server data). Neither creates or deletes.
 
 Examples:
-  browzer workspace relink ws-abc123
-` + output.ExitCodesHelp,
+  browzer workspace relink ws-abc123`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
 			gitRoot, err := requireGitRoot()

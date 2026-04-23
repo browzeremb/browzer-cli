@@ -11,15 +11,14 @@ import (
 func registerLogout(parent *cobra.Command) {
 	cmd := &cobra.Command{
 		Use:   "logout",
-		Short: "Revoke and forget the local credentials",
+		Short: "Forget local credentials",
 		Long: `Best-effort revocation. Calls POST /api/device/revoke with the
 current bearer token (tolerates failure), then deletes
 ~/.browzer/credentials. Always leaves the local machine in a
 logged-out state even when the server is unreachable.
 
 Examples:
-  browzer logout
-` + output.ExitCodesHelp,
+  browzer logout`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			creds := auth.LoadCredentials()
 			if creds != nil {

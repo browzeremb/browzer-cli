@@ -26,7 +26,7 @@ func newReadCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "read <path>",
-		Short: "Read a file with optional AST-aware filtering",
+		Short: "Read a file (AST-aware filtering)",
 		Long: `Reads a file and applies a filter level to reduce token count.
 
 Filter levels:
@@ -36,7 +36,12 @@ Filter levels:
   auto        daemon picks per heuristic (default)
 
 Range (--offset/--limit) forces filter=none — never transforms a partial read.`,
-		Args: cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("read requires a single <path> argument. Example: `browzer read src/foo.ts --filter=auto` (see `browzer read --help` for filter levels)")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
 			abs, err := absPath(path)

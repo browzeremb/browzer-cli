@@ -13,6 +13,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Ultra is the package-level flag for --ultra (compact output across
@@ -33,16 +34,16 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 
 	// Verbosity ladder: -v/-vv/-vvv increases output.Verbose (0-3).
-	root.PersistentFlags().CountVarP(&output.Verbose, "verbose", "v", "increase verbosity (-v decisions, -vv subprocess, -vvv raw I/O)")
+	root.PersistentFlags().CountVarP(&output.Verbose, "verbose", "v", "verbosity (-v, -vv, -vvv)")
 
 	// Global --ultra flag: compact output across read/explore/search/deps.
-	root.PersistentFlags().BoolVar(&Ultra, "ultra", false, "ultra-compact output (smaller payloads, fewer fields)")
+	root.PersistentFlags().BoolVar(&Ultra, "ultra", false, "ultra-compact output")
 
 	// Global --llm flag: suppresses banners, disables colors, no spinners.
 	// Also honored via BROWZER_LLM env so shell wrappers (e.g. Claude
 	// SKILL runners) can opt-in once per session. We set NO_COLOR too so
 	// any third-party lib honoring the convention degrades as well.
-	root.PersistentFlags().Bool("llm", false, "LLM mode: suppress banner, disable colors, no spinners")
+	root.PersistentFlags().Bool("llm", false, "LLM mode (no banner/colors/spinners)")
 
 	// Pre-scan os.Args + BROWZER_LLM so --help/--version (which bypass
 	// cobra's PersistentPreRunE) still see LLMMode. PersistentPreRunE
@@ -53,7 +54,13 @@ func NewRootCommand(version string) *cobra.Command {
 			_ = os.Setenv("NO_COLOR", "1")
 		}
 	}
-	if envLLMEnabled() {
+	// Auto-enable LLM mode when stdout is not a TTY — piped output
+	// (agent consumers, CI logs, `| less`) never benefits from the
+	// banner or ANSI. Explicit --llm / BROWZER_LLM stay as overrides;
+	// a user who really wants the banner in piped output can unset the
+	// pipe (unusual).
+	pipedStdout := !term.IsTerminal(int(os.Stdout.Fd()))
+	if envLLMEnabled() || pipedStdout {
 		applyLLMMode(true)
 	} else {
 		for _, a := range os.Args[1:] {
@@ -65,7 +72,7 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		llm, _ := cmd.Flags().GetBool("llm")
-		if envLLMEnabled() {
+		if envLLMEnabled() || pipedStdout {
 			llm = true
 		}
 		applyLLMMode(llm)
@@ -149,7 +156,9 @@ func NewRootCommand(version string) *cobra.Command {
 Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
 `
 	root.SetUsageTemplate(colorizedUsage)
-	root.SetHelpTemplate(colorizedHelp + "\n" + agentTips + output.ExitCodesHelp + "\n")
+	// Subcommand help stays lean (no agent-tips / exit-codes trailer).
+	// The root HelpFunc wrapper below appends them on the root screen.
+	root.SetHelpTemplate(colorizedHelp + "\n")
 
 	// Version string: brand banner + plain "<command> <version>".
 	// Register `banner` as a template func so LLMMode (set by
@@ -175,6 +184,9 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 			_, _ = fmt.Fprint(cmd.OutOrStdout(), ui.Banner(version))
 		}
 		defaultHelp(cmd, args)
+		if cmd == root {
+			_, _ = fmt.Fprint(cmd.OutOrStdout(), agentTips, rootExitCodes, "\n")
+		}
 	})
 
 	return root
@@ -197,15 +209,18 @@ func envLLMEnabled() bool {
 	return false
 }
 
-const agentTips = `Agent-friendly tips:
-  • Canonical form is noun-grouped: ` + "`browzer workspace {init,index,docs,status,explore,search}`" + `.
-    ` + "`browzer index`" + ` is a top-level alias for ` + "`browzer workspace index`" + `.
-  • Every read/search command supports --json and --save <file>.
-  • Combine --save with --json to write a clean JSON document
-    without banners polluting stdout (ideal for Claude SKILLs).
-  • ` + "`browzer explore --schema`" + ` / ` + "`browzer deps --schema`" + ` discovers the response shape.
-  • ` + "`browzer workspace get <id> --save ws.json`" + ` discovers the workspace shape.
-  • ` + "`browzer workspace sync`" + ` (alias: ` + "`browzer sync`" + `) re-indexes both code and docs non-interactively.
-  • ` + "`browzer workspace index`" + ` re-parses code only; ` + "`browzer workspace docs`" + ` interactively re-indexes documents.
-  • ` + "`browzer login --key $BROWZER_API_KEY`" + ` for non-interactive login.
+// rootExitCodes is a condensed view of output.ExitCodesHelp for the
+// root help screen — it skips SIGINT/SIGTERM (POSIX-universal) and
+// folds the descriptions into two lines.
+const rootExitCodes = `
+Exit codes:
+  0 success · 1 error · 2 auth (run: browzer login) · 3 no project (run: browzer init)
+  4 not found · 7 partial ingestion failure · 8 total ingestion failure
+`
+
+const agentTips = `Agent tips:
+  • Canonical: ` + "`browzer workspace {init,index,docs,status,explore,search}`" + ` (` + "`index`" + `/` + "`sync`" + ` are top-level aliases).
+  • Read/search commands: ` + "`--json`" + `, ` + "`--save <file>`" + `, ` + "`--schema`" + ` (shape discovery).
+  • ` + "`browzer workspace sync`" + ` re-indexes code + docs; ` + "`index`" + ` = code only, ` + "`docs`" + ` = docs only.
+  • ` + "`browzer login --key $BROWZER_API_KEY`" + ` for non-interactive auth.
 `

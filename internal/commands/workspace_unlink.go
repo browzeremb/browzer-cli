@@ -7,7 +7,6 @@ import (
 
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
-	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -30,7 +29,7 @@ func registerWorkspaceUnlink(ws *cobra.Command) {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "unlink",
-		Short: "Disconnect the current directory from its Browzer workspace (keeps server data)",
+		Short: "Unbind current dir (server data kept)",
 		Long: `Disconnect the current directory from its Browzer workspace.
 
 Removes .browzer/config.json locally. The workspace on the server is
@@ -46,8 +45,7 @@ Agent-friendly:
 
 Examples:
   browzer workspace unlink
-  browzer workspace unlink --yes
-` + output.ExitCodesHelp,
+  browzer workspace unlink --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			gitRoot, err := requireGitRoot()
 			if err != nil {

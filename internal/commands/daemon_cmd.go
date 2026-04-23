@@ -122,7 +122,18 @@ func consentGatedSend(realSend telemetry.SendFn) telemetry.SendFn {
 }
 
 func registerDaemon(parent *cobra.Command) {
-	d := &cobra.Command{Use: "daemon", Short: "Manage the Browzer background daemon"}
+	d := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the Browzer background daemon",
+		Long: `Unix-socket JSON-RPC daemon for token-economy read/track/session RPC.
+Self-exits after ~10 min idle; the skills plugin auto-respawns on next hook.
+
+Quickstart:
+  browzer daemon start --background    # start detached
+  browzer daemon status                 # uptime + queue + db path
+  browzer daemon stop                   # graceful shutdown
+`,
+	}
 	d.AddCommand(daemonStartCmd())
 	d.AddCommand(daemonStopCmd())
 	d.AddCommand(daemonStatusCmd())

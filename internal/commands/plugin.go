@@ -21,7 +21,7 @@ const pluginMarketplaceRepo = "browzeremb/skills"
 func registerPlugin(parent *cobra.Command) {
 	g := &cobra.Command{
 		Use:   "plugin",
-		Short: "Show how to install the Browzer Claude Code plugin (HIGHLY RECOMMENDED)",
+		Short: "Install Browzer Claude Code plugin (recommended)",
 		Long: `Show how to install the Browzer Claude Code plugin.
 
 The plugin is HIGHLY RECOMMENDED — without it, the CLI works but you

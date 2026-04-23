@@ -36,7 +36,7 @@ func registerInit(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create a Browzer workspace for the current git repo",
+		Short: "Create workspace for current git repo",
 		Long: `Create a Browzer workspace for the current git repository.
 
 init is a pure bootstrap. It creates the workspace on the server and
@@ -57,8 +57,7 @@ Use one of:
 
 Examples:
   browzer init --name my-repo
-  browzer init --dry-run --json
-` + output.ExitCodesHelp,
+  browzer init --dry-run --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
@@ -168,8 +167,8 @@ Examples:
 
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Workspace name (default: git repo basename)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report what would be created without calling the server")
-	cmd.Flags().Bool("json", false, "Emit machine-readable JSON")
-	cmd.Flags().String("save", "", "Write JSON output to <file> instead of stdout (implies --json)")
+	cmd.Flags().Bool("json", false, "emit JSON")
+	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)
 }
 
@@ -188,7 +187,12 @@ func runInitDryRun(gitRoot, nameFlag string, jsonFlag bool, saveFlag string) err
 		"gitRoot":       gitRoot,
 		"workspaceName": name,
 	}
-	human := fmt.Sprintf("Dry run:\n  name: %s\n  root: %s\n", name, gitRoot)
+	human := fmt.Sprintf(
+		"Dry run:\n  name: %s\n  root: %s\n\n"+
+			"Next: run `browzer init` (no --dry-run) to create the workspace, "+
+			"then `browzer workspace index` and `browzer workspace docs` to populate it.\n",
+		name, gitRoot,
+	)
 	return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
 }
 
