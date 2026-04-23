@@ -51,7 +51,7 @@ Filter and return a file. Used by `browzer-rewrite-read.mjs` and the `browzer re
 | Field | Type | Notes |
 |---|---|---|
 | `tempPath` | string (abs) | Path to the filtered output. Caller reads this, then daemon will GC after 60s. |
-| `savedTokens` | int | `(input_bytes - output_bytes) / 4`. Can be 0. |
+| `savedTokens` | int | `(rawBytes - filteredBytes) / charsPerToken[language]`. Calibrated per-language (v1.0.3, 2026-04-17, commit `c628063`) against the Anthropic Claude `count_tokens` API; median divisor `2.36` when language is unknown. Mean absolute error dropped from 35 % (pre-calibration `/ 4`) to 14 %. See `packages/cli/README.md` §"How `savedTokens` is calculated" for the per-language divisor table. Can be 0. |
 | `filter` | string | Effective filter level used (resolves "auto" to a concrete level). |
 | `filterFailed` | bool | When `true`, `tempPath` contains the raw file unchanged (passthrough fallback). |
 

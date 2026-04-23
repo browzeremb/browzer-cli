@@ -1,5 +1,5 @@
 // Package tracker is the SQLite-backed event tracker for the Browzer CLI.
-// Spec: docs/superpowers/specs/2026-04-15-cli-token-economy-design.md §5.1.
+// Spec: docs/CHANGELOG.md §2026-04-15 "CLI token economy" (original spec §5.1 archived in git history).
 package tracker
 
 import (

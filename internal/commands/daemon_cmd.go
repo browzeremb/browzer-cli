@@ -34,8 +34,8 @@ func init() {
 // charsPerToken is the per-language divisor used to estimate Claude tokens
 // from raw byte deltas. Calibrated 2026-04-17 against claude-opus-4-7 via
 // the Anthropic count_tokens API. Sample: N=70 files in the browzer monorepo,
-// stratified by language × size bucket. See docs/retrospectives/2026-04-17
-// token-calibration notes for methodology.
+// stratified by language × size bucket. See docs/CHANGELOG.md §2026-04-15
+// "CLI token economy" for methodology.
 //
 // The previous constant (4) under-predicted Claude tokens by ~40% across the
 // board because Claude's BPE tokenizer is denser than the OpenAI 4-chars/token

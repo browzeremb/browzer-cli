@@ -46,7 +46,7 @@ The daemon subsystem (Unix socket, uid-derived paths) is structurally Unix-first
 
 ## Subsystems (v0.8.0 token-economy umbrella)
 
-The token-economy feature set is a single spec — `docs/superpowers/specs/2026-04-15-cli-token-economy-design.md` — implemented across four subsystems that MUST stay decoupled:
+The token-economy feature set is a single spec (delivery log at `docs/CHANGELOG.md §2026-04-15 "CLI token economy"`; original detailed spec archived in git history) — implemented across four subsystems that MUST stay decoupled:
 
 1. **Tracker** (`internal/tracker/`): SQLite store at `~/.browzer/history.db`. Append-only `events` table, one row per tool invocation. Used by `gain` for aggregation, by the daemon's `Track` RPC for writes, and by the batcher for flush.
 2. **Daemon** (`internal/daemon/`): Unix-socket JSON-RPC server. Serves `Read`, `Track`, `SessionRegister`, `Health`, `Shutdown`. Idle-watches itself and exits after `daemon.idle_timeout_seconds` of no traffic. Started manually (`daemon start --background`) or via the plugin's SessionStart hook.

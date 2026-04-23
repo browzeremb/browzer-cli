@@ -7,7 +7,7 @@ package config
 // here — they call the daemon over its Unix socket, which encapsulates
 // these constants.
 //
-// Spec: docs/superpowers/specs/2026-04-15-cli-token-economy-design.md §7.3.
+// Spec: docs/CHANGELOG.md §2026-04-15 "CLI token economy" (original spec §7.3 archived in git history).
 
 import (
 	"fmt"
