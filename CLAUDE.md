@@ -10,6 +10,26 @@ Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
 - Build locally with `cd packages/cli && go build -o "$HOME/.local/bin/browzer" ./cmd/browzer`.
 - Released as `v1.0.16` (current — aligned with skills package). v1.0.16 (2026-04-20 sessão 2) ports the `ec37933` defer-headline + exit-code-7/8 pattern from `workspace docs --add` into `workspace sync` and adds `--no-wait` to sync. Required because the `sync` "poll batch <id>: not found" + silent exit-0-on-failure bug still reproduced in v1.0.15 (only `--add` had been fixed). v0.8.0 shipped the token-economy subsystem (daemon + tracker + telemetry + hooks + `read`/`gain`/`plugin`/`config` commands); v1.0.0 was the first stable release and shipped the public marketplace-based plugin flow (`/plugin marketplace add browzeremb/skills`) — the old file-drop `browzer plugin install` is now a printer of marketplace instructions. v1.0.3 calibrated the `savedTokens` formula per-language against Claude 4 via `count_tokens` — mean absolute error on the reported savings dropped from 35% to 14%.
 
+## Canonical reconciliation command
+
+`browzer sync` is the single canonical command to bring the server-side
+index into match with the local working tree. It re-indexes code
+structure AND reconciles documents (ADD + UPDATE + DELETE) driven by
+`.gitignore ∩ .browzerignore`. Partial runs: `--skip-code` or
+`--skip-docs`. For the legacy interactive huh TUI, use
+`browzer workspace docs --interactive`.
+
+Non-interactive curation (scripting / CI / agents) stays on
+`browzer workspace docs --add <spec>` / `--remove <spec>` /
+`--spec <file>` exactly as before RAG-UX-1 — those flag paths did not
+change.
+
+`browzer workspace index` (no flags) is a thin alias for
+`browzer sync --skip-docs`; `browzer workspace docs` (no flags) is a
+thin alias for `browzer sync --skip-code`. The legacy `workspace docs`
+default-flow TUI is no longer the default — pass `--interactive` to
+open it explicitly.
+
 ## Local verification (REQUIRED before pushing CLI changes)
 
 The CLI's CI runs **four independent checks** that a plain `go test ./...` does NOT cover: `go vet`, `go test -race`, cross-compile for 5 targets (darwin/linux arm64+amd64, windows/amd64), and `golangci-lint v2.5.0`. Each of these has blocked past CI runs because the dev cycle never exercised them locally.

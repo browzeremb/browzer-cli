@@ -31,20 +31,22 @@ type DocFile struct {
 // the read so we don't pay double I/O.
 //
 // Same hardening invariants as WalkRepo (symlink skip, MaxDepth, binary
-// detection, sensitive-before-stat).
+// detection, sensitive-before-stat). Also applies .browzerignore stacked
+// ON TOP of .gitignore: a doc is included only if both allow it.
 func WalkDocs(rootPath string) ([]DocFile, error) {
 	matcher, err := loadRootIgnore(rootPath)
 	if err != nil {
 		return nil, err
 	}
+	browzerMatcher := LoadBrowzerIgnore(rootPath)
 	var out []DocFile
-	if err := walkDocsRec(rootPath, "", matcher, &out, 0); err != nil {
+	if err := walkDocsRec(rootPath, "", matcher, browzerMatcher, &out, 0); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, out *[]DocFile, depth int) error {
+func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, browzerMatcher *BrowzerIgnoreMatcher, out *[]DocFile, depth int) error {
 	if depth > MaxDepth {
 		fmt.Fprintf(os.Stderr, "Warning: max directory depth %d exceeded at %q — stopping recursion.\n", MaxDepth, relDir)
 		return nil
@@ -88,7 +90,10 @@ func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, out *[]DocFile, 
 			if matcher.matches(relPath + "/") {
 				continue
 			}
-			if err := walkDocsRec(filepath.Join(absDir, name), relPath, matcher, out, depth+1); err != nil {
+			if browzerMatcher.IsIgnored(relPath + "/") {
+				continue
+			}
+			if err := walkDocsRec(filepath.Join(absDir, name), relPath, matcher, browzerMatcher, out, depth+1); err != nil {
 				return err
 			}
 			continue
@@ -104,6 +109,9 @@ func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, out *[]DocFile, 
 			continue
 		}
 		if matcher.matches(relPath) {
+			continue
+		}
+		if browzerMatcher.IsIgnored(relPath) {
 			continue
 		}
 

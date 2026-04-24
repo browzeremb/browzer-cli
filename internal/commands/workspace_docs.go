@@ -21,6 +21,8 @@ package commands
 
 import (
 	"fmt"
+	"maps"
+	"os"
 	"sort"
 	"strings"
 
@@ -219,6 +221,7 @@ func registerWorkspaceDocs(parent *cobra.Command) {
 		dryRun      bool
 		yes         bool
 		planOnly    bool
+		interactive bool
 		addRaw      string
 		removeRaw   string
 		replaceRaw  string
@@ -231,7 +234,12 @@ func registerWorkspaceDocs(parent *cobra.Command) {
 		Short: "(Re-)index documents (interactive or via flags)",
 		Long: `(Re-)index documents into the workspace.
 
-Interactive mode (default, requires TTY):
+Default mode (no flags):
+  Delegates to 'browzer sync --skip-code': reconciles all local docs
+  against the server non-interactively (adds new, re-uploads changed,
+  deletes removed). Pass --interactive to open the huh multi-select TUI.
+
+Interactive mode (--interactive, requires TTY):
   Fetches the currently-indexed documents, walks the local doc tree,
   and shows a multi-select picker where already-indexed items come
   pre-checked. On submit, the CLI computes a delta:
@@ -266,6 +274,7 @@ Deletes of 5+ documents require --i-know-what-im-doing.
 
 Examples:
   browzer workspace docs
+  browzer workspace docs --interactive
   browzer workspace docs --dry-run
   browzer workspace docs --yes
   browzer workspace docs --add docs/intro.md,docs/api.md --yes
@@ -297,12 +306,43 @@ Examples:
 			if hasReplace && (hasAdd || hasRemove) {
 				return cliErrors.New("--replace cannot be combined with --add or --remove.")
 			}
+
+			// Default path (no selection flags, no --plan, no --interactive):
+			// delegate to sync --skip-code. This is the PRD FR-6 path.
+			if !hasAdd && !hasRemove && !hasReplace && !planOnly && !interactive {
+				// Non-TTY deprecation notice (PRD §12 risk row 2).
+				if !isTTY() {
+					fmt.Fprintln(os.Stderr,
+						"warning: `browzer workspace docs` without flags is now a thin alias for `browzer sync --skip-code`. "+
+							"Scripts piping input to the legacy TUI should migrate to --add/--remove/--replace or pass --interactive explicitly.")
+				}
+				return runSyncFlowHook(rootContext(cmd), syncFlowOptions{
+					DryRun:         dryRun,
+					SkipCode:       true,
+					Yes:            yes,
+					ConfirmAdds:    50,
+					ConfirmDeletes: 50,
+					NoWait:         noWait,
+					JSON:           jsonFlag,
+					Save:           saveFlag,
+					JSONMode:       "sync",
+				})
+			}
+
 			// Legacy contract: without --plan and without any
 			// selection flag, --json/--save are still unsupported
-			// because the default path is the interactive TUI.
-			if !planOnly && !nonInteractive && (jsonFlag || saveFlag != "") {
-				return cliErrors.New("`workspace docs` is interactive and does not support --json/--save without --plan or --add/--remove/--replace.")
+			// when opening the TUI (--interactive path).
+			if !planOnly && !nonInteractive && interactive && (jsonFlag || saveFlag != "") {
+				return cliErrors.New("`workspace docs --interactive` is interactive and does not support --json/--save without --plan or --add/--remove/--replace.")
 			}
+
+			// --interactive: open the huh multi-select TUI.
+			if interactive {
+				return runInteractiveDocsPicker(cmd, args, dryRun, yes, noWait, addRaw, removeRaw, replaceRaw, iKnow)
+			}
+
+			// --plan / --add / --remove / --replace paths: fall through to
+			// the original non-interactive handling below.
 
 			// Parse specs eagerly so errors come out before we touch
 			// the network.
@@ -341,9 +381,9 @@ Examples:
 				return cliErrors.NoProject()
 			}
 
-			// TTY guard: the default interactive path requires a
-			// terminal. Non-interactive mode (--plan or any
-			// selection flag) never needs one.
+			// TTY guard: --plan and selection flags never need a TTY.
+			// (The interactive path is handled above; this guard only
+			// applies when --plan or --add/--remove/--replace are set.)
 			if !isTTY() && !yes && !planOnly && !nonInteractive {
 				return cliErrors.New("`workspace docs` requires an interactive terminal. Re-run with --yes to accept the current on-disk state, or use --add/--remove/--replace/--plan for non-interactive mode.")
 			}
@@ -552,9 +592,7 @@ Examples:
 				Version: cache.CacheVersion,
 				Files:   make(map[string]cache.CachedDoc, len(docsCache.Files)),
 			}
-			for k, v := range docsCache.Files {
-				newCache.Files[k] = v
-			}
+			maps.Copy(newCache.Files, docsCache.Files)
 
 			var uploadResult upload.Result
 			if len(toUpload) > 0 {
@@ -662,6 +700,9 @@ Examples:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the plan without applying it. Example: browzer workspace docs --add docs/a.md --dry-run")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the interactive picker and confirm prompt. Required by non-interactive mutations. Example: browzer workspace docs --yes")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Read-only: emit the current merge plan (server docs + local candidates + quota) and exit. Example: browzer workspace docs --plan --json")
+	cmd.Flags().BoolVar(&interactive, "interactive", false,
+		"Open the interactive huh multi-select picker. "+
+			"Without this flag, `workspace docs` is a thin alias for `browzer sync --skip-code`.")
 	cmd.Flags().StringVar(&addRaw, "add", "", "Non-interactive: add paths matching <spec>. Supports 'new' sentinel, @file refs, globs, or comma lists. Example: --add docs/a.md,docs/b.md  OR  --add new  OR  --add 'docs/*.md'")
 	cmd.Flags().StringVar(&removeRaw, "remove", "", "Non-interactive: remove indexed paths matching <spec>. Example: --remove docs/old.md  OR  --remove 'legacy/*.md'")
 	cmd.Flags().StringVar(&replaceRaw, "replace", "", "Non-interactive: replace the full selection with <spec>. Sentinels: 'all' (every local file) / 'none' (delete everything). Example: --replace docs/only.md --i-know-what-im-doing")
@@ -670,6 +711,270 @@ Examples:
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON. Works with --plan (read-only) and with --add/--remove/--replace (submit result).")
 	cmd.Flags().String("save", "", "Write JSON output to the given file path. Implies --json. Example: --save /tmp/docs-plan.json")
 	parent.AddCommand(cmd)
+}
+
+// runInteractiveDocsPicker runs the full Phase A + huh multi-select TUI +
+// Phase D flow. Called when the user passes --interactive to `workspace docs`.
+// The internals are byte-identical to the original default RunE body — only
+// the entry point has changed (gated behind --interactive).
+func runInteractiveDocsPicker(
+	cmd *cobra.Command,
+	_ []string,
+	dryRun bool,
+	yes bool,
+	noWait bool,
+	_ string, // addRaw — unused in interactive mode
+	_ string, // removeRaw — unused in interactive mode
+	_ string, // replaceRaw — unused in interactive mode
+	iKnow bool,
+) error {
+	gitRoot, err := requireGitRoot()
+	if err != nil {
+		return err
+	}
+	project, err := config.LoadProjectConfig(gitRoot)
+	if err != nil {
+		return err
+	}
+	if project == nil {
+		return cliErrors.NoProject()
+	}
+
+	// TTY guard for the interactive picker.
+	if !isTTY() && !yes {
+		return cliErrors.New("`workspace docs --interactive` requires an interactive terminal. Re-run with --yes to accept the current on-disk state.")
+	}
+
+	ctx := rootContext(cmd)
+	printColdStartHint(false)
+	ac, err := requireAuth(600)
+	if err != nil {
+		return err
+	}
+	client := ac.Client
+
+	ui.Arrow(fmt.Sprintf("Workspace: %s", project.WorkspaceID))
+
+	// Phase A — three independent fetches in parallel.
+	var (
+		serverDocs []api.IndexedDocument
+		localDocs  []walker.DocFile
+		usage      *api.BillingUsageResponse
+	)
+	sp := ui.StartSpinner("Loading workspace state...")
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		docs, listErr := client.ListWorkspaceDocuments(gctx, project.WorkspaceID)
+		if listErr != nil {
+			return fmt.Errorf("list workspace documents: %w", listErr)
+		}
+		serverDocs = docs
+		return nil
+	})
+	g.Go(func() error {
+		docs, walkErr := walker.WalkDocs(gitRoot)
+		if walkErr != nil {
+			return fmt.Errorf("walk local docs: %w", walkErr)
+		}
+		localDocs = docs
+		return nil
+	})
+	g.Go(func() error {
+		u, uErr := client.BillingUsage(gctx)
+		if uErr != nil {
+			// Quota is nice-to-have — a fetch failure shouldn't
+			// block the picker. Emit a warning and continue.
+			ui.Warn(fmt.Sprintf("could not fetch billing usage: %v", uErr))
+			return nil
+		}
+		usage = u
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		sp.Failure("Load failed")
+		return err
+	}
+	sp.Success(fmt.Sprintf("Loaded %d server doc(s), %d local candidate(s)", len(serverDocs), len(localDocs)))
+
+	items := mergeDocItems(localDocs, serverDocs)
+	if len(items) == 0 {
+		ui.Info("No documents to manage.")
+		return nil
+	}
+
+	docsCache := cache.Load(gitRoot)
+
+	// TUI picker — show multi-select unless --yes was passed.
+	selected := make([]int, 0, len(items))
+	for i, it := range items {
+		if it.Selected {
+			selected = append(selected, i)
+		}
+	}
+	if !yes {
+		options := make([]huh.Option[int], len(items))
+		for i, it := range items {
+			options[i] = huh.NewOption(formatDocOption(it), i)
+		}
+		ms := huh.NewMultiSelect[int]().
+			Title("Pick documents to keep in the workspace").
+			Description("Toggle with space, submit with enter. Checked items are kept; unchecked indexed items are deleted.").
+			Options(options...).
+			Value(&selected).
+			Height(20)
+		if err := ms.Run(); err != nil {
+			return fmt.Errorf("picker: %w", err)
+		}
+	}
+	chosen := make(map[int]bool, len(selected))
+	for _, idx := range selected {
+		chosen[idx] = true
+	}
+	for i := range items {
+		items[i].Selected = chosen[i]
+	}
+
+	deltaPlan := computeDocDelta(items, docsCache)
+
+	// --- Safeguard: large-delete confirmation.
+	if len(deltaPlan.ToDelete) >= 5 && !iKnow {
+		return cliErrors.New(largeDeleteMessage(deltaPlan))
+	}
+
+	plan := deltaPlan
+
+	summary := fmt.Sprintf(
+		"Plan: +%d insert, ~%d re-upload, -%d delete, =%d keep",
+		len(plan.ToInsert), len(plan.ToReUpload), len(plan.ToDelete), len(plan.ToKeep),
+	)
+	ui.Arrow(summary)
+
+	if dryRun {
+		fmt.Println("Dry run — no changes applied.")
+		return nil
+	}
+
+	if len(plan.ToInsert) == 0 && len(plan.ToReUpload) == 0 && len(plan.ToDelete) == 0 {
+		if len(serverDocs) == 0 && len(localDocs) > 0 && yes {
+			ui.Warn(fmt.Sprintf(
+				"Workspace is empty and %d local candidate(s) found. Use 'browzer workspace docs --add new --yes' to index all, or --add <paths> for a subset.",
+				len(localDocs),
+			))
+			return nil
+		}
+		ui.Success("Workspace documents already in sync.")
+		return nil
+	}
+
+	// Phase D — preflight authoritative check, then execute.
+	toUpload := append([]DocPickerItem{}, plan.ToInsert...)
+	toUpload = append(toUpload, plan.ToReUpload...)
+	if len(toUpload) > 0 {
+		if err := runPreflight(ctx, client, toWalkerDocs(toUpload)); err != nil {
+			return err
+		}
+	}
+
+	// Interactive confirm (skippable with --yes).
+	if !yes {
+		confirm := false
+		err := huh.NewConfirm().
+			Title(summary).
+			Description("Apply these changes to the workspace?").
+			Affirmative("Apply").
+			Negative("Cancel").
+			Value(&confirm).
+			Run()
+		if err != nil {
+			return err
+		}
+		if !confirm {
+			ui.Warn("Cancelled.")
+			return nil
+		}
+	}
+
+	// Execute: uploads first, then deletes.
+	newCache := cache.DocsCache{
+		Version: cache.CacheVersion,
+		Files:   make(map[string]cache.CachedDoc, len(docsCache.Files)),
+	}
+	maps.Copy(newCache.Files, docsCache.Files)
+
+	var uploadResult upload.Result
+	if len(toUpload) > 0 {
+		sp := ui.StartSpinner(fmt.Sprintf("Uploading %d docs...", len(toUpload)))
+		r, upErr := upload.UploadInBatches(ctx, client, &project.WorkspaceID, toWalkerDocs(toUpload), &newCache, nil, noWait)
+		if upErr != nil {
+			sp.Failure("Upload failed")
+			return upErr
+		}
+		uploadResult = r
+		if noWait {
+			sp.Success(fmt.Sprintf("Enqueued %d docs (batch IDs: %s)", len(toUpload), strings.Join(r.BatchIDs, ", ")))
+		} else if r.FailedCount > 0 {
+			sp.Failure(fmt.Sprintf("⚠ %d of %d docs failed", r.FailedCount, len(toUpload)))
+			for _, name := range r.FailedNames {
+				output.Errf("  ⚠ %s: ingestion failed\n", name)
+			}
+		} else {
+			sp.Success(fmt.Sprintf("✓ Uploaded %d docs", r.UploadedCount))
+		}
+	}
+
+	deletesFailed := 0
+	var failedDeletes []string
+	if len(plan.ToDelete) > 0 {
+		sp := ui.StartSpinner(fmt.Sprintf("Deleting %d docs...", len(plan.ToDelete)))
+		for _, d := range plan.ToDelete {
+			if delErr := client.DeleteDocument(ctx, d.ServerDocumentID, project.WorkspaceID); delErr != nil {
+				deletesFailed++
+				failedDeletes = append(failedDeletes, fmt.Sprintf("%s: %v", d.RelativePath, delErr))
+			} else {
+				delete(newCache.Files, d.RelativePath)
+			}
+		}
+		if deletesFailed == 0 {
+			sp.Success(fmt.Sprintf("Deleted %d docs", len(plan.ToDelete)))
+		} else {
+			sp.Failure(fmt.Sprintf("Deleted %d/%d docs", len(plan.ToDelete)-deletesFailed, len(plan.ToDelete)))
+			for _, f := range failedDeletes {
+				ui.Warn(f)
+			}
+		}
+	}
+
+	if err := cache.Save(gitRoot, newCache); err != nil {
+		return err
+	}
+
+	if deletesFailed > 0 {
+		return cliErrors.Newf("%d document delete(s) failed — see warnings above.", deletesFailed)
+	}
+
+	if !noWait && uploadResult.FailedCount > 0 {
+		total := uploadResult.UploadedCount + uploadResult.FailedCount
+		if uploadResult.UploadedCount == 0 {
+			return cliErrors.WithCode(
+				fmt.Sprintf("all %d doc(s) failed ingestion — see warnings above.", total),
+				cliErrors.ExitTotalFailure,
+			)
+		}
+		return cliErrors.WithCode(
+			fmt.Sprintf("%d of %d doc(s) failed ingestion — see warnings above.", uploadResult.FailedCount, total),
+			cliErrors.ExitPartialFailure,
+		)
+	}
+
+	fmt.Println()
+	ui.Success("Documents re-indexed")
+
+	if usage != nil {
+		fmt.Printf("  Chunks:  %s\n", fmtMeter(usage.Chunks.Used, usage.Chunks.Limit))
+		fmt.Printf("  Storage: %s / %s\n",
+			humanSize(usage.Storage.Used), humanSize(usage.Storage.Limit))
+	}
+	return nil
 }
 
 // docsPlanItemJSON is the per-row shape emitted by --plan. Fields

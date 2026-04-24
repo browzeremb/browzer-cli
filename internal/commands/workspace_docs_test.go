@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
@@ -127,5 +129,99 @@ func TestRegisterWorkspaceDocs_HelpCompiles(t *testing.T) {
 		if cmd.Short == "" {
 			t.Errorf("%v: empty Short", path)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TASK_02 new cases
+// ---------------------------------------------------------------------------
+
+// TestWorkspaceDocs_InteractiveFlagRegistered verifies the new --interactive
+// flag is registered on `workspace docs` (Case M1).
+func TestWorkspaceDocs_InteractiveFlagRegistered(t *testing.T) {
+	root := NewRootCommand("test")
+	cmd, _, err := root.Find([]string{"workspace", "docs"})
+	if err != nil {
+		t.Fatalf("find workspace docs: %v", err)
+	}
+	f := cmd.Flags().Lookup("interactive")
+	if f == nil {
+		t.Fatal("--interactive flag not registered on workspace docs")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--interactive default = %q, want \"false\"", f.DefValue)
+	}
+}
+
+// TestWorkspaceDocs_NoFlagsDelegatesToSync verifies that the no-flags RunE
+// delegates to runSyncFlowHook with SkipCode=true and JSONMode="sync"
+// (Case M2). Uses the package-level runSyncFlowHook seam.
+func TestWorkspaceDocs_NoFlagsDelegatesToSync(t *testing.T) {
+	// Install a spy that captures opts and returns nil.
+	var captured syncFlowOptions
+	called := false
+	orig := runSyncFlowHook
+	t.Cleanup(func() { runSyncFlowHook = orig })
+	runSyncFlowHook = func(_ context.Context, opts syncFlowOptions) error {
+		captured = opts
+		called = true
+		return nil
+	}
+
+	root := NewRootCommand("test")
+	root.SetArgs([]string{"workspace", "docs"})
+	// Execute will fail at requireGitRoot unless we are inside a git repo,
+	// but the spy intercepts before that point. The spy is called from
+	// inside RunE, so we execute and then check the spy.
+	_ = root.Execute()
+
+	if !called {
+		t.Fatal("runSyncFlowHook was not called — delegation not wired")
+	}
+	if !captured.SkipCode {
+		t.Errorf("SkipCode = %v, want true", captured.SkipCode)
+	}
+	if captured.SkipDocs {
+		t.Errorf("SkipDocs = %v, want false", captured.SkipDocs)
+	}
+	if captured.JSONMode != "sync" {
+		t.Errorf("JSONMode = %q, want \"sync\"", captured.JSONMode)
+	}
+}
+
+// TestWorkspaceDocs_AddPathUnchanged verifies that --add prevents the
+// sync-delegation branch from firing (Case M3).
+// The spy must NOT be called when --add is present — the command falls
+// through to the spec-resolution path which needs network access, so it
+// will error on requireGitRoot, but that error comes after the delegation
+// guard passes. We just assert the spy was NOT invoked.
+func TestWorkspaceDocs_AddPathUnchanged(t *testing.T) {
+	orig := runSyncFlowHook
+	t.Cleanup(func() { runSyncFlowHook = orig })
+	syncCalled := false
+	runSyncFlowHook = func(_ context.Context, _ syncFlowOptions) error {
+		syncCalled = true
+		return nil
+	}
+
+	root := NewRootCommand("test")
+	root.SetArgs([]string{"workspace", "docs", "--add", "foo.md", "--yes"})
+	_ = root.Execute()
+
+	if syncCalled {
+		t.Error("runSyncFlowHook must NOT be called when --add flag is set")
+	}
+}
+
+// TestWorkspaceDocs_HelpIncludesInteractive verifies the Long docstring
+// documents --interactive so users discover it via --help (Case M4).
+func TestWorkspaceDocs_HelpIncludesInteractive(t *testing.T) {
+	root := NewRootCommand("test")
+	cmd, _, err := root.Find([]string{"workspace", "docs"})
+	if err != nil {
+		t.Fatalf("find workspace docs: %v", err)
+	}
+	if !strings.Contains(cmd.Long, "--interactive") {
+		t.Error("Long description does not mention --interactive")
 	}
 }

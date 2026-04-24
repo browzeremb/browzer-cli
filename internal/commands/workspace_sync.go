@@ -1,9 +1,9 @@
 // Package commands — "browzer workspace sync" (and the "browzer sync" top-level alias).
 //
 // Reconciles the server's indexed set with the local filesystem: re-uploads
-// changed docs, deletes docs that were removed locally, keeps unchanged docs.
-// Does NOT add new (never-indexed) local files — use "browzer workspace docs"
-// for that.
+// changed docs, deletes docs that were removed locally, adds new local docs
+// that pass the stacked ignore filter (.gitignore ∩ .browzerignore), and keeps
+// unchanged docs.
 //
 // Order is strictly: code index FIRST, then docs. Package nodes must exist
 // in the graph before linkEntitiesToWorkspace runs during entity
@@ -12,6 +12,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"strings"
@@ -30,6 +31,415 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// syncFlowOptions is the parsed, normalized input to runSyncFlow. Each
+// public-facing cobra.Command (workspace sync, workspace index,
+// workspace docs default path) builds one of these and calls
+// runSyncFlow. This keeps observable output identical across the three
+// surfaces that PRD FR-5 and FR-6 demand be equivalent.
+type syncFlowOptions struct {
+	DryRun         bool
+	SkipCode       bool
+	SkipDocs       bool
+	Force          bool
+	NoWait         bool
+	Yes            bool
+	ConfirmAdds    int
+	ConfirmDeletes int
+	// Output
+	JSON bool
+	Save string
+	// JSONMode is the value emitted as "mode" in the machine-readable
+	// payload. "sync" for browzer sync; "index" for browzer workspace
+	// index (backward-compat). workspace docs default path uses "sync".
+	JSONMode string
+}
+
+// runSyncFlowHook is a seam for tests. Production always uses runSyncFlow.
+// Tests can override this to intercept calls and assert opts without
+// running the full network-dependent flow.
+var runSyncFlowHook = runSyncFlow
+
+// runSyncFlow executes the unified reconciliation flow. Used by
+// workspace sync (direct), workspace index (SkipDocs=true alias), and
+// workspace docs no-flags path (SkipCode=true alias). All three
+// produce observably identical output modulo the SkipCode/SkipDocs
+// booleans and JSONMode.
+func runSyncFlow(ctx context.Context, opts syncFlowOptions) error {
+	jsonFlag := opts.JSON
+	saveFlag := opts.Save
+	quiet := jsonFlag || saveFlag != ""
+
+	gitRoot, err := requireGitRoot()
+	if err != nil {
+		return err
+	}
+	project, err := config.LoadProjectConfig(gitRoot)
+	if err != nil {
+		return err
+	}
+	if project == nil {
+		return cliErrors.NoProject()
+	}
+
+	printColdStartHint(quiet)
+	ac, err := requireAuth(600)
+	if err != nil {
+		return err
+	}
+	client := ac.Client
+
+	if !quiet {
+		ui.Arrow(fmt.Sprintf("Workspace: %s", project.WorkspaceID))
+	}
+
+	// PR 3 — Fase 0: jobs-in-flight preflight (code path only;
+	// document sync uploads new ingestion jobs and is therefore
+	// not affected by pending parses). Skipped under --force or
+	// --skip-code. See preflightJobsInFlight in workspace_index.go.
+	if !opts.SkipCode && !opts.Force {
+		if abortErr := preflightJobsInFlight(ctx, client, project.WorkspaceID, quiet); abortErr != nil {
+			return abortErr
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// Shared result accumulators for the final JSON payload.
+	// ----------------------------------------------------------------
+	codeFiles := 0
+	var docPlan DocDeltaPlan
+
+	// ================================================================
+	// Step 1: Code index.
+	// ================================================================
+	if !opts.SkipCode {
+		sp := startSpinnerQ(quiet, "Walking code tree...")
+		tree, walkErr := walker.WalkRepo(gitRoot)
+		if walkErr != nil {
+			finishSpinnerQ(sp, false, "Walk failed")
+			return walkErr
+		}
+		finishSpinnerQ(sp, true, fmt.Sprintf("Walked code tree (%d files)", len(tree.Files)))
+		codeFiles = len(tree.Files)
+
+		if !opts.DryRun {
+			sp = startSpinnerQ(quiet, "Re-parsing code on server...")
+			parseResp, parseErr := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
+				WorkspaceID: project.WorkspaceID,
+				RootPath:    tree.RootPath,
+				Folders:     tree.Folders,
+				Files:       tree.Files,
+			}, api.ParseWorkspaceOptions{ForceParse: opts.Force})
+			if parseErr != nil {
+				finishSpinnerQ(sp, false, "Parse failed")
+				return parseErr
+			}
+			if parseResp != nil && parseResp.Status == "unchanged" {
+				finishSpinnerQ(sp, true, "No changes detected — skipped re-parse")
+			} else {
+				finishSpinnerQ(sp, true, "Code re-parsed")
+			}
+
+			// Stamp LastSyncCommit so "browzer status" can report drift.
+			if head := git.HEAD(gitRoot); head != "" {
+				project.LastSyncCommit = head
+				if saveErr := config.SaveProjectConfig(gitRoot, project); saveErr != nil {
+					ui.Warn(fmt.Sprintf("could not save project config: %v", saveErr))
+				}
+			}
+
+			// Pull the per-file manifest so the daemon's ManifestCache
+			// can back `filterLevel: "aggressive"` in `browzer read` +
+			// the rewrite-read hook. Best-effort — stale cache just
+			// downgrades aggressive → minimal.
+			if err := pullAndSaveManifest(ctx, client, project.WorkspaceID); err != nil {
+				if !quiet {
+					ui.Warn(fmt.Sprintf("could not cache workspace manifest: %v", err))
+				}
+			}
+		}
+	}
+
+	// ================================================================
+	// Step 2: Document sync (non-interactive, selects all local docs).
+	// ================================================================
+	if !opts.SkipDocs {
+		// Phase A: fetch server state, local candidates, and billing
+		// quota concurrently — same pattern as workspace_docs.go.
+		var (
+			serverDocs []api.IndexedDocument
+			localDocs  []walker.DocFile
+			usage      *api.BillingUsageResponse
+		)
+
+		sp := startSpinnerQ(quiet, "Loading workspace state...")
+		g, gctx := errgroup.WithContext(ctx)
+		g.Go(func() error {
+			docs, listErr := client.ListWorkspaceDocuments(gctx, project.WorkspaceID)
+			if listErr != nil {
+				return fmt.Errorf("list workspace documents: %w", listErr)
+			}
+			serverDocs = docs
+			return nil
+		})
+		g.Go(func() error {
+			docs, walkErr := walker.WalkDocs(gitRoot)
+			if walkErr != nil {
+				return fmt.Errorf("walk local docs: %w", walkErr)
+			}
+			localDocs = docs
+			return nil
+		})
+		g.Go(func() error {
+			u, uErr := client.BillingUsage(gctx)
+			if uErr != nil {
+				// Quota is nice-to-have — failure should not block sync.
+				ui.Warn(fmt.Sprintf("could not fetch billing usage: %v", uErr))
+				return nil
+			}
+			usage = u
+			return nil
+		})
+		if waitErr := g.Wait(); waitErr != nil {
+			finishSpinnerQ(sp, false, "Load failed")
+			return waitErr
+		}
+		finishSpinnerQ(sp, true,
+			fmt.Sprintf("Loaded %d server doc(s), %d local candidate(s)",
+				len(serverDocs), len(localDocs)))
+
+		items := mergeDocItems(localDocs, serverDocs)
+		docsCache := cache.Load(gitRoot)
+
+		// applySyncSelection adjusts each item's Selected flag:
+		//   - server-indexed + no local file   → deselect (DELETE class)
+		//   - local-only + local file present  → select (ADD class)
+		//     WalkDocs has already filtered by .gitignore ∩ .browzerignore,
+		//     so any survivor here is eligible for indexing.
+		items = applySyncSelection(items)
+
+		docPlan = computeDocDelta(items, docsCache)
+
+		// Confirmation thresholds: abort when the plan exceeds the configured
+		// ADD or DELETE count unless --yes is set or this is a dry-run.
+		if !opts.DryRun && !opts.Yes {
+			if len(docPlan.ToInsert) > opts.ConfirmAdds {
+				return cliErrors.WithCode(fmt.Sprintf(
+					"plan would ADD %d doc(s) (threshold: %d). Re-run with --yes to confirm, or raise --confirm-adds.",
+					len(docPlan.ToInsert), opts.ConfirmAdds,
+				), cliErrors.ExitTotalFailure)
+			}
+			if len(docPlan.ToDelete) > opts.ConfirmDeletes {
+				return cliErrors.WithCode(fmt.Sprintf(
+					"plan would DELETE %d doc(s) (threshold: %d). Re-run with --yes to confirm, or raise --confirm-deletes.",
+					len(docPlan.ToDelete), opts.ConfirmDeletes,
+				), cliErrors.ExitTotalFailure)
+			}
+		}
+
+		summary := fmt.Sprintf(
+			"Plan: +%d insert, ~%d re-upload, -%d delete, =%d keep",
+			len(docPlan.ToInsert), len(docPlan.ToReUpload),
+			len(docPlan.ToDelete), len(docPlan.ToKeep),
+		)
+		if !quiet {
+			ui.Arrow(summary)
+		}
+
+		if opts.DryRun {
+			if !quiet {
+				fmt.Println("Dry run — no changes applied.")
+			}
+			// Fall through to the JSON emitter below.
+		} else if len(docPlan.ToInsert) == 0 && len(docPlan.ToReUpload) == 0 && len(docPlan.ToDelete) == 0 {
+			if !quiet {
+				ui.Success("Workspace documents already in sync.")
+			}
+		} else {
+			// Phase B: preflight, then execute uploads + deletes.
+			toUpload := append([]DocPickerItem{}, docPlan.ToInsert...)
+			toUpload = append(toUpload, docPlan.ToReUpload...)
+
+			if len(toUpload) > 0 {
+				if preErr := runPreflight(ctx, client, toWalkerDocs(toUpload)); preErr != nil {
+					return preErr
+				}
+				// Proactive warning when the org's daily ingestion
+				// counter is near the per-plan cap. Best-effort: silent on
+				// Redis-miss or pre-2026-04-22 servers that omit
+				// the `ingestion_daily` field. Warning only — never
+				// blocks the sync.
+				if u, uErr := client.BillingUsage(ctx); uErr == nil &&
+					u.IngestionDaily != nil && u.IngestionDaily.Limit > 0 {
+					used := u.IngestionDaily.Used
+					limit := u.IngestionDaily.Limit
+					batch := int64(len(toUpload))
+					switch {
+					case used+batch > limit:
+						ui.Warn(fmt.Sprintf(
+							"daily ingestion cap would be exceeded: %d used + %d to upload > %d limit. "+
+								"Some uploads will be rejected. Reset ~%s.",
+							used, batch, limit, fmtResetAt(u.IngestionDaily.ResetAt),
+						))
+					case used >= limit*8/10:
+						ui.Warn(fmt.Sprintf(
+							"daily ingestion counter near cap: %d / %d (resets %s)",
+							used, limit, fmtResetAt(u.IngestionDaily.ResetAt),
+						))
+					}
+				}
+			}
+
+			// Build the new cache before mutations so we always save
+			// even on partial failure, reflecting what was actually done.
+			newCache := cache.DocsCache{
+				Version: cache.CacheVersion,
+				Files:   make(map[string]cache.CachedDoc, len(docsCache.Files)),
+			}
+			maps.Copy(newCache.Files, docsCache.Files)
+
+			var uploadResult upload.Result
+			if len(toUpload) > 0 {
+				sp = startSpinnerQ(quiet, fmt.Sprintf("Uploading %d doc(s)...", len(toUpload)))
+				r, upErr := upload.UploadInBatches(
+					ctx, client, &project.WorkspaceID,
+					toWalkerDocs(toUpload), &newCache, nil, opts.NoWait,
+				)
+				if upErr != nil {
+					finishSpinnerQ(sp, false, "Upload failed")
+					return upErr
+				}
+				uploadResult = r
+				switch {
+				case opts.NoWait:
+					finishSpinnerQ(sp, true,
+						fmt.Sprintf("Enqueued %d doc(s) (batch IDs: %s)",
+							len(toUpload), strings.Join(r.BatchIDs, ", ")))
+				case r.FailedCount > 0:
+					finishSpinnerQ(sp, false,
+						fmt.Sprintf("⚠ %d of %d doc(s) failed", r.FailedCount, len(toUpload)))
+					for _, name := range r.FailedNames {
+						output.Errf("  ⚠ %s\n", name)
+					}
+					if r.SkippedCount > 0 {
+						output.Errf("  (%d doc(s) skipped — already indexed with same content)\n", r.SkippedCount)
+					}
+				case r.SkippedCount > 0 && r.UploadedCount == 0:
+					finishSpinnerQ(sp, true,
+						fmt.Sprintf("All %d doc(s) already indexed (no-op)", r.SkippedCount))
+				case r.SkippedCount > 0:
+					finishSpinnerQ(sp, true,
+						fmt.Sprintf("Uploaded %d doc(s), skipped %d already-indexed",
+							r.UploadedCount, r.SkippedCount))
+				default:
+					finishSpinnerQ(sp, true,
+						fmt.Sprintf("Uploaded %d doc(s)", r.UploadedCount))
+				}
+			}
+
+			deletesFailed := 0
+			var failedDeletes []string
+			if len(docPlan.ToDelete) > 0 {
+				sp = startSpinnerQ(quiet, fmt.Sprintf("Deleting %d doc(s)...", len(docPlan.ToDelete)))
+				for _, d := range docPlan.ToDelete {
+					if delErr := client.DeleteDocument(ctx, d.ServerDocumentID, project.WorkspaceID); delErr != nil {
+						deletesFailed++
+						failedDeletes = append(failedDeletes, fmt.Sprintf("%s: %v", d.RelativePath, delErr))
+					} else {
+						delete(newCache.Files, d.RelativePath)
+					}
+				}
+				if deletesFailed == 0 {
+					finishSpinnerQ(sp, true, fmt.Sprintf("Deleted %d doc(s)", len(docPlan.ToDelete)))
+				} else {
+					finishSpinnerQ(sp, false,
+						fmt.Sprintf("Deleted %d/%d doc(s)", len(docPlan.ToDelete)-deletesFailed, len(docPlan.ToDelete)))
+					for _, f := range failedDeletes {
+						ui.Warn(f)
+					}
+				}
+			}
+
+			if cacheErr := cache.Save(gitRoot, newCache); cacheErr != nil {
+				ui.Warn(fmt.Sprintf("could not save docs cache: %v", cacheErr))
+			}
+
+			if !quiet {
+				fmt.Println()
+				ui.Success("Sync complete")
+				if usage != nil {
+					fmt.Printf("  Chunks:  %s\n", fmtMeter(usage.Chunks.Used, usage.Chunks.Limit))
+					fmt.Printf("  Storage: %s / %s\n",
+						humanSize(usage.Storage.Used), humanSize(usage.Storage.Limit))
+				}
+			}
+
+			if deletesFailed > 0 {
+				return cliErrors.Newf("%d document delete(s) failed — see warnings above.", deletesFailed)
+			}
+
+			// Same exit-code taxonomy as workspace_docs.go (ec37933):
+			//   7 (ExitPartialFailure) — some docs failed, at least one succeeded
+			//   8 (ExitTotalFailure)   — all docs failed (no completions)
+			// Skipped under --no-wait since the poll never ran.
+			if !opts.NoWait && uploadResult.FailedCount > 0 {
+				total := uploadResult.UploadedCount + uploadResult.FailedCount
+				if uploadResult.UploadedCount == 0 {
+					return cliErrors.WithCode(
+						fmt.Sprintf("all %d doc(s) failed ingestion — see warnings above.", total),
+						cliErrors.ExitTotalFailure,
+					)
+				}
+				return cliErrors.WithCode(
+					fmt.Sprintf("%d of %d doc(s) failed ingestion — see warnings above.", uploadResult.FailedCount, total),
+					cliErrors.ExitPartialFailure,
+				)
+			}
+		}
+
+		// Emit JSON result when requested.
+		if jsonFlag || saveFlag != "" {
+			// Refresh usage for the post-sync snapshot (best-effort).
+			if !opts.DryRun {
+				if u, uErr := client.BillingUsage(ctx); uErr == nil {
+					usage = u
+				}
+			}
+			payload := map[string]any{
+				"mode":      opts.JSONMode,
+				"dryRun":    opts.DryRun,
+				"skipCode":  opts.SkipCode,
+				"skipDocs":  opts.SkipDocs,
+				"codeFiles": codeFiles,
+				"docs":      buildSubmitPayload(docPlan, usage),
+			}
+			return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, "")
+		}
+	} else if jsonFlag || saveFlag != "" {
+		// skipDocs=true: emit code-only JSON payload.
+		// When JSONMode="index" (invoked via workspace index), emit the
+		// legacy index shape {mode, workspaceId, codeFiles} for backward
+		// compatibility. Otherwise emit the canonical sync shape.
+		if opts.JSONMode == "index" {
+			payload := map[string]any{
+				"mode":        "index",
+				"workspaceId": project.WorkspaceID,
+				"codeFiles":   codeFiles,
+			}
+			return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, "")
+		}
+		payload := map[string]any{
+			"mode":      opts.JSONMode,
+			"dryRun":    opts.DryRun,
+			"skipCode":  opts.SkipCode,
+			"skipDocs":  opts.SkipDocs,
+			"codeFiles": codeFiles,
+		}
+		return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, "")
+	}
+
+	return nil
+}
+
 // registerWorkspaceSync wires "browzer workspace sync" (and its top-level
 // alias "browzer sync") under the given parent cobra command.
 //
@@ -38,11 +448,14 @@ import (
 // does for "browzer index" / "browzer workspace index".
 func registerWorkspaceSync(parent *cobra.Command) {
 	var (
-		dryRun   bool
-		skipCode bool
-		skipDocs bool
-		force    bool
-		noWait   bool
+		dryRun         bool
+		skipCode       bool
+		skipDocs       bool
+		force          bool
+		noWait         bool
+		yes            bool
+		confirmAdds    int
+		confirmDeletes int
 	)
 
 	cmd := &cobra.Command{
@@ -52,12 +465,17 @@ func registerWorkspaceSync(parent *cobra.Command) {
 			"Order of operations (always sequential, never reversed):\n" +
 			"  1. Code index  — WalkRepo -> POST /api/workspaces/parse (same as: browzer workspace index)\n" +
 			"  2. Document sync — reconcile the server's indexed set with local files:\n" +
-			"       * already-indexed, changed locally → re-uploaded\n" +
-			"       * already-indexed, deleted locally → deleted from workspace\n" +
-			"       * already-indexed, unchanged       → skipped\n" +
-			"       * local-only (never indexed)        → ignored (not added)\n\n" +
-			"sync only operates on documents already in the workspace. To add new\n" +
-			"documents use 'browzer workspace docs' which opens the interactive TUI.\n\n" +
+			"       * local-only (never indexed), passes filter → ADD to workspace\n" +
+			"       * already-indexed, changed locally          → re-uploaded\n" +
+			"       * already-indexed, deleted locally          → deleted from workspace\n" +
+			"       * already-indexed, unchanged                → skipped\n\n" +
+			"The stacked ignore filter (.gitignore ∩ .browzerignore) gates the ADD class:\n" +
+			"only local docs that pass both filters are eligible for indexing.\n" +
+			"Create a .browzerignore at the repo root (same syntax as .gitignore) to opt\n" +
+			"specific paths out of automatic indexing without touching .gitignore.\n\n" +
+			"Confirmation thresholds (default 50 each) prevent accidental bulk mutations:\n" +
+			"  --confirm-adds N      abort when planned ADD set exceeds N (use --yes to bypass)\n" +
+			"  --confirm-deletes N   abort when planned DELETE set exceeds N (use --yes to bypass)\n\n" +
 			"The code step runs first so Package nodes exist when linkEntitiesToWorkspace\n" +
 			"runs during entity extraction. Reversing the order means RELEVANT_TO edges\n" +
 			"are never created for documents indexed in the same sync run.\n\n" +
@@ -68,379 +486,25 @@ func registerWorkspaceSync(parent *cobra.Command) {
 			"  browzer workspace sync\n" +
 			"  browzer workspace sync --dry-run\n" +
 			"  browzer workspace sync --skip-docs\n" +
+			"  browzer workspace sync --yes\n" +
+			"  browzer workspace sync --confirm-adds 100 --confirm-deletes 20\n" +
 			"  browzer workspace sync --json --save sync-result.json\n" +
 			output.ExitCodesHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if skipCode && skipDocs {
 				return cliErrors.New("--skip-code and --skip-docs together leave nothing to do.")
 			}
-
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
 			if saveFlag != "" {
 				jsonFlag = true
 			}
-			quiet := jsonFlag || saveFlag != ""
-
-			gitRoot, err := requireGitRoot()
-			if err != nil {
-				return err
-			}
-			project, err := config.LoadProjectConfig(gitRoot)
-			if err != nil {
-				return err
-			}
-			if project == nil {
-				return cliErrors.NoProject()
-			}
-
-			ctx := rootContext(cmd)
-			printColdStartHint(quiet)
-			ac, err := requireAuth(600)
-			if err != nil {
-				return err
-			}
-			client := ac.Client
-
-			if !quiet {
-				ui.Arrow(fmt.Sprintf("Workspace: %s", project.WorkspaceID))
-			}
-
-			// PR 3 — Fase 0: jobs-in-flight preflight (code path only;
-			// document sync uploads new ingestion jobs and is therefore
-			// not affected by pending parses). Skipped under --force or
-			// --skip-code. See preflightJobsInFlight in workspace_index.go.
-			if !skipCode && !force {
-				if abortErr := preflightJobsInFlight(ctx, client, project.WorkspaceID, quiet); abortErr != nil {
-					return abortErr
-				}
-			}
-
-			// ----------------------------------------------------------------
-			// Shared result accumulators for the final JSON payload.
-			// ----------------------------------------------------------------
-			codeFiles := 0
-			var docPlan DocDeltaPlan
-
-			// ================================================================
-			// Step 1: Code index.
-			// ================================================================
-			if !skipCode {
-				sp := startSpinnerQ(quiet, "Walking code tree...")
-				tree, walkErr := walker.WalkRepo(gitRoot)
-				if walkErr != nil {
-					finishSpinnerQ(sp, false, "Walk failed")
-					return walkErr
-				}
-				finishSpinnerQ(sp, true, fmt.Sprintf("Walked code tree (%d files)", len(tree.Files)))
-				codeFiles = len(tree.Files)
-
-				if !dryRun {
-					sp = startSpinnerQ(quiet, "Re-parsing code on server...")
-					parseResp, parseErr := client.ParseWorkspace(ctx, api.ParseWorkspaceRequest{
-						WorkspaceID: project.WorkspaceID,
-						RootPath:    tree.RootPath,
-						Folders:     tree.Folders,
-						Files:       tree.Files,
-					}, api.ParseWorkspaceOptions{ForceParse: force})
-					if parseErr != nil {
-						finishSpinnerQ(sp, false, "Parse failed")
-						return parseErr
-					}
-					if parseResp != nil && parseResp.Status == "unchanged" {
-						finishSpinnerQ(sp, true, "No changes detected — skipped re-parse")
-					} else {
-						finishSpinnerQ(sp, true, "Code re-parsed")
-					}
-
-					// Stamp LastSyncCommit so "browzer status" can report drift.
-					if head := git.HEAD(gitRoot); head != "" {
-						project.LastSyncCommit = head
-						if saveErr := config.SaveProjectConfig(gitRoot, project); saveErr != nil {
-							ui.Warn(fmt.Sprintf("could not save project config: %v", saveErr))
-						}
-					}
-
-					// Pull the per-file manifest so the daemon's ManifestCache
-					// can back `filterLevel: "aggressive"` in `browzer read` +
-					// the rewrite-read hook. Best-effort — stale cache just
-					// downgrades aggressive → minimal.
-					if err := pullAndSaveManifest(ctx, client, project.WorkspaceID); err != nil {
-						if !quiet {
-							ui.Warn(fmt.Sprintf("could not cache workspace manifest: %v", err))
-						}
-					}
-				}
-			}
-
-			// ================================================================
-			// Step 2: Document sync (non-interactive, selects all local docs).
-			// ================================================================
-			if !skipDocs {
-				// Phase A: fetch server state, local candidates, and billing
-				// quota concurrently — same pattern as workspace_docs.go.
-				var (
-					serverDocs []api.IndexedDocument
-					localDocs  []walker.DocFile
-					usage      *api.BillingUsageResponse
-				)
-
-				sp := startSpinnerQ(quiet, "Loading workspace state...")
-				g, gctx := errgroup.WithContext(ctx)
-				g.Go(func() error {
-					docs, listErr := client.ListWorkspaceDocuments(gctx, project.WorkspaceID)
-					if listErr != nil {
-						return fmt.Errorf("list workspace documents: %w", listErr)
-					}
-					serverDocs = docs
-					return nil
-				})
-				g.Go(func() error {
-					docs, walkErr := walker.WalkDocs(gitRoot)
-					if walkErr != nil {
-						return fmt.Errorf("walk local docs: %w", walkErr)
-					}
-					localDocs = docs
-					return nil
-				})
-				g.Go(func() error {
-					u, uErr := client.BillingUsage(gctx)
-					if uErr != nil {
-						// Quota is nice-to-have — failure should not block sync.
-						ui.Warn(fmt.Sprintf("could not fetch billing usage: %v", uErr))
-						return nil
-					}
-					usage = u
-					return nil
-				})
-				if waitErr := g.Wait(); waitErr != nil {
-					finishSpinnerQ(sp, false, "Load failed")
-					return waitErr
-				}
-				finishSpinnerQ(sp, true,
-					fmt.Sprintf("Loaded %d server doc(s), %d local candidate(s)",
-						len(serverDocs), len(localDocs)))
-
-				items := mergeDocItems(localDocs, serverDocs)
-				docsCache := cache.Load(gitRoot)
-
-				// mergeDocItems pre-sets Selected=true for every server-indexed item
-				// and Selected=false for local-only (never-indexed) files. The only
-				// adjustment sync needs: deselect server items whose local file was
-				// removed so they land in ToDelete instead of ToKeep.
-				for i := range items {
-					if items[i].Indexed && !items[i].HasLocal() {
-						items[i].Selected = false // deleted locally → remove from server
-					}
-					// Local-only items (Indexed=false) keep Selected=false and are
-					// intentionally skipped. Use "browzer workspace docs" to add them.
-				}
-
-				docPlan = computeDocDelta(items, docsCache)
-
-				summary := fmt.Sprintf(
-					"Plan: +%d insert, ~%d re-upload, -%d delete, =%d keep",
-					len(docPlan.ToInsert), len(docPlan.ToReUpload),
-					len(docPlan.ToDelete), len(docPlan.ToKeep),
-				)
-				if !quiet {
-					ui.Arrow(summary)
-				}
-
-				if dryRun {
-					if !quiet {
-						fmt.Println("Dry run — no changes applied.")
-					}
-					// Fall through to the JSON emitter below.
-				} else if len(docPlan.ToInsert) == 0 && len(docPlan.ToReUpload) == 0 && len(docPlan.ToDelete) == 0 {
-					if !quiet {
-						ui.Success("Workspace documents already in sync.")
-					}
-				} else {
-					// Phase B: preflight, then execute uploads + deletes.
-					toUpload := append([]DocPickerItem{}, docPlan.ToInsert...)
-					toUpload = append(toUpload, docPlan.ToReUpload...)
-
-					if len(toUpload) > 0 {
-						if preErr := runPreflight(ctx, client, toWalkerDocs(toUpload)); preErr != nil {
-							return preErr
-						}
-						// Proactive warning when the org's daily ingestion
-						// counter is near the per-plan cap. Server-side the
-						// cap is `PLAN_LIMITS[plan].ingestion_daily_max_docs`
-						// (Pro=500, Starter=100, Free=20). Without this
-						// surface users hit the cap mid-sync with a cryptic
-						// 429 and misattribute it to other issues
-						// (2026-04-22 ship loop). Best-effort: silent on
-						// Redis-miss or pre-2026-04-22 servers that omit
-						// the `ingestion_daily` field. Warning only — never
-						// blocks the sync.
-						if u, uErr := client.BillingUsage(ctx); uErr == nil &&
-							u.IngestionDaily != nil && u.IngestionDaily.Limit > 0 {
-							used := u.IngestionDaily.Used
-							limit := u.IngestionDaily.Limit
-							batch := int64(len(toUpload))
-							switch {
-							case used+batch > limit:
-								ui.Warn(fmt.Sprintf(
-									"daily ingestion cap would be exceeded: %d used + %d to upload > %d limit. "+
-										"Some uploads will be rejected. Reset ~%s.",
-									used, batch, limit, fmtResetAt(u.IngestionDaily.ResetAt),
-								))
-							case used >= limit*8/10:
-								ui.Warn(fmt.Sprintf(
-									"daily ingestion counter near cap: %d / %d (resets %s)",
-									used, limit, fmtResetAt(u.IngestionDaily.ResetAt),
-								))
-							}
-						}
-					}
-
-					// Build the new cache before mutations so we always save
-					// even on partial failure, reflecting what was actually done.
-					newCache := cache.DocsCache{
-						Version: cache.CacheVersion,
-						Files:   make(map[string]cache.CachedDoc, len(docsCache.Files)),
-					}
-					maps.Copy(newCache.Files, docsCache.Files)
-
-					var uploadResult upload.Result
-					if len(toUpload) > 0 {
-						sp = startSpinnerQ(quiet, fmt.Sprintf("Uploading %d doc(s)...", len(toUpload)))
-						r, upErr := upload.UploadInBatches(
-							ctx, client, &project.WorkspaceID,
-							toWalkerDocs(toUpload), &newCache, nil, noWait,
-						)
-						if upErr != nil {
-							finishSpinnerQ(sp, false, "Upload failed")
-							return upErr
-						}
-						uploadResult = r
-						// Mirrors the workspace_docs.go pattern shipped in
-						// ec37933 — the "Uploaded" headline is deferred until
-						// after the poll returns, so the message reflects
-						// per-doc ingestion outcome instead of a misleading
-						// success based only on the initial POST.
-						switch {
-						case noWait:
-							finishSpinnerQ(sp, true,
-								fmt.Sprintf("Enqueued %d doc(s) (batch IDs: %s)",
-									len(toUpload), strings.Join(r.BatchIDs, ", ")))
-						case r.FailedCount > 0:
-							finishSpinnerQ(sp, false,
-								fmt.Sprintf("⚠ %d of %d doc(s) failed", r.FailedCount, len(toUpload)))
-							for _, name := range r.FailedNames {
-								output.Errf("  ⚠ %s\n", name)
-							}
-							if r.SkippedCount > 0 {
-								output.Errf("  (%d doc(s) skipped — already indexed with same content)\n", r.SkippedCount)
-							}
-						case r.SkippedCount > 0 && r.UploadedCount == 0:
-							// Every file was a no-op duplicate. Not an error — the
-							// workspace is already in sync with the local content.
-							finishSpinnerQ(sp, true,
-								fmt.Sprintf("All %d doc(s) already indexed (no-op)", r.SkippedCount))
-						case r.SkippedCount > 0:
-							finishSpinnerQ(sp, true,
-								fmt.Sprintf("Uploaded %d doc(s), skipped %d already-indexed",
-									r.UploadedCount, r.SkippedCount))
-						default:
-							finishSpinnerQ(sp, true,
-								fmt.Sprintf("Uploaded %d doc(s)", r.UploadedCount))
-						}
-					}
-
-					deletesFailed := 0
-					var failedDeletes []string
-					if len(docPlan.ToDelete) > 0 {
-						sp = startSpinnerQ(quiet, fmt.Sprintf("Deleting %d doc(s)...", len(docPlan.ToDelete)))
-						for _, d := range docPlan.ToDelete {
-							if delErr := client.DeleteDocument(ctx, d.ServerDocumentID, project.WorkspaceID); delErr != nil {
-								deletesFailed++
-								failedDeletes = append(failedDeletes, fmt.Sprintf("%s: %v", d.RelativePath, delErr))
-							} else {
-								delete(newCache.Files, d.RelativePath)
-							}
-						}
-						if deletesFailed == 0 {
-							finishSpinnerQ(sp, true, fmt.Sprintf("Deleted %d doc(s)", len(docPlan.ToDelete)))
-						} else {
-							finishSpinnerQ(sp, false,
-								fmt.Sprintf("Deleted %d/%d doc(s)", len(docPlan.ToDelete)-deletesFailed, len(docPlan.ToDelete)))
-							for _, f := range failedDeletes {
-								ui.Warn(f)
-							}
-						}
-					}
-
-					if cacheErr := cache.Save(gitRoot, newCache); cacheErr != nil {
-						ui.Warn(fmt.Sprintf("could not save docs cache: %v", cacheErr))
-					}
-
-					if !quiet {
-						fmt.Println()
-						ui.Success("Sync complete")
-						if usage != nil {
-							fmt.Printf("  Chunks:  %s\n", fmtMeter(usage.Chunks.Used, usage.Chunks.Limit))
-							fmt.Printf("  Storage: %s / %s\n",
-								humanSize(usage.Storage.Used), humanSize(usage.Storage.Limit))
-						}
-					}
-
-					if deletesFailed > 0 {
-						return cliErrors.Newf("%d document delete(s) failed — see warnings above.", deletesFailed)
-					}
-
-					// Same exit-code taxonomy as workspace_docs.go (ec37933):
-					//   7 (ExitPartialFailure) — some docs failed, at least one succeeded
-					//   8 (ExitTotalFailure)   — all docs failed (no completions)
-					// Skipped under --no-wait since the poll never ran.
-					if !noWait && uploadResult.FailedCount > 0 {
-						total := uploadResult.UploadedCount + uploadResult.FailedCount
-						if uploadResult.UploadedCount == 0 {
-							return cliErrors.WithCode(
-								fmt.Sprintf("all %d doc(s) failed ingestion — see warnings above.", total),
-								cliErrors.ExitTotalFailure,
-							)
-						}
-						return cliErrors.WithCode(
-							fmt.Sprintf("%d of %d doc(s) failed ingestion — see warnings above.", uploadResult.FailedCount, total),
-							cliErrors.ExitPartialFailure,
-						)
-					}
-				}
-
-				// Emit JSON result when requested.
-				if jsonFlag || saveFlag != "" {
-					// Refresh usage for the post-sync snapshot (best-effort).
-					if !dryRun {
-						if u, uErr := client.BillingUsage(ctx); uErr == nil {
-							usage = u
-						}
-					}
-					payload := map[string]any{
-						"mode":      "sync",
-						"dryRun":    dryRun,
-						"skipCode":  skipCode,
-						"skipDocs":  skipDocs,
-						"codeFiles": codeFiles,
-						"docs":      buildSubmitPayload(docPlan, usage),
-					}
-					return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, "")
-				}
-			} else if jsonFlag || saveFlag != "" {
-				// skipDocs=true: emit code-only JSON payload.
-				payload := map[string]any{
-					"mode":      "sync",
-					"dryRun":    dryRun,
-					"skipCode":  skipCode,
-					"skipDocs":  skipDocs,
-					"codeFiles": codeFiles,
-				}
-				return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, "")
-			}
-
-			return nil
+			return runSyncFlowHook(rootContext(cmd), syncFlowOptions{
+				DryRun: dryRun, SkipCode: skipCode, SkipDocs: skipDocs,
+				Force: force, NoWait: noWait, Yes: yes,
+				ConfirmAdds: confirmAdds, ConfirmDeletes: confirmDeletes,
+				JSON: jsonFlag, Save: saveFlag, JSONMode: "sync",
+			})
 		},
 	}
 
@@ -449,10 +513,42 @@ func registerWorkspaceSync(parent *cobra.Command) {
 	cmd.Flags().BoolVar(&skipDocs, "skip-docs", false, "Skip the document sync step (code only, same as browzer workspace index)")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip the jobs-in-flight preflight and bypass the server's parse gate (X-Force-Parse: true)")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Fire-and-forget: enqueue the upload without polling for completion. Exit 0 reflects only the initial POST, not eventual ingestion success or failure. Use `browzer job status <batchId>` to inspect the outcome later.")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Bypass --confirm-adds and --confirm-deletes thresholds without prompting.")
+	cmd.Flags().IntVar(&confirmAdds, "confirm-adds", 50, "Abort when the planned ADD set exceeds N files unless --yes is passed.")
+	cmd.Flags().IntVar(&confirmDeletes, "confirm-deletes", 50, "Abort when the planned DELETE set exceeds N files unless --yes is passed.")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of progress text")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 
 	parent.AddCommand(cmd)
+}
+
+// applySyncSelection adjusts the Selected flag of each DocPickerItem to
+// reflect the sync reconciler's intent:
+//
+//   - server-indexed + no local file  → deselect (DELETE class)
+//   - local-only + local file present → select   (ADD class)
+//   - all other items                 → unchanged (Selected stays as set by mergeDocItems)
+//
+// WalkDocs has already applied the .gitignore ∩ .browzerignore filter before
+// items are built, so any local-only survivor is eligible for indexing without
+// further path checking here.
+//
+// This is a pure function (no I/O, no globals) so it is unit-testable without
+// a network round-trip or a running server.
+func applySyncSelection(items []DocPickerItem) []DocPickerItem {
+	for i := range items {
+		switch {
+		case items[i].Indexed && !items[i].HasLocal():
+			// File was removed locally → remove from server.
+			items[i].Selected = false
+		case !items[i].Indexed && items[i].HasLocal():
+			// New local file that passes the stacked ignore filter → add to server.
+			items[i].Selected = true
+		}
+		// Indexed + HasLocal: Selected=true (set by mergeDocItems) — keep as-is.
+		// !Indexed + !HasLocal: impossible (mergeDocItems never creates ghost-local rows).
+	}
+	return items
 }
 
 // startSpinnerQ starts a spinner unless quiet mode is active.

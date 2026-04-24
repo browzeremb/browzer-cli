@@ -61,13 +61,16 @@ type ParsedFile struct {
 //   - .gitignore + .git/info/exclude loaded at root; nested .gitignores
 //     re-rooted via RerootGitignore so patterns apply only beneath
 //     their containing directory.
+//   - .browzerignore loaded at root; stacked ON TOP of .gitignore (both
+//     must pass). Missing file = zero-op (no paths filtered).
 func WalkRepo(rootPath string) (*ParseTreeInput, error) {
 	matcher, err := loadRootIgnore(rootPath)
 	if err != nil {
 		return nil, err
 	}
+	browzerMatcher := LoadBrowzerIgnore(rootPath)
 	tree := &ParseTreeInput{RootPath: rootPath}
-	if err := walk(rootPath, "", matcher, tree, 0); err != nil {
+	if err := walk(rootPath, "", matcher, browzerMatcher, tree, 0); err != nil {
 		return nil, err
 	}
 	return tree, nil
@@ -87,7 +90,7 @@ func loadRootIgnore(rootPath string) (*ignoreMatcher, error) {
 	return m, nil
 }
 
-func walk(absDir, relDir string, matcher *ignoreMatcher, tree *ParseTreeInput, depth int) error {
+func walk(absDir, relDir string, matcher *ignoreMatcher, browzerMatcher *BrowzerIgnoreMatcher, tree *ParseTreeInput, depth int) error {
 	if depth > MaxDepth {
 		fmt.Fprintf(os.Stderr, "Warning: max directory depth %d exceeded at %q — stopping recursion.\n", MaxDepth, relDir)
 		return nil
@@ -137,8 +140,11 @@ func walk(absDir, relDir string, matcher *ignoreMatcher, tree *ParseTreeInput, d
 			if matcher.matches(relPath + "/") {
 				continue
 			}
+			if browzerMatcher.IsIgnored(relPath + "/") {
+				continue
+			}
 			tree.Folders = append(tree.Folders, ParsedFolder{Path: relPath, Name: name})
-			if err := walk(filepath.Join(absDir, name), relPath, matcher, tree, depth+1); err != nil {
+			if err := walk(filepath.Join(absDir, name), relPath, matcher, browzerMatcher, tree, depth+1); err != nil {
 				return err
 			}
 			continue
@@ -154,6 +160,9 @@ func walk(absDir, relDir string, matcher *ignoreMatcher, tree *ParseTreeInput, d
 			continue
 		}
 		if matcher.matches(relPath) {
+			continue
+		}
+		if browzerMatcher.IsIgnored(relPath) {
 			continue
 		}
 
@@ -282,7 +291,7 @@ func newIgnoreMatcher() *ignoreMatcher {
 }
 
 func (m *ignoreMatcher) add(text string) {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		m.lines = append(m.lines, strings.TrimRight(line, "\r"))
 	}
 	// Defer compilation; the next matches() will pick it up.
