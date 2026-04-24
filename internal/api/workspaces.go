@@ -153,6 +153,32 @@ func (c *Client) FetchDeps(ctx context.Context, workspaceID, path string, revers
 	return &body, nil
 }
 
+// FetchMentions returns the documents that mention a given source file via
+// POST /api/workspaces/:id/mentions?limit=N.
+// limit is sent as a query parameter (the server binds it via mentionsQuerySchema
+// on request.query), NOT in the JSON body.
+func (c *Client) FetchMentions(ctx context.Context, workspaceID, path string, limit int) (*MentionsResponse, error) {
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	reqBody := map[string]any{"path": path}
+	buf, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+	httpResp, err := c.do(ctx, "POST", "api/workspaces/"+workspaceID+"/mentions", q, bytes.NewReader(buf), "application/json")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	var resp MentionsResponse
+	if err := decodeJSONResponse(httpResp, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // GetWorkspaceManifest fetches the per-file manifest consumed by the
 // daemon's filter engine when the user asks for `filterLevel:
 // "aggressive"`. The CLI caches the response at

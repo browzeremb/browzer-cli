@@ -64,7 +64,7 @@ func FormatExploreResults(entries []ExploreEntry) string {
 			fmt.Fprintf(&sb, "  importedBy: %s\n", strings.Join(e.ImportedBy, ", "))
 		}
 		if e.Snippet != "" {
-			for _, line := range strings.Split(strings.TrimRight(e.Snippet, "\n"), "\n") {
+			for line := range strings.SplitSeq(strings.TrimRight(e.Snippet, "\n"), "\n") {
 				fmt.Fprintf(&sb, "  %s\n", line)
 			}
 		}
@@ -103,6 +103,34 @@ func FormatSearchResults(results []SearchResult) string {
 	for _, r := range results {
 		fmt.Fprintf(&sb, "%s score=%.3f\n", r.DocumentName, r.Score)
 		fmt.Fprintf(&sb, "  %s\n", strings.TrimSpace(r.Text))
+	}
+	return sb.String()
+}
+
+// MentionItem mirrors one entry in the POST /api/workspaces/:id/mentions response.
+type MentionItem struct {
+	Doc            string   `json:"doc"`
+	ChunkCount     int      `json:"chunkCount"`
+	SampleEntities []string `json:"sampleEntities,omitempty"`
+}
+
+// MentionsResult mirrors the JSON returned by POST /api/workspaces/:id/mentions.
+type MentionsResult struct {
+	Path        string        `json:"path"`
+	WorkspaceID string        `json:"workspaceId"`
+	Mentions    []MentionItem `json:"mentions"`
+}
+
+// FormatMentionsResults renders the human-readable form of a mentions response.
+func FormatMentionsResults(resp MentionsResult) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s → %d docs\n", resp.Path, len(resp.Mentions))
+	for _, m := range resp.Mentions {
+		entities := ""
+		if len(m.SampleEntities) > 0 {
+			entities = " [" + strings.Join(m.SampleEntities, ", ") + "]"
+		}
+		fmt.Fprintf(&sb, "  %-60s %d chunks%s\n", m.Doc, m.ChunkCount, entities)
 	}
 	return sb.String()
 }

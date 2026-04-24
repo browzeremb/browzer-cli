@@ -238,6 +238,21 @@ type WorkspaceManifest struct {
 	Files       map[string]WorkspaceManifestFile `json:"files"`
 }
 
+// MentionItem is one entry in the mentions response — a document that
+// references the queried source file via the MENTIONS graph edge.
+type MentionItem struct {
+	Doc            string   `json:"doc"`
+	ChunkCount     int      `json:"chunkCount"`
+	SampleEntities []string `json:"sampleEntities,omitempty"`
+}
+
+// MentionsResponse is the payload of POST /api/workspaces/:id/mentions.
+type MentionsResponse struct {
+	Path        string        `json:"path"`
+	WorkspaceID string        `json:"workspaceId"`
+	Mentions    []MentionItem `json:"mentions"`
+}
+
 // DeviceCodeResponse is the body of POST /api/device/code.
 type DeviceCodeResponse struct {
 	DeviceCode              string `json:"device_code"`
