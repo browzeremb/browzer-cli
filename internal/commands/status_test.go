@@ -11,6 +11,7 @@ import (
 
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/config"
+	"github.com/browzeremb/browzer-cli/internal/git"
 )
 
 func TestStatus_LastSyncCommitIncluded(t *testing.T) {
@@ -138,5 +139,67 @@ func TestStatus_LastSyncCommitOmittedWhenEmpty(t *testing.T) {
 
 	if loadedCfg.LastSyncCommit != "" {
 		t.Errorf("lastSyncCommit = %q, want empty", loadedCfg.LastSyncCommit)
+	}
+}
+
+func TestBuildStatusRecommendations_StaleEmitsHint(t *testing.T) {
+	stale := git.Staleness{Stale: true, CommitsBehind: 5, CurrentHead: "abc"}
+	recs := buildStatusRecommendationsFromStaleness(stale, 10, "2099-01-01T00:00:00Z")
+	var found bool
+	for _, r := range recs {
+		if r["kind"] == "stale_index" {
+			found = true
+			if want := "browzer workspace sync"; r["action"] != want {
+				t.Errorf("action = %q, want %q", r["action"], want)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a stale_index recommendation, got %v", recs)
+	}
+}
+
+func TestBuildStatusRecommendations_FreshIndexNoStaleHint(t *testing.T) {
+	fresh := git.Staleness{Stale: false, CommitsBehind: 0, CurrentHead: "abc"}
+	recs := buildStatusRecommendationsFromStaleness(fresh, 10, "2099-01-01T00:00:00Z")
+	for _, r := range recs {
+		if r["kind"] == "stale_index" {
+			t.Errorf("did not expect a stale_index hint when Stale=false: %v", r)
+		}
+	}
+}
+
+// TestStatus_StalenessJSONShape asserts the contract used by skill-side
+// consumers (`update-docs`, `code-review` gates): a top-level
+// `staleness` block with `commitsBehind` (int) and `stale` (bool). The
+// command itself is hard to invoke without mocking auth, so exercise
+// the marshaling shape via the same map literal status.go writes.
+func TestStatus_StalenessJSONShape(t *testing.T) {
+	s := git.Staleness{Stale: true, CommitsBehind: 3, CurrentHead: "deadbeef"}
+	payload := map[string]any{
+		"staleness": map[string]any{
+			"indexedCommit": "cafebabe",
+			"workingCommit": s.CurrentHead,
+			"commitsBehind": s.CommitsBehind,
+			"stale":         s.Stale,
+		},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	st, ok := got["staleness"].(map[string]any)
+	if !ok {
+		t.Fatalf("staleness missing or wrong type: %v", got)
+	}
+	if cb, ok := st["commitsBehind"].(float64); !ok || cb != 3 {
+		t.Errorf("commitsBehind = %v (%T), want 3 (number)", st["commitsBehind"], st["commitsBehind"])
+	}
+	if stale, ok := st["stale"].(bool); !ok || !stale {
+		t.Errorf("stale = %v, want true", st["stale"])
 	}
 }

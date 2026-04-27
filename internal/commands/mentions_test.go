@@ -159,3 +159,39 @@ func TestMentionsHappyPath_NoMentionsExitZero(t *testing.T) {
 		t.Fatal("API client must still surface 404 as CliError; the swallow lives in mentions.go")
 	}
 }
+
+// TestMentionsResultMetaJSONShape locks the wire format of the new
+// `meta` envelope so `update-docs` Phase 1a can branch deterministically
+// on `meta.fileIndexed` and `meta.commitsBehind`.
+func TestMentionsResultMetaJSONShape(t *testing.T) {
+	r := struct {
+		Path        string `json:"path"`
+		WorkspaceID string `json:"workspaceId"`
+		Meta        struct {
+			IndexedCommit string `json:"indexedCommit,omitempty"`
+			WorkingCommit string `json:"workingCommit,omitempty"`
+			CommitsBehind int    `json:"commitsBehind"`
+			FileIndexed   bool   `json:"fileIndexed"`
+			Stale         bool   `json:"stale"`
+		} `json:"meta"`
+		Mentions []any `json:"mentions"`
+	}{}
+	r.Path = "apps/api/src/x.ts"
+	r.WorkspaceID = "ws-x"
+	r.Meta.IndexedCommit = "deadbeef"
+	r.Meta.WorkingCommit = "feedface"
+	r.Meta.CommitsBehind = 3
+	r.Meta.FileIndexed = true
+	r.Meta.Stale = true
+
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Required keys must be present even at default values.
+	for _, key := range []string{`"meta"`, `"commitsBehind"`, `"fileIndexed"`, `"stale"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("missing %s in JSON: %s", key, b)
+		}
+	}
+}

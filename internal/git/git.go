@@ -126,3 +126,20 @@ func CheckStaleness(repoRoot, lastSyncCommit string) Staleness {
 
 // ErrNotARepo is returned by helpers that strictly require a git repo.
 var ErrNotARepo = errors.New("not inside a git repository")
+
+// PathInCommit reports whether `path` (workspace-relative, forward
+// slashes) was tracked in `commit`. Used by `browzer mentions` to tell
+// "file outside the indexed snapshot" apart from "file in snapshot, no
+// mentions found" — the two return paths look identical at the API
+// layer (both produce empty mentions[]). Fails closed (returns false)
+// when git is unavailable or `commit` is empty: callers treat that as
+// "unknown — assume not indexed", which is the safer skill-side
+// default.
+func PathInCommit(repoRoot, commit, path string) bool {
+	if repoRoot == "" || commit == "" || path == "" {
+		return false
+	}
+	cmd := exec.Command("git", "cat-file", "-e", commit+":"+path)
+	cmd.Dir = repoRoot
+	return cmd.Run() == nil
+}

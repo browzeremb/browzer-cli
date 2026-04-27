@@ -19,12 +19,23 @@ const mentionsSchemaJSON = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "MentionsResponse",
   "type": "object",
-  "required": ["path", "mentions"],
+  "required": ["path", "mentions", "meta"],
   "properties": {
     "path":        {"type": "string"},
     "workspaceId": {"type": "string"},
+    "meta": {
+      "type": "object",
+      "required": ["commitsBehind", "fileIndexed", "stale"],
+      "properties": {
+        "indexedCommit": {"type": "string"},
+        "workingCommit": {"type": "string"},
+        "commitsBehind": {"type": "integer"},
+        "fileIndexed":   {"type": "boolean"},
+        "stale":         {"type": "boolean"}
+      }
+    },
     "mentions": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
         "required": ["doc", "chunkCount"],
@@ -93,9 +104,13 @@ Examples:
 				return cliErrors.NoProject()
 			}
 
-			// Staleness warning to stderr (never stdout — would pollute --json).
-			if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
-				output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
+			// Staleness — used twice: a stderr warning on the human
+			// path AND a structured `meta` block on every result so
+			// `update-docs` can branch deterministically when the
+			// API returns mentions=null.
+			staleness := git.CheckStaleness(gitRoot, project.LastSyncCommit)
+			if staleness.Stale {
+				output.Errf("%s", output.FormatStalenessWarning(staleness.CommitsBehind))
 			}
 
 			ac, err := requireAuth(0)
@@ -136,6 +151,14 @@ Examples:
 			}
 			// else: already a simple relative path — use as-is (workspace-relative)
 
+			meta := output.MentionsMeta{
+				IndexedCommit: project.LastSyncCommit,
+				WorkingCommit: staleness.CurrentHead,
+				CommitsBehind: staleness.CommitsBehind,
+				Stale:         staleness.Stale,
+				FileIndexed:   git.PathInCommit(gitRoot, project.LastSyncCommit, resolved),
+			}
+
 			resp, err := ac.Client.FetchMentions(rootContext(cmd), wsID, resolved, limit)
 			if err != nil {
 				// The shared 404 path returns "Not found" with workspace-rebind hints.
@@ -145,7 +168,7 @@ Examples:
 				// workspace-not-bound. Swallow it into an empty result with exit 0.
 				// Genuine workspace-not-bound cases are caught earlier by NoProject().
 				if cliErr, ok := err.(*cliErrors.CliError); ok && cliErr.ExitCode == cliErrors.ExitNotFound {
-					empty := output.MentionsResult{Path: resolved, WorkspaceID: wsID}
+					empty := output.MentionsResult{Path: resolved, WorkspaceID: wsID, Meta: meta}
 					return emitOrFail(
 						empty,
 						output.Options{JSON: jsonFlag, Save: saveFlag},
@@ -158,6 +181,7 @@ Examples:
 			result := output.MentionsResult{
 				Path:        resp.Path,
 				WorkspaceID: resp.WorkspaceID,
+				Meta:        meta,
 			}
 			for _, m := range resp.Mentions {
 				result.Mentions = append(result.Mentions, output.MentionItem{

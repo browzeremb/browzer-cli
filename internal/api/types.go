@@ -60,10 +60,13 @@ type SearchResponse struct {
 }
 
 // ExploreEntry is one entry from GET /api/workspaces/:id/explore.
+// Anchor is computed CLI-side (see output.ExtractAnchor) and is not a
+// wire-format field on the API.
 type ExploreEntry struct {
 	Path       string   `json:"path"`
 	Type       string   `json:"type"`
 	Name       string   `json:"name"`
+	Anchor     string   `json:"anchor,omitempty"`
 	LineRange  string   `json:"lineRange,omitempty"`
 	Snippet    string   `json:"snippet,omitempty"`
 	Score      float64  `json:"score"`

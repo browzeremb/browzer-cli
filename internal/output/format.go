@@ -7,10 +7,18 @@ import (
 
 // ExploreEntry mirrors the JSON entry returned by GET
 // /api/workspaces/:id/explore. Field names match the wire format.
+//
+// Anchor is a stable, unique snippet line (40–80 chars) the consumer
+// can `grep` against to relocate this entry after the indexed snapshot
+// drifts from working-tree HEAD. Line numbers are inherently fragile
+// across edits — anchors survive most surrounding-line churn. Computed
+// CLI-side from Snippet at result-mapping time; falls back to Name on
+// snippet-less folder/symbol entries.
 type ExploreEntry struct {
 	Path       string   `json:"path"`
 	Type       string   `json:"type"` // file | folder | symbol
 	Name       string   `json:"name,omitempty"`
+	Anchor     string   `json:"anchor,omitempty"`
 	LineRange  string   `json:"lineRange,omitempty"`
 	Snippet    string   `json:"snippet,omitempty"`
 	Score      float64  `json:"score"`
@@ -18,6 +26,43 @@ type ExploreEntry struct {
 	Imports    []string `json:"imports,omitempty"`
 	ImportedBy []string `json:"importedBy,omitempty"`
 	Lines      int      `json:"lines,omitempty"`
+}
+
+// ExtractAnchor returns a stable per-entry anchor string usable by
+// downstream skills as a grep target. It picks the first non-trivial
+// line of the snippet — skipping blanks, comment-only lines, and very
+// short lines that wouldn't be unique. Caps at 80 chars. Falls back to
+// `name` when no qualifying line exists. Always trimmed of trailing
+// whitespace; never returns a leading/trailing comment marker that
+// would prevent a literal grep from matching the source.
+func ExtractAnchor(snippet, name string) string {
+	if snippet == "" {
+		return name
+	}
+	for line := range strings.SplitSeq(snippet, "\n") {
+		trimmed := strings.TrimRight(line, " \t\r")
+		stripped := strings.TrimLeft(trimmed, " \t")
+		if len(stripped) < 12 {
+			continue
+		}
+		// Skip lines that are purely a comment-only marker — they rot
+		// independently of the surrounding code and rarely serve as
+		// reliable anchors.
+		switch {
+		case strings.HasPrefix(stripped, "//"),
+			strings.HasPrefix(stripped, "/*"),
+			strings.HasPrefix(stripped, "* "),
+			strings.HasPrefix(stripped, "*/"),
+			strings.HasPrefix(stripped, "--"),
+			strings.HasPrefix(stripped, "#") && !strings.HasPrefix(stripped, "#!"):
+			continue
+		}
+		if len(stripped) > 80 {
+			stripped = stripped[:80]
+		}
+		return stripped
+	}
+	return name
 }
 
 // DepsResult mirrors the JSON returned by GET /api/workspaces/:id/deps.
@@ -114,10 +159,30 @@ type MentionItem struct {
 	SampleEntities []string `json:"sampleEntities,omitempty"`
 }
 
+// MentionsMeta describes the indexed-snapshot context for a mentions
+// response. It lets callers tell "file is outside the indexed snapshot"
+// (FileIndexed=false) apart from "file is in the snapshot but no docs
+// reference it" (FileIndexed=true, Mentions empty/null) — a distinction
+// `update-docs` Phase 1a depends on to decide whether to fall back to a
+// grep over docs/ or to skip propagation entirely.
+type MentionsMeta struct {
+	IndexedCommit string `json:"indexedCommit,omitempty"`
+	WorkingCommit string `json:"workingCommit,omitempty"`
+	CommitsBehind int    `json:"commitsBehind"`
+	FileIndexed   bool   `json:"fileIndexed"`
+	Stale         bool   `json:"stale"`
+}
+
 // MentionsResult mirrors the JSON returned by POST /api/workspaces/:id/mentions.
+//
+// Meta is populated CLI-side from the local git working tree + the
+// resolved path's presence in the indexed snapshot — the API itself
+// does not return staleness data. Existing callers reading only
+// `.mentions` are unaffected by the new field.
 type MentionsResult struct {
 	Path        string        `json:"path"`
 	WorkspaceID string        `json:"workspaceId"`
+	Meta        MentionsMeta  `json:"meta"`
 	Mentions    []MentionItem `json:"mentions"`
 }
 

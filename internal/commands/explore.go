@@ -30,6 +30,7 @@ const exploreSchemaJSON = `{
           "path":       {"type": "string"},
           "type":       {"type": "string", "enum": ["file","folder","symbol"]},
           "name":       {"type": "string"},
+          "anchor":     {"type": "string"},
           "lineRange":  {"type": "string"},
           "snippet":    {"type": "string"},
           "score":      {"type": "number"},
@@ -47,6 +48,7 @@ const exploreSchemaJSON = `{
 func registerExplore(parent *cobra.Command) {
 	var limit int
 	var schema bool
+	var anchorsOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "explore [query]",
@@ -57,6 +59,7 @@ func registerExplore(parent *cobra.Command) {
 Examples:
   browzer explore "auth middleware"
   browzer explore "*.go" --json
+  browzer explore "auth middleware" --anchors --json
   browzer explore --schema --save schema.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
@@ -108,9 +111,20 @@ Examples:
 			for i, e := range entries {
 				converted[i] = output.ExploreEntry{
 					Path: e.Path, Type: e.Type, Name: e.Name,
+					Anchor:    output.ExtractAnchor(e.Snippet, e.Name),
 					LineRange: e.LineRange, Snippet: e.Snippet, Score: e.Score,
 					Exports: e.Exports, Imports: e.Imports,
 					ImportedBy: e.ImportedBy, Lines: e.Lines,
+				}
+			}
+			// --anchors: drop the fragile lineRange field. Skill consumers
+			// (generate-task Pass 1, execute-task subagent dispatch) that
+			// pass --anchors get a payload that survives line-number
+			// drift between the indexed snapshot and HEAD; the anchor
+			// string is the only positional cue they need.
+			if anchorsOnly {
+				for i := range converted {
+					converted[i].LineRange = ""
 				}
 			}
 			// --ultra: top-3 results, drop verbose metadata.
@@ -140,6 +154,7 @@ Examples:
 
 	cmd.Flags().IntVar(&limit, "limit", 50, "Max results (1-200)")
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the explore response and exit")
+	cmd.Flags().BoolVar(&anchorsOnly, "anchors", false, "Drop lineRange from each entry; rely on the stable anchor field instead")
 	cmd.Flags().Bool("json", false, "emit JSON")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	parent.AddCommand(cmd)

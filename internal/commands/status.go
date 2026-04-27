@@ -80,6 +80,15 @@ Examples:
 				workspacePayload["lastSyncCommit"] = project.LastSyncCommit
 			}
 
+			// Compute staleness once and surface it BOTH at the top
+			// level (agents that need a programmatic commitsBehind
+			// without parsing recommendations[]) AND through the
+			// existing recommendations array. The helper fails open
+			// when git is unavailable, so the staleness block is
+			// always present in --json output even when CommitsBehind
+			// is 0 — agents can branch on `staleness.stale` directly.
+			staleness := git.CheckStaleness(gitRoot, project.LastSyncCommit)
+
 			payload := map[string]any{
 				"user":              map[string]string{"id": creds.UserID},
 				"organization":      map[string]string{"id": creds.OrganizationID},
@@ -87,6 +96,12 @@ Examples:
 				"tokenExpiresAt":    creds.ExpiresAt,
 				"tokenExpiresHuman": formatExpiry(creds.ExpiresAt),
 				"workspace":         workspacePayload,
+				"staleness": map[string]any{
+					"indexedCommit": project.LastSyncCommit,
+					"workingCommit": staleness.CurrentHead,
+					"commitsBehind": staleness.CommitsBehind,
+					"stale":         staleness.Stale,
+				},
 			}
 			if usage != nil {
 				payload["billing"] = usage
@@ -96,9 +111,8 @@ Examples:
 			// Derived purely from already-loaded state so there's no
 			// extra network hop. Empty slice (not nil) on the happy
 			// path so agents can `.recommendations.length === 0`.
-			recommendations := buildStatusRecommendations(
-				gitRoot,
-				project.LastSyncCommit,
+			recommendations := buildStatusRecommendationsFromStaleness(
+				staleness,
 				ws.FileCount,
 				creds.ExpiresAt,
 			)
@@ -225,10 +239,10 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-// buildStatusRecommendations derives actionable next-step hints from
-// already-loaded status state. Returns a slice the JSON payload can
-// embed so agents consuming `browzer status --json` can branch on
-// `recommendations.length === 0` for the happy path.
+// buildStatusRecommendationsFromStaleness derives actionable next-step
+// hints from already-loaded status state. Returns a slice the JSON
+// payload can embed so agents consuming `browzer status --json` can
+// branch on `recommendations.length === 0` for the happy path.
 //
 // Each recommendation carries:
 //
@@ -242,14 +256,17 @@ func humanBytes(n int64) string {
 //	stale_index     — working tree ahead of lastSyncCommit
 //	empty_workspace — zero indexed files (never synced, or cleared)
 //	token_expiring  — bearer token has <7 days of validity left
-func buildStatusRecommendations(
-	gitRoot, lastSyncCommit string,
+//
+// Takes the pre-computed Staleness so the caller can also surface it as
+// a top-level JSON field without computing twice.
+func buildStatusRecommendationsFromStaleness(
+	s git.Staleness,
 	fileCount int,
 	tokenExpiresAt string,
 ) []map[string]string {
 	recs := []map[string]string{}
 
-	if s := git.CheckStaleness(gitRoot, lastSyncCommit); s.Stale {
+	if s.Stale {
 		recs = append(recs, map[string]string{
 			"kind":   "stale_index",
 			"action": "browzer workspace sync",
