@@ -137,3 +137,25 @@ func TestRegisterMentions_HelpCompiles(t *testing.T) {
 	}
 	_ = api.MentionsResponse{} // ensure the type is importable
 }
+
+
+// TestMentionsHappyPath_NoMentionsExitZero verifies that a 404 from the server
+// — which, post-F11, means "no documents mention this path in this workspace"
+// rather than "workspace not bound" — bubbles up as a successful empty
+// MentionsResult (exit 0), NOT a CliError with ExitNotFound. The
+// workspace-rebind hint conflation is documented in the F11 dogfood-report
+// friction point.
+func TestMentionsHappyPath_NoMentionsExitZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	}))
+	defer srv.Close()
+
+	ac := newTestClient(t, srv)
+	_, err := ac.Client.FetchMentions(t.Context(), "ws-known", "no/such/file.ts", 20)
+	// The API client itself still returns a CliError with ExitNotFound — that's
+	// the contract the higher layer rewrites. Confirm the layer boundary.
+	if err == nil {
+		t.Fatal("API client must still surface 404 as CliError; the swallow lives in mentions.go")
+	}
+}

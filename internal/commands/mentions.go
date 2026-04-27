@@ -138,6 +138,20 @@ Examples:
 
 			resp, err := ac.Client.FetchMentions(rootContext(cmd), wsID, resolved, limit)
 			if err != nil {
+				// The shared 404 path returns "Not found" with workspace-rebind hints.
+				// In the mentions flow we already validated the workspace via
+				// LoadProjectConfig + resolveWorkspaceID, so a 404 from this endpoint
+				// means "no documents mention this path in this workspace" — NOT
+				// workspace-not-bound. Swallow it into an empty result with exit 0.
+				// Genuine workspace-not-bound cases are caught earlier by NoProject().
+				if cliErr, ok := err.(*cliErrors.CliError); ok && cliErr.ExitCode == cliErrors.ExitNotFound {
+					empty := output.MentionsResult{Path: resolved, WorkspaceID: wsID}
+					return emitOrFail(
+						empty,
+						output.Options{JSON: jsonFlag, Save: saveFlag},
+						output.FormatMentionsResults(empty),
+					)
+				}
 				return err
 			}
 
