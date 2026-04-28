@@ -8,6 +8,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/config"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
+	"github.com/browzeremb/browzer-cli/internal/flags"
 	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,8 @@ const askSchemaJSON = `{
 
 func registerAsk(parent *cobra.Command) {
 	var workspaceFlag string
+	var workspacesCSV string
+	var allWorkspaces bool
 	var schema bool
 
 	cmd := &cobra.Command{
@@ -57,12 +60,26 @@ func registerAsk(parent *cobra.Command) {
 
 Workspace resolution: --workspace flag → .browzer/config.json → first workspace in org.
 
+Cross-workspace: use --workspaces (CSV list of IDs) or --all-workspaces to fan out
+the query across multiple workspaces and merge results. These flags are mutually exclusive.
+
 Examples:
   browzer ask "How does the answer cache work?"
   browzer ask "What does the reranker do?" --workspace ws_abc123
   browzer ask "Show ingestion pipeline" --json
+  browzer ask "auth flow" --workspaces ws_abc123,ws_def456
+  browzer ask "auth flow" --all-workspaces
   browzer ask --schema --save schema.json  # discover response shape`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate mutual exclusion of --workspaces and --all-workspaces.
+			workspaceIDs, err := flags.ParseWorkspacesFlag(workspacesCSV)
+			if err != nil {
+				return err
+			}
+			if err := flags.ValidateWorkspaceFlags(workspaceIDs, allWorkspaces); err != nil {
+				return err
+			}
+
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
 			if schema {
@@ -82,6 +99,21 @@ Examples:
 				return err
 			}
 
+			// Cross-workspace path: use POST /ask/cross-workspace.
+			if len(workspaceIDs) > 0 || allWorkspaces {
+				resp, err := ac.Client.AskCrossWorkspace(rootContext(cmd), api.AskRequest{
+					Question:      question,
+					WorkspaceIDs:  workspaceIDs,
+					AllWorkspaces: allWorkspaces,
+				})
+				if err != nil {
+					return err
+				}
+				human := formatAskResponse(resp)
+				return emitOrFail(resp, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
+			}
+
+			// Single-workspace path (legacy).
 			workspaceID, err := resolveWorkspaceID(cmd, ac, workspaceFlag)
 			if err != nil {
 				return err
@@ -101,6 +133,8 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&workspaceFlag, "workspace", "", "Workspace ID (overrides .browzer/config.json lookup)")
+	cmd.Flags().StringVar(&workspacesCSV, "workspaces", "", "Comma-separated workspace IDs for cross-workspace ask (mutually exclusive with --all-workspaces)")
+	cmd.Flags().BoolVar(&allWorkspaces, "all-workspaces", false, "Fan out across all workspaces in the organization (mutually exclusive with --workspaces)")
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the ask response and exit")
 	cmd.Flags().Bool("json", false, "emit JSON")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")

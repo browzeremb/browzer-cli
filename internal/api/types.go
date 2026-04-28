@@ -52,6 +52,23 @@ type SearchResult struct {
 	Position     int     `json:"position"`
 	Score        float64 `json:"score"`
 	DocumentName string  `json:"documentName"`
+	WorkspaceID  string  `json:"workspaceId,omitempty"`
+}
+
+// CrossWorkspaceSearchRequest is the body of POST /search.
+type CrossWorkspaceSearchRequest struct {
+	Query         string   `json:"query"`
+	WorkspaceID   string   `json:"workspaceId,omitempty"`
+	WorkspaceIDs  []string `json:"workspaceIds,omitempty"`
+	AllWorkspaces bool     `json:"allWorkspaces,omitempty"`
+	TopK          int      `json:"topK,omitempty"`
+	MinScore      float64  `json:"minScore,omitempty"`
+}
+
+// CrossWorkspaceSearchResponse is the response of POST /search.
+type CrossWorkspaceSearchResponse struct {
+	Results   []SearchResult `json:"results"`
+	FromCache bool           `json:"fromCache"`
 }
 
 // SearchResponse wraps the SearchResult slice as returned by the API.
@@ -178,8 +195,10 @@ type BatchStatusResponse struct {
 
 // AskRequest is the body of POST /ask.
 type AskRequest struct {
-	Question    string `json:"question"`
-	WorkspaceID string `json:"workspaceId,omitempty"`
+	Question      string   `json:"question"`
+	WorkspaceID   string   `json:"workspaceId,omitempty"`
+	WorkspaceIDs  []string `json:"workspaceIds,omitempty"`
+	AllWorkspaces bool     `json:"allWorkspaces,omitempty"`
 }
 
 // AskSource is one cited source in the /ask response.
