@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -63,4 +64,21 @@ func (c *Client) BillingUsage(ctx context.Context) (*BillingUsageResponse, error
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// IsBillingForbidden reports whether err indicates the caller's API key
+// lacks read scope on /api/billing/usage. Default member-role API keys
+// (post-G15 RBAC) hit this on every successful sync; the apps/api 403
+// envelope is mapped by the http client to a CliError whose Message
+// begins with "Forbidden — your token does not have access ...".
+//
+// Callers (e.g. workspace_sync) use this to suppress the noisy
+// "could not fetch billing usage: Forbidden" warning that surfaces on
+// every successful sync. F-13 (FR-4); see
+// docs/browzer/dogfood-2026-04-29.md.
+func IsBillingForbidden(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Forbidden")
 }

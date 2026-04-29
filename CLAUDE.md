@@ -8,7 +8,7 @@ Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
 - Has its own `go.mod` (module `github.com/browzeremb/browzer-cli`, Go 1.25+) and goreleaser pipeline.
 - Run its tests with `cd packages/cli && go test ./...`.
 - Build locally with `cd packages/cli && go build -o "$HOME/.local/bin/browzer" ./cmd/browzer`.
-- Released as `v1.3.3` (current — aligned with skills package v3.2.3; carries the workflow-skill contract tightening: subagent loop-escape + partial-status emission, code-review mutation-runner probe + agent-teams round-table dispatch, feature-acceptance scopeAdjustments inheritance, update-docs citation policy + CHANGELOG-with-hash rule, workflow-schema completedAt bump invariant, commit unconditional co-author trailer — no public CLI behavior change). v1.3.2 (predecessor) was the harden-only release adding daemon `TestDaemonLifecycle_StartCacheHitMissStop` integration test plus new `tracker_test.go` and `telemetry/batcher_test.go`. v1.3.1 (predecessor) and v1.3.0 also added `--workspace-ids` flag on `ask`, `search`, `explore`, `deps` (`internal/flags/workspaces.go`) for cross-workspace queries, and `internal/format/score.go` normalizes `score` via `(2/π)·atan(raw)` — the same arctan transform now used by the TS pipeline, so scores are comparable across surfaces. v1.3.1 + v1.3.0 (2026-04-27) ship the `browzer mentions` graph traversal command (`File ← RELEVANT_TO ← Entity ← MENTIONS ← Chunk ← HAS_CHUNK ← Document`) consumed by the `update-docs` skill, plus the `--anchors` flag on `explore` with a stable `anchor` field, and a `staleness` block in `status --json`. v1.0.16 (2026-04-20 sessão 2) ported the `ec37933` defer-headline + exit-code-7/8 pattern from `workspace docs --add` into `workspace sync` and added `--no-wait` to sync. v0.8.0 shipped the token-economy subsystem (daemon + tracker + telemetry + hooks + `read`/`gain`/`plugin`/`config` commands); v1.0.0 was the first stable release and shipped the public marketplace-based plugin flow (`/plugin marketplace add browzeremb/skills`) — the old file-drop `browzer plugin install` is now a printer of marketplace instructions. v1.0.3 calibrated the `savedTokens` formula per-language against Claude 4 via `count_tokens` — mean absolute error on the reported savings dropped from 35% to 14%.
+- Latest release tag: `cli-v1.4.1`. Notable shipped capabilities: `--workspace-ids` on `ask`, `search`, `explore`, `deps` for cross-workspace queries (since v1.3.x); `internal/format/score.go` normalizes `score` via `(2/π)·atan(raw)` — the same arctan transform used by the TS pipeline, so scores are comparable across surfaces; `browzer mentions` graph traversal (`File ← RELEVANT_TO ← Entity ← MENTIONS ← Chunk ← HAS_CHUNK ← Document`) consumed by the `update-docs` skill; `--anchors` flag on `explore` with a stable `anchor` field; a `staleness` block in `status --json`; `--no-wait` on `workspace sync`; the v0.8.0 token-economy subsystem (daemon + tracker + telemetry + hooks + `read`/`gain`/`plugin`/`config` commands); the v1.0.0 marketplace-based plugin flow (`/plugin marketplace add browzeremb/skills`) — the old file-drop `browzer plugin install` is now a printer of marketplace instructions. See `git tag -l 'cli-v*'` for the complete version history.
 
 ## Canonical reconciliation command
 
@@ -21,8 +21,9 @@ structure AND reconciles documents (ADD + UPDATE + DELETE) driven by
 
 Non-interactive curation (scripting / CI / agents) stays on
 `browzer workspace docs --add <spec>` / `--remove <spec>` /
-`--spec <file>` exactly as before RAG-UX-1 — those flag paths did not
-change.
+`--replace <spec>` exactly as before RAG-UX-1 — those flag paths did not
+change. (`--replace` accepts the `all` and `none` sentinels; the
+existing `--i-know-what-im-doing` confirmation gate still applies.)
 
 `browzer workspace index` (no flags) is a thin alias for
 `browzer sync --skip-docs`; `browzer workspace docs` (no flags) is a
@@ -53,7 +54,7 @@ The daemon subsystem (Unix socket, uid-derived paths) is structurally Unix-first
 ## Shape
 
 - `cmd/browzer/` — entrypoint (cobra root + subcommand wiring).
-- `internal/commands/` — one file per subcommand (48 files as of v0.8.0). `root.go` is the single source of truth for which commands exist.
+- `internal/commands/` — one file per subcommand. `root.go` is the single source of truth for which commands exist.
 - `internal/api/` — HTTP client against `apps/api` + `apps/auth`.
 - `internal/auth/` — device flow client, token storage (`~/.browzer/credentials`), `Credentials.TelemetryConsentAt` LGPD consent timestamp populated on `login` via `/api/auth/me`.
 - `internal/config/` — `env.go` (`DefaultServer` honors `BROWZER_SERVER` env var), `keys.go` (socket path, PID path, history DB path — all uid-derived), `config.go` (persisted settings in `~/.browzer/config.json`).

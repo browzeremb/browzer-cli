@@ -33,6 +33,13 @@ const minimalWorkflowJSON = `{
 
 // buildWorkflowCommand constructs a fresh workflow cobra.Command with
 // captured stdout and stderr buffers for testing.
+//
+// Note: when called from a *testing.T, prefer buildWorkflowCommandT — it
+// also sets BROWZER_WORKFLOW_MODE=sync so the dispatch resolver forces the
+// standalone path, avoiding stale-daemon flakiness (where a long-running
+// daemon binary handles the test mutation with code that predates the test's
+// own ApplyAndPersist). This signature is preserved for tests that already
+// manage env state themselves.
 func buildWorkflowCommand(stdout, stderr *bytes.Buffer) *cobra.Command {
 	root := &cobra.Command{Use: "browzer"}
 	registerWorkflow(root)
@@ -43,6 +50,17 @@ func buildWorkflowCommand(stdout, stderr *bytes.Buffer) *cobra.Command {
 		root.SetErr(stderr)
 	}
 	return root
+}
+
+// buildWorkflowCommandT is the test-aware variant: forces the standalone
+// dispatch path via BROWZER_WORKFLOW_MODE=sync so tests verify the in-process
+// ApplyAndPersist behavior rather than whatever code a stale daemon binary
+// happens to be running. Use this in any new test that touches
+// append-step / set-status / complete-step / append-review-history / etc.
+func buildWorkflowCommandT(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
+	t.Helper()
+	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+	return buildWorkflowCommand(stdout, stderr)
 }
 
 // TestWorkflowCmd_FlagOverridesEnvAndWalkUp verifies that passing --workflow
@@ -75,7 +93,7 @@ func TestWorkflowCmd_FlagOverridesEnvAndWalkUp(t *testing.T) {
 	t.Setenv("BROWZER_WORKFLOW", envWF)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 
 	// Run: browzer workflow get-config mode --workflow <flagWF>
 	root.SetArgs([]string{"workflow", "get-config", "mode", "--workflow", flagWF})
@@ -118,7 +136,7 @@ func TestWorkflowCmd_EnvOverridesWalkUp(t *testing.T) {
 	t.Setenv("BROWZER_WORKFLOW", envWF)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-config", "mode"})
 	_ = root.Execute()
 
@@ -154,7 +172,7 @@ func TestWorkflowCmd_WalkUpSucceedsFromFeatDir(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-config", "mode"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -192,7 +210,7 @@ func TestWorkflowCmd_AutoDiscoveredPathEchoedToStderr(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-config", "mode"})
 	_ = root.Execute()
 

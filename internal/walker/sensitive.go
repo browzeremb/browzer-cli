@@ -125,13 +125,30 @@ var DefaultIgnoreDirs = map[string]struct{}{
 	"coverage":     {},
 	"venv":         {},
 	"env":          {},
+	// Claude Code agent skill packages — markdown-only, no source-code
+	// signal worth indexing, and frequently large enough to dominate
+	// the chunk budget on monorepos that vendor a `skills/` directory.
+	"skills": {},
 }
 
-// DefaultIgnorePathSuffixes holds multi-component path patterns that should
-// be skipped by default (e.g., test/fixtures/**). Checked via path suffix
-// match, not single directory names.
+// DefaultIgnorePathSuffixes holds multi-component path patterns AND
+// single-filename patterns that should be skipped by default. Checked via
+// path suffix match — `normalized == suffix` covers root-level matches and
+// `strings.HasSuffix(normalized, "/"+suffix)` covers nested matches. So
+// "CLAUDE.md" matches both `./CLAUDE.md` and `apps/web/CLAUDE.md`.
+//
+// CLAUDE.md is default-ignored because the file is a Claude Code
+// agent-context manifest — it carries no source-code or first-party
+// documentation signal worth indexing in the workspace, and historically
+// produced rogue rows on `/dashboard/documents` SOURCE DOCUMENTS even on
+// sandboxes that did not check the file in (dogfood F-15 / DOG-CLI-1,
+// 2026-04-29). Operators who DO want CLAUDE.md indexed can override via
+// `.browzerignore` (whitelist with `!CLAUDE.md`) or pass an explicit
+// `browzer workspace docs --add CLAUDE.md`.
 var DefaultIgnorePathSuffixes = []string{
 	"test/fixtures",
+	"CLAUDE.md",
+	"AGENTS.md",
 }
 
 // IsDefaultIgnoredPath returns true if relPath matches any hardcoded

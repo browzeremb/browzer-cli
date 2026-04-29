@@ -1,13 +1,19 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/browzeremb/browzer-cli/internal/config"
+	"github.com/browzeremb/browzer-cli/internal/daemon"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	wf "github.com/browzeremb/browzer-cli/internal/workflow"
 	"github.com/spf13/cobra"
@@ -48,73 +54,11 @@ func acquireMutatorLock(cmd *cobra.Command, wfPath string, noLock bool, timeout 
 	return lock, time.Since(lockStart), nil
 }
 
-// saveWorkflow serialises the raw map back to pretty-printed JSON and writes
-// atomically. It also validates before saving; if validation fails, it returns
-// an error and does NOT write.
-func saveWorkflow(path string, raw map[string]any) error {
-	// Re-encode to typed for validation.
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return fmt.Errorf("marshal workflow for validation: %w", err)
-	}
-	var typed wf.Workflow
-	if err := json.Unmarshal(b, &typed); err != nil {
-		return fmt.Errorf("re-parse workflow for validation: %w", err)
-	}
-	errs := wf.Validate(typed)
-	if len(errs) > 0 {
-		return fmt.Errorf("validation error: %s: %s", errs[0].Path, errs[0].Message)
-	}
-	out, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal workflow: %w", err)
-	}
-	return wf.AtomicWrite(path, append(out, '\n'))
-}
-
-// findStepInRaw finds a step map by its stepId from the raw workflow map.
-// Returns the step and its index, or an error if not found.
-func findStepInRaw(raw map[string]any, stepID string) (map[string]any, int, error) {
-	stepsRaw, ok := raw["steps"]
-	if !ok {
-		return nil, -1, fmt.Errorf("step %q not found: workflow has no steps", stepID)
-	}
-	stepsSlice, ok := stepsRaw.([]any)
-	if !ok {
-		return nil, -1, fmt.Errorf("steps field is not an array")
-	}
-	for i, s := range stepsSlice {
-		sm, ok := s.(map[string]any)
-		if !ok {
-			continue
-		}
-		if sm["stepId"] == stepID {
-			return sm, i, nil
-		}
-	}
-	return nil, -1, fmt.Errorf("step %q not found in workflow", stepID)
-}
-
-// recomputeCounters recomputes totalSteps and completedSteps in the raw map
-// and stamps updatedAt.
-func recomputeCounters(raw map[string]any) {
-	stepsRaw := raw["steps"]
-	stepsSlice, _ := stepsRaw.([]any)
-	total := len(stepsSlice)
-	completed := 0
-	for _, s := range stepsSlice {
-		sm, ok := s.(map[string]any)
-		if !ok {
-			continue
-		}
-		if sm["status"] == wf.StatusCompleted {
-			completed++
-		}
-	}
-	raw["totalSteps"] = total
-	raw["completedSteps"] = completed
-	raw["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
-}
+// (saveWorkflow / findStepInRaw / recomputeCounters were the per-verb
+// helpers used by the historic in-process write path. They moved into
+// `internal/workflow/apply.go` (Mutators + ApplyAndPersist) when the
+// dispatch helper landed in 2026-04-29; the daemon goroutine and the
+// standalone fallback now share that single source of truth.)
 
 // readPayload reads JSON payload from --payload flag file or stdin (when flag is "").
 func readPayload(cmd *cobra.Command, payloadFlag string) ([]byte, error) {
@@ -123,3 +67,288 @@ func readPayload(cmd *cobra.Command, payloadFlag string) ([]byte, error) {
 	}
 	return io.ReadAll(cmd.InOrStdin())
 }
+
+// writeMode is the resolved per-call mode after considering CLI flags + config.
+type writeMode string
+
+const (
+	// writeModeStandalone runs the mutation in-process via wf.ApplyAndPersist.
+	// No daemon contact. Selected by `--sync` or when the daemon is unreachable
+	// AND fallback is allowed.
+	writeModeStandalone writeMode = "standalone"
+	// writeModeDaemonAsync sends the mutation to the daemon, returns
+	// immediately. Failures inside the drainer are silently lost.
+	writeModeDaemonAsync writeMode = "daemon-async"
+	// writeModeDaemonSync sends the mutation to the daemon AND blocks until
+	// durable (fsync of file + parent dir).
+	writeModeDaemonSync writeMode = "daemon-sync"
+)
+
+// resolveWriteMode picks the effective writeMode given the cobra flag set
+// and (when none of --async/--sync/--await is present) the persisted config
+// key `workflow.default_mode`. Default is "async".
+//
+// Mutual exclusion errors:
+//
+//	--sync + --async   → "--sync and --async are mutually exclusive"
+//	--sync + --await   → "--sync and --await are mutually exclusive"
+//	--async + --await  → --await wins (async is the LOOSEST guarantee, await
+//	                      strictly upgrades; we don't error here because some
+//	                      skill bodies sprinkle --async on every call AND
+//	                      conditionally append --await on commit-blocking calls).
+//
+// Forward-compat: an unknown config value falls through to the default.
+func resolveWriteMode(cmd *cobra.Command) (writeMode, error) {
+	async, _ := cmd.Flags().GetBool("async")
+	sync, _ := cmd.Flags().GetBool("sync")
+	await, _ := cmd.Flags().GetBool("await")
+	if !async {
+		async, _ = cmd.InheritedFlags().GetBool("async")
+	}
+	if !sync {
+		sync, _ = cmd.InheritedFlags().GetBool("sync")
+	}
+	if !await {
+		await, _ = cmd.InheritedFlags().GetBool("await")
+	}
+
+	if sync && async {
+		return "", errors.New("--sync and --async are mutually exclusive")
+	}
+	if sync && await {
+		return "", errors.New("--sync and --await are mutually exclusive")
+	}
+
+	if sync {
+		return writeModeStandalone, nil
+	}
+	if await {
+		return writeModeDaemonSync, nil
+	}
+	if async {
+		return writeModeDaemonAsync, nil
+	}
+
+	// Env-var override: BROWZER_WORKFLOW_MODE=sync|await|async.
+	// Used by tests to force standalone (avoids the stale-daemon-binary
+	// flakiness where dispatchToDaemonOrFallback routes to a daemon running
+	// older code than the test's own ApplyAndPersist) and by CI environments
+	// that don't want to spin up the daemon. Higher-priority than
+	// config/default; lower-priority than explicit --sync/--async/--await.
+	switch os.Getenv("BROWZER_WORKFLOW_MODE") {
+	case "sync":
+		return writeModeStandalone, nil
+	case "await":
+		return writeModeDaemonSync, nil
+	case "async":
+		return writeModeDaemonAsync, nil
+	}
+
+	switch readConfigString(config.ConfigKeyWorkflowDefaultMode) {
+	case "sync":
+		return writeModeStandalone, nil
+	case "await":
+		return writeModeDaemonSync, nil
+	case "async":
+		return writeModeDaemonAsync, nil
+	}
+	// No flag, no config — use the codified default.
+	switch config.DefaultWorkflowMode {
+	case "sync":
+		return writeModeStandalone, nil
+	case "await":
+		return writeModeDaemonSync, nil
+	default:
+		return writeModeDaemonAsync, nil
+	}
+}
+
+// daemonFallbackWarnOnce suppresses repeat stderr warnings when the daemon
+// path is unavailable across multiple calls in a single CLI invocation.
+// Reset on process boundaries (which is fine — agents re-fork per command).
+var daemonFallbackWarnOnce sync.Once
+
+// dispatchToDaemonOrFallback runs verb on the daemon when feasible and
+// falls back to the standalone path otherwise. Audit emission happens at
+// the end of the chosen path; the verb's RunE no longer prints its own
+// audit line.
+//
+// Dispatch decisions:
+//
+//  1. mode == standalone → run standalone path, emit audit with
+//     mode=standalone-sync. (--sync explicitly chose this.)
+//  2. mode == daemon-* → dial daemon. On dial failure / missing
+//     workflow.v1 capability / queue_full: fall back to standalone with
+//     mode=fallback-sync and a stderr-once warning.
+//  3. daemon path succeeded → emit audit with the daemon's reported mode
+//     (`daemon-async` | `daemon-sync`).
+//
+// The caller passes `verb`, `args.Args`, `args.Payload`, `args.JQExpr`
+// already-populated. Caller also owns deciding whether `noLock` was
+// requested — the daemon path REJECTS noLock=true so we surface that
+// decision here: when `noLock=true` is set AND mode != standalone, we
+// silently downgrade to standalone (the user explicitly asked for the
+// lock bypass and the daemon won't honor it).
+func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf.MutatorArgs, mode writeMode, noLock bool, lockTimeout time.Duration) error {
+	stderr := cmd.ErrOrStderr()
+	startedAt := time.Now()
+
+	if noLock && mode != writeModeStandalone {
+		// User explicitly asked to bypass the lock — the daemon path can't
+		// honor it (would defeat the per-path FIFO). Silently downgrade so
+		// the call still does what they asked.
+		mode = writeModeStandalone
+	}
+
+	if mode == writeModeStandalone {
+		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeStandaloneSync, "", startedAt)
+	}
+
+	cli := daemon.NewClient(config.SocketPath(os.Getuid()))
+	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+	defer cancel()
+
+	if !cli.HasCapability(ctx, "workflow.v1") {
+		daemonFallbackWarnOnce.Do(func() {
+			_, _ = fmt.Fprintln(stderr, "warn: daemon path unavailable (no workflow.v1) — falling back to standalone for this run")
+		})
+		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_unreachable", startedAt)
+	}
+
+	awaitDurability := mode == writeModeDaemonSync
+	res, err := cli.WorkflowMutate(ctx, daemon.WorkflowMutateParams{
+		Verb:            verb,
+		Path:            wfPath,
+		Payload:         json.RawMessage(args.Payload),
+		Args:            args.Args,
+		JQExpr:          args.JQExpr,
+		AwaitDurability: awaitDurability,
+		LockTimeoutMs:   lockTimeout.Milliseconds(),
+		WriteID:         newWriteID(),
+	})
+	if err != nil {
+		// queue_full / unknown_verb / timeout / etc. Surface the reason in
+		// the audit line and fall back to standalone (which re-applies
+		// idempotently on retried verbs).
+		daemonFallbackWarnOnce.Do(func() {
+			_, _ = fmt.Fprintf(stderr, "warn: daemon WorkflowMutate failed (%v) — falling back to standalone for this run\n", err)
+		})
+		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, daemonErrorReason(err), startedAt)
+	}
+
+	auditMode := wf.AuditModeDaemonAsync
+	if awaitDurability {
+		auditMode = wf.AuditModeDaemonSync
+	}
+	wf.WriteAudit(stderr, wf.AuditLine{
+		Verb:            verb,
+		Path:            wfPath,
+		Mode:            auditMode,
+		WriteID:         res.WriteID,
+		StepID:          res.StepID,
+		LockHeldMs:      res.LockHeldMs,
+		ValidatedOk:     res.ValidatedOk,
+		Durable:         res.Durable,
+		QueueDepthAhead: res.QueueDepthAhead,
+		ElapsedMs:       time.Since(startedAt).Milliseconds(),
+	})
+	return nil
+}
+
+// runStandaloneAndAudit is the unified standalone path used by
+// `--sync` and by the daemon-failure fallback. It acquires the lock, runs
+// `wf.ApplyAndPersist`, releases the lock, and emits one audit line.
+func runStandaloneAndAudit(cmd *cobra.Command, wfPath, verb string, args wf.MutatorArgs, noLock bool, lockTimeout time.Duration, mode wf.AuditMode, reason string, startedAt time.Time) error {
+	stderr := cmd.ErrOrStderr()
+
+	lock, lockHeld, lockErr := acquireMutatorLock(cmd, wfPath, noLock, lockTimeout)
+	if lockErr != nil {
+		if lockErr == wf.ErrLockTimeout {
+			return errLockTimeoutExitCode
+		}
+		return lockErr
+	}
+	if lock != nil {
+		defer func() { _ = lock.Release() }()
+	}
+
+	// Standalone path always honors awaitDurability=true when the user
+	// explicitly asked for `--sync` from a daemon-fsync-aware code path
+	// (we receive mode=fallback-sync in that case AND the user wanted
+	// durability). Simpler rule: standalone never fsyncs (matches the
+	// historic CLI behaviour). Callers that need durability must use the
+	// daemon path.
+	res, err := wf.ApplyAndPersist(wfPath, verb, args, false /* awaitDurability */)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "validation or write error: %v\n", err)
+		return err
+	}
+
+	// Compose audit reason: prefer the dispatch-decision reason
+	// (fallback / queue_full); fall back to the mutator's own NoOp reason
+	// so idempotent skips show up in the line.
+	auditReason := reason
+	if auditReason == "" && res.NoOp {
+		auditReason = "noop:" + res.NoOpReason
+	}
+	if res.NoOp && res.NoOpReason == "already_completed" {
+		// Backwards-compat: legacy CLI emitted a stderr warning when
+		// complete-step was a no-op. Existing tests + skill bodies grep
+		// stderr for "already"/"completed"/"no-op". Keep the line.
+		_, _ = fmt.Fprintf(stderr,
+			"warn: step %q is already COMPLETED (idempotent no-op)\n", res.StepID)
+	}
+
+	wf.WriteAudit(stderr, wf.AuditLine{
+		Verb:        verb,
+		Path:        wfPath,
+		Mode:        mode,
+		StepID:      res.StepID,
+		LockHeldMs:  lockHeld.Milliseconds(),
+		ValidatedOk: res.ValidatedOk,
+		Durable:     res.Durable,
+		ElapsedMs:   time.Since(startedAt).Milliseconds(),
+		Reason:      auditReason,
+	})
+	return nil
+}
+
+// daemonErrorReason converts a JSON-RPC error string into an audit-line
+// reason field. The full surface is `queue_full | timeout |
+// noLock_unsupported_in_daemon_path | unknown_verb |
+// workflow_dispatcher_disabled | other`.
+func daemonErrorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "queue_full"):
+		return "queue_full"
+	case strings.Contains(msg, "timeout"):
+		return "daemon_timeout"
+	case strings.Contains(msg, "noLock_unsupported_in_daemon_path"):
+		return "noLock_unsupported"
+	case strings.Contains(msg, "unknown_verb"):
+		return "unknown_verb"
+	case strings.Contains(msg, "workflow_dispatcher_disabled"):
+		return "dispatcher_disabled"
+	case strings.Contains(msg, "method_not_found"):
+		return "method_not_found"
+	case strings.Contains(msg, "dial daemon"):
+		return "daemon_unreachable"
+	default:
+		return "daemon_error"
+	}
+}
+
+// newWriteID returns a short opaque correlation id for one mutation. We
+// don't need ULID/UUID globally-unique guarantees — just a per-process
+// monotonic counter combined with the start nanos so audit lines line up
+// across daemon + CLI emissions.
+func newWriteID() string {
+	n := writeIDCounter.Add(1)
+	return fmt.Sprintf("wf-%x-%x", time.Now().UnixNano(), n)
+}
+
+var writeIDCounter atomic.Int64

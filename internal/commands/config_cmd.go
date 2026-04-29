@@ -24,17 +24,26 @@ const (
 	configTypeBool configKeyType = iota // on|off|true|false|1|0|yes|no
 	configTypeInt                       // non-negative integer
 	configTypeString                    // freeform (paths, etc.)
+	configTypeEnum                      // value must appear in configEnumValues[key]
 )
 
 // knownConfigKeys maps each recognised key to its expected type.
 // Used to reject typos AND reject values that can't possibly be
 // meaningful (e.g. `config set tracking banana`).
 var knownConfigKeys = map[string]configKeyType{
-	"tracking":                    configTypeBool,
-	"hook":                        configTypeBool,
-	"telemetry":                   configTypeBool,
-	"daemon.idle_timeout_seconds": configTypeInt,
-	"daemon.socket_path":          configTypeString,
+	"tracking":                          configTypeBool,
+	"hook":                              configTypeBool,
+	"telemetry":                         configTypeBool,
+	"daemon.idle_timeout_seconds":       configTypeInt,
+	"daemon.socket_path":                configTypeString,
+	"workflow.default_mode":             configTypeEnum,
+	"daemon.workflow_keepalive_seconds": configTypeInt,
+}
+
+// configEnumValues lists the legal values for each enum-typed config key.
+// Order is preserved in error messages so help is stable.
+var configEnumValues = map[string][]string{
+	"workflow.default_mode": {"async", "sync", "await"},
 }
 
 func knownConfigKeyNames() []string {
@@ -72,6 +81,14 @@ func validateConfigValue(key, value string) error {
 		return nil
 	case configTypeString:
 		return nil
+	case configTypeEnum:
+		legal := configEnumValues[key]
+		for _, v := range legal {
+			if v == value {
+				return nil
+			}
+		}
+		return fmt.Errorf("invalid value %q for %s: expected one of %v", value, key, legal)
 	}
 	return nil
 }

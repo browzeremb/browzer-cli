@@ -1,20 +1,26 @@
 package commands
 
 import (
-	"fmt"
 	"time"
 
 	wf "github.com/browzeremb/browzer-cli/internal/workflow"
 	"github.com/spf13/cobra"
 )
 
-func registerWorkflowAppendReviewHistory(parent *cobra.Command) {
-	var payloadFile string
+func registerWorkflowReapplyAdditionalContext(parent *cobra.Command) {
 	var lockTimeout time.Duration
 
 	cmd := &cobra.Command{
-		Use:          "append-review-history <stepId>",
-		Short:        "Append a review history entry to a step in workflow.json",
+		Use:   "reapply-additional-context <stepId>",
+		Short: "Apply reviewer.additionalContext.changes[] to task.scope in a TASK step",
+		Long: `Reads task.reviewer.additionalContext.changes[] from the given TASK step and
+applies each change to task.scope:
+  - corrected: replaces from→to in scope array
+  - added:     appends path to scope (idempotent — skipped if already present)
+  - dropped:   removes path from scope
+
+The operation is idempotent: re-running when scope already reflects all changes
+exits 0 with a no-op audit line. Closes Phase 2 item #8.`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -27,22 +33,16 @@ func registerWorkflowAppendReviewHistory(parent *cobra.Command) {
 			if !noLock {
 				noLock, _ = cmd.InheritedFlags().GetBool("no-lock")
 			}
-			payloadBytes, err := readPayload(cmd, payloadFile)
-			if err != nil {
-				return fmt.Errorf("read payload: %w", err)
-			}
 			mode, err := resolveWriteMode(cmd)
 			if err != nil {
 				return err
 			}
-			return dispatchToDaemonOrFallback(cmd, wfPath, "append-review-history", wf.MutatorArgs{
-				Args:    []string{stepID},
-				Payload: payloadBytes,
+			return dispatchToDaemonOrFallback(cmd, wfPath, "reapply-additional-context", wf.MutatorArgs{
+				Args: []string{stepID},
 			}, mode, noLock, lockTimeout)
 		},
 	}
 
-	cmd.Flags().StringVar(&payloadFile, "payload", "", "path to review entry JSON payload file (reads from stdin if omitted)")
 	cmd.Flags().DurationVar(&lockTimeout, "lock-timeout", 5*time.Second, "advisory lock acquisition timeout")
 	parent.AddCommand(cmd)
 }

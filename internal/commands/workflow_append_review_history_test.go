@@ -49,7 +49,7 @@ func TestAppendReviewHistory_ValidEntryAppendsToStep(t *testing.T) {
 	beforeStatus := beforeStep["status"]
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-review-history", "STEP_01_BRAINSTORMING",
 		"--payload", payloadFile,
@@ -105,7 +105,7 @@ func TestAppendReviewHistory_InvalidEntryRejectedNoMutation(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-review-history", "STEP_01_BRAINSTORMING",
 		"--payload", payloadFile,
@@ -138,7 +138,7 @@ func TestAppendReviewHistory_NonExistentStepExitsNonZero(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-review-history", "STEP_99_NONEXISTENT",
 		"--payload", payloadFile,
@@ -167,7 +167,7 @@ func TestAppendReviewHistory_AliasPayloadAccepted(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-review-history", "STEP_01_BRAINSTORMING",
 		"--payload", payloadFile,
@@ -204,7 +204,7 @@ func TestAppendReviewHistory_DecisionAliasGoesThroughAllowlist(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-review-history", "STEP_01_BRAINSTORMING",
 		"--payload", payloadFile,

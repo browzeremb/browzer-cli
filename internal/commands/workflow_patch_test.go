@@ -18,7 +18,7 @@ func TestPatch_JqExpressionApplied(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	// Set featureName via jq expression.
 	root.SetArgs([]string{
 		"workflow", "patch",
@@ -56,7 +56,7 @@ func TestPatch_SchemaViolatingMutationRejectedFileUnchanged(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	// Setting schemaVersion to 0 violates schema v1 validation.
 	root.SetArgs([]string{
 		"workflow", "patch",
@@ -99,7 +99,7 @@ func TestPatch_InvalidJqExpressionExitsNonZero(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	// Malformed jq expression.
 	root.SetArgs([]string{
 		"workflow", "patch",
@@ -128,7 +128,7 @@ func TestPatch_MissingJqFlagExitsNonZero(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "patch",
 		"--workflow", wfPath,

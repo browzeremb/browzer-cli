@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	wf "github.com/browzeremb/browzer-cli/internal/workflow"
@@ -29,56 +28,20 @@ func registerWorkflowUpdateStep(parent *cobra.Command) {
 			if err != nil {
 				return err
 			}
-
 			noLock, _ := cmd.Flags().GetBool("no-lock")
 			if !noLock {
 				noLock, _ = cmd.InheritedFlags().GetBool("no-lock")
 			}
-
-			lock, lockHeld, lockErr := acquireMutatorLock(cmd, wfPath, noLock, lockTimeout)
-			if lockErr != nil {
-				if lockErr == wf.ErrLockTimeout {
-					return errLockTimeoutExitCode
-				}
-				return lockErr
-			}
-			if lock != nil {
-				defer func() { _ = lock.Release() }()
-			}
-
-			_, raw, err := loadWorkflow(wfPath)
+			mode, err := resolveWriteMode(cmd)
 			if err != nil {
 				return err
 			}
-
-			stepMap, _, err := findStepInRaw(raw, stepID)
-			if err != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%v\n", err)
-				return err
+			// Pack stepId + field=value pairs into args; mutatorUpdateStep
+			// expects args[0]=stepId, args[1..]=pairs.
+			mArgs := wf.MutatorArgs{
+				Args: append([]string{stepID}, setPairs...),
 			}
-
-			// Apply each field=value pair.
-			for _, pair := range setPairs {
-				idx := strings.IndexByte(pair, '=')
-				if idx < 0 {
-					return fmt.Errorf("invalid --set value %q: expected field=value", pair)
-				}
-				field := pair[:idx]
-				value := pair[idx+1:]
-				stepMap[field] = value
-			}
-
-			recomputeCounters(raw)
-
-			if err := saveWorkflow(wfPath, raw); err != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "validation or write error: %v\n", err)
-				return err
-			}
-
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-				"verb=update-step stepId=%s lockHeldMs=%d validatedOk=true\n",
-				stepID, lockHeld.Milliseconds())
-			return nil
+			return dispatchToDaemonOrFallback(cmd, wfPath, "update-step", mArgs, mode, noLock, lockTimeout)
 		},
 	}
 

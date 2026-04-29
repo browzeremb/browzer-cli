@@ -13,7 +13,7 @@ func TestGetConfig_ModeReturnsUnquoted(t *testing.T) {
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON) // mode is "autonomous"
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-config", "mode", "--workflow", wfPath})
 
 	if err := root.Execute(); err != nil {
@@ -37,7 +37,7 @@ func TestGetConfig_ReviewModeReturnsUnquoted(t *testing.T) {
 	wfPath := writeWorkflowFile(t, reviewContent)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-config", "mode", "--workflow", wfPath})
 
 	if err := root.Execute(); err != nil {
@@ -57,7 +57,7 @@ func TestGetConfig_FieldNestedPath(t *testing.T) {
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-config", "setAt", "--workflow", wfPath})
 
 	if err := root.Execute(); err != nil {
@@ -81,7 +81,7 @@ func TestGetConfig_UnknownKeyExitsNonZero(t *testing.T) {
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-config", "nonExistentKey", "--workflow", wfPath})
 
 	err := root.Execute()

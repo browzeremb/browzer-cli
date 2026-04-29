@@ -30,7 +30,7 @@ func TestUpdateStep_SetFieldMutatesOnlyNamedStep(t *testing.T) {
 	beforeStep0, _ := json.Marshal(beforeSteps[0])
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "update-step", "STEP_01_BRAINSTORMING",
 		"--set", "status=RUNNING",
@@ -72,7 +72,7 @@ func TestUpdateStep_SetFieldMutatesOnlyNamedStep(t *testing.T) {
 
 	// Validate the resulting workflow passes schema v1 validation.
 	var stdoutV, stderrV bytes.Buffer
-	rootV := buildWorkflowCommand(&stdoutV, &stderrV)
+	rootV := buildWorkflowCommandT(t, &stdoutV, &stderrV)
 	rootV.SetArgs([]string{"workflow", "validate", "--workflow", wfPath})
 	if err := rootV.Execute(); err != nil {
 		t.Errorf("workflow after update-step failed validation: %v\nstderr: %s", err, stderrV.String())
@@ -154,7 +154,7 @@ func TestUpdateStep_SetOnlyNamedStepOtherStepsUntouched(t *testing.T) {
 	beforeStep1, _ := json.Marshal(beforeSteps[1])
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "update-step", "STEP_01_BRAINSTORMING",
 		"--set", "status=RUNNING",

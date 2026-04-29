@@ -193,7 +193,13 @@ func runSyncFlow(ctx context.Context, opts syncFlowOptions) error {
 			u, uErr := client.BillingUsage(gctx)
 			if uErr != nil {
 				// Quota is nice-to-have — failure should not block sync.
-				ui.Warn(fmt.Sprintf("could not fetch billing usage: %v", uErr))
+				// F-13 (FR-4): suppress the noisy "Forbidden" warning that
+				// fires on every successful sync against a default member-
+				// role API key (which lacks billing read scope). Other
+				// errors still surface so genuine breakage is visible.
+				if !api.IsBillingForbidden(uErr) {
+					ui.Warn(fmt.Sprintf("could not fetch billing usage: %v", uErr))
+				}
 				return nil
 			}
 			usage = u
@@ -363,6 +369,20 @@ func runSyncFlow(ctx context.Context, opts syncFlowOptions) error {
 				ui.Warn(fmt.Sprintf("could not save docs cache: %v", cacheErr))
 			}
 
+			// Refresh usage AFTER uploads so the printed Chunks/Storage
+			// reflects what just landed. The pre-sync `usage` captured
+			// at line ~199 was before any docs were ingested, so a sync
+			// that just inserted N chunks would still report
+			// "Chunks: 0 / 200000" without this refresh. Best-effort —
+			// failure leaves the pre-sync snapshot in place. Skipped on
+			// --no-wait because chunks land asynchronously after the
+			// CLI returns; the counter would still be lagging anyway.
+			if !opts.DryRun && !opts.NoWait {
+				if u, uErr := client.BillingUsage(ctx); uErr == nil {
+					usage = u
+				}
+			}
+
 			if !quiet {
 				fmt.Println()
 				ui.Success("Sync complete")
@@ -396,14 +416,11 @@ func runSyncFlow(ctx context.Context, opts syncFlowOptions) error {
 			}
 		}
 
-		// Emit JSON result when requested.
+		// Emit JSON result when requested. `usage` was already refreshed
+		// post-upload above; if the upload block was skipped (no-op
+		// branch), `usage` is still the pre-sync snapshot, which is
+		// correct because nothing changed.
 		if jsonFlag || saveFlag != "" {
-			// Refresh usage for the post-sync snapshot (best-effort).
-			if !opts.DryRun {
-				if u, uErr := client.BillingUsage(ctx); uErr == nil {
-					usage = u
-				}
-			}
 			payload := map[string]any{
 				"mode":      opts.JSONMode,
 				"dryRun":    opts.DryRun,

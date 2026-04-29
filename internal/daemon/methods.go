@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"time"
+
+	wf "github.com/browzeremb/browzer-cli/internal/workflow"
 )
 
 // ReadParams is the wire shape for the Read method.
@@ -60,6 +65,50 @@ type SessionRegisterResult struct {
 	Model *string `json:"model"`
 }
 
+// WorkflowMutateParams is the wire shape for the WorkflowMutate method.
+//
+// Verb whitelist enforcement: handler rejects any verb not in
+// wf.Mutators with `unknown_verb` BEFORE the queue is touched, so a
+// malformed request never reaches a drainer goroutine.
+//
+// noLock is rejected unconditionally in the daemon path: when the daemon
+// owns the queue, all writes go through the queue's drainer which always
+// holds the advisory lock. Allowing `noLock=true` would let a caller
+// bypass the lock the daemon itself just took, defeating the queue's
+// FIFO guarantee against same-process readers.
+type WorkflowMutateParams struct {
+	Verb            string          `json:"verb"`
+	Path            string          `json:"path"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
+	Args            []string        `json:"args,omitempty"`
+	JQExpr          string          `json:"jqExpr,omitempty"`
+	NoLock          bool            `json:"noLock,omitempty"`
+	AwaitDurability bool            `json:"awaitDurability,omitempty"`
+	LockTimeoutMs   int64           `json:"lockTimeoutMs,omitempty"`
+	WriteID         string          `json:"writeId,omitempty"`
+}
+
+// WorkflowMutateResult is the wire shape for the WorkflowMutate response.
+type WorkflowMutateResult struct {
+	WriteID         string `json:"writeId"`
+	Mode            string `json:"mode"`
+	StepID          string `json:"stepId,omitempty"`
+	LockHeldMs      int64  `json:"lockHeldMs"`
+	QueueDepthAhead int64  `json:"queueDepthAhead"`
+	ValidatedOk     bool   `json:"validatedOk"`
+	Durable         bool   `json:"durable"`
+}
+
+// HealthResponse is the wire shape for the Health method, exported so the
+// client can decode it. (The historic anonymous map[string]any return value
+// is preserved for backwards compat — handler still emits the same fields.)
+type HealthResponse struct {
+	UptimeSec    int      `json:"uptimeSec"`
+	QueueLen     int64    `json:"queueLen"`
+	DBPath       string   `json:"dbPath"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
 // Wire installs Read/Track/SessionRegister on the server. Called from
 // the daemon entrypoint with the live dependencies.
 func (s *Server) Wire(deps Deps) {
@@ -84,6 +133,110 @@ func (s *Server) Wire(deps Deps) {
 		}
 		return deps.SessionRegister(ctx, p)
 	})
+	// WorkflowMutate is registered eagerly in NewServer — see server.go
+	// (it has no external Deps so it doesn't belong in Wire).
+}
+
+// handleWorkflowMutate is the JSON-RPC entrypoint for workflow.json
+// mutations. Lifecycle:
+//
+//  1. Parse + validate params (verb whitelist, abs path, noLock rejection).
+//  2. Enqueue on the per-path FIFO via dispatcher.enqueue. Capture the
+//     pre-send queue depth.
+//  3. If awaitDurability=false: return immediately with mode="daemon-async".
+//     The drainer will run the mutation; failures are silently lost from
+//     the caller's POV (mirrors fire-and-forget semantics).
+//  4. If awaitDurability=true: block on job.done with a ceiling of
+//     lockTimeoutMs+2s to bound the handler in case the drainer hangs.
+//     On success return mode="daemon-sync" with the durable+validatedOk
+//     bits the drainer recorded.
+//
+// Errors mapped to JSON-RPC -32000 (server error) with stable string
+// codes the client maps onto fallback decisions:
+//
+//	unknown_verb                    — caller must NOT retry; verb is bogus
+//	invalid_params                  — malformed request
+//	path_must_be_absolute           — relative paths rejected
+//	noLock_unsupported_in_daemon_path — caller falls back to standalone
+//	queue_full                       — caller falls back to standalone
+//	timeout                          — sync wait deadline exceeded
+//	(any wf.ApplyAndPersist error)   — propagated verbatim; caller surfaces
+func (s *Server) handleWorkflowMutate(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p WorkflowMutateParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, errors.New("invalid_params")
+	}
+	if _, ok := wf.Mutators[p.Verb]; !ok {
+		return nil, fmt.Errorf("unknown_verb: %q", p.Verb)
+	}
+	if p.Path == "" || !filepath.IsAbs(p.Path) {
+		return nil, errors.New("path_must_be_absolute")
+	}
+	if p.NoLock {
+		return nil, errors.New("noLock_unsupported_in_daemon_path")
+	}
+	if s.workflowDispatcher == nil {
+		return nil, errors.New("workflow_dispatcher_disabled")
+	}
+
+	lockTimeout := time.Duration(p.LockTimeoutMs) * time.Millisecond
+	if lockTimeout <= 0 {
+		lockTimeout = 5 * time.Second
+	}
+
+	job := &mutateJob{
+		verb: p.Verb,
+		path: p.Path,
+		args: wf.MutatorArgs{
+			Args:    p.Args,
+			Payload: []byte(p.Payload),
+			JQExpr:  p.JQExpr,
+		},
+		awaitDurability: p.AwaitDurability,
+		lockTimeout:     lockTimeout,
+		writeID:         p.WriteID,
+		enqueuedAt:      time.Now(),
+		done:            make(chan struct{}),
+	}
+
+	depthAhead, enqErr := s.workflowDispatcher.enqueue(job)
+	if enqErr != nil {
+		return nil, enqErr
+	}
+
+	// Async: return immediately. The drainer owns job from here.
+	if !p.AwaitDurability {
+		return WorkflowMutateResult{
+			WriteID:         p.WriteID,
+			Mode:            "daemon-async",
+			QueueDepthAhead: int64(depthAhead),
+		}, nil
+	}
+
+	// Sync: block on done with a bounded ceiling. The +2s slack absorbs
+	// the lock-acquire-then-write window past the lock acquisition timeout.
+	ceiling := lockTimeout + 2*time.Second
+	select {
+	case <-job.done:
+		// fallthrough.
+	case <-time.After(ceiling):
+		return nil, errors.New("timeout")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if job.err != nil {
+		return nil, job.err
+	}
+	return WorkflowMutateResult{
+		WriteID:         p.WriteID,
+		Mode:            "daemon-sync",
+		StepID:          job.result.StepID,
+		LockHeldMs:      job.lockHeld.Milliseconds(),
+		QueueDepthAhead: int64(depthAhead),
+		ValidatedOk:     job.result.ValidatedOk,
+		Durable:         job.result.Durable,
+	}, nil
 }
 
 // Deps is the dependency surface the daemon needs from outside the

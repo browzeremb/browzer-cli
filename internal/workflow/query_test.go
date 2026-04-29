@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +106,8 @@ func TestQueryRegistry_NamesStable(t *testing.T) {
 		"deferred-scope-adjustments",
 		"open-findings",
 		"next-step-id",
+		"cache-warm-deps",
+		"cache-warm-mentions",
 	}
 	registry := QueryRegistry()
 	for _, name := range expected {
@@ -354,4 +357,177 @@ func TestQueryReusedGates_StableSort(t *testing.T) {
 			}
 		}
 	}
+}
+
+// cacheWarmFixture is a minimal workflow with 2 TASK steps each carrying
+// 2 scope files, sharing one file (app/shared.ts) to exercise deduplication.
+const cacheWarmFixture = `{
+  "schemaVersion": 1,
+  "featureId": "feat-cw",
+  "featDir": "docs/browzer/feat-cw",
+  "steps": [
+    {
+      "stepId": "STEP_01_TASK_01",
+      "name": "TASK",
+      "status": "COMPLETED",
+      "task": {
+        "scope": ["apps/api/src/routes/ask.ts", "apps/api/src/shared.ts"]
+      }
+    },
+    {
+      "stepId": "STEP_02_TASK_02",
+      "name": "TASK",
+      "status": "COMPLETED",
+      "task": {
+        "scope": ["apps/worker/src/consumers/ingest.ts", "apps/api/src/shared.ts"]
+      }
+    }
+  ]
+}`
+
+// loadCacheWarmFixture returns the cacheWarmFixture as map[string]any.
+func loadCacheWarmFixture(t *testing.T) map[string]any {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(cacheWarmFixture), &raw); err != nil {
+		t.Fatalf("decode cacheWarmFixture: %v", err)
+	}
+	return raw
+}
+
+// TestQueryCacheWarmDeps asserts the query returns 3 unique records (4 scope
+// entries minus 1 duplicate) with depsCachePath populated and no
+// mentionsCachePath.
+func TestQueryCacheWarmDeps(t *testing.T) {
+	raw := loadCacheWarmFixture(t)
+	got, err := queryCacheWarmDeps(raw)
+	if err != nil {
+		t.Fatalf("queryCacheWarmDeps: %v", err)
+	}
+	records, ok := got.([]CacheWarmRecord)
+	if !ok {
+		t.Fatalf("expected []CacheWarmRecord, got %T", got)
+	}
+	// 3 unique files: apps/api/src/routes/ask.ts, apps/api/src/shared.ts,
+	// apps/worker/src/consumers/ingest.ts (sorted).
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records (deduped), got %d: %v", len(records), records)
+	}
+	for _, r := range records {
+		if r.File == "" {
+			t.Errorf("record has empty file field: %v", r)
+		}
+		if r.CachePath == "" {
+			t.Errorf("record %q has empty depsCachePath", r.File)
+		}
+		// depsCachePath must embed the featDir and the deps subdir.
+		if !containsSubstr(r.CachePath, "docs/browzer/feat-cw/.browzer-cache/deps/") {
+			t.Errorf("depsCachePath %q does not contain expected prefix", r.CachePath)
+		}
+		// mentionsCachePath must NOT be populated for this query.
+		if r.MentionsCachePath != "" {
+			t.Errorf("depsCachePath query unexpectedly set MentionsCachePath: %v", r)
+		}
+	}
+	// Verify deduplication: no two records share the same file.
+	seen := make(map[string]int)
+	for i, r := range records {
+		seen[r.File]++
+		if seen[r.File] > 1 {
+			t.Errorf("duplicate file %q at index %d", r.File, i)
+		}
+	}
+}
+
+// TestQueryCacheWarmMentions asserts the query returns 3 unique records with
+// mentionsCachePath populated and no depsCachePath.
+func TestQueryCacheWarmMentions(t *testing.T) {
+	raw := loadCacheWarmFixture(t)
+	got, err := queryCacheWarmMentions(raw)
+	if err != nil {
+		t.Fatalf("queryCacheWarmMentions: %v", err)
+	}
+	records, ok := got.([]CacheWarmRecord)
+	if !ok {
+		t.Fatalf("expected []CacheWarmRecord, got %T", got)
+	}
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records (deduped), got %d: %v", len(records), records)
+	}
+	for _, r := range records {
+		if r.File == "" {
+			t.Errorf("record has empty file field: %v", r)
+		}
+		if r.MentionsCachePath == "" {
+			t.Errorf("record %q has empty mentionsCachePath", r.File)
+		}
+		if !containsSubstr(r.MentionsCachePath, "docs/browzer/feat-cw/.browzer-cache/mentions/") {
+			t.Errorf("mentionsCachePath %q does not contain expected prefix", r.MentionsCachePath)
+		}
+		// depsCachePath must NOT be populated for this query.
+		if r.CachePath != "" {
+			t.Errorf("mentionsCachePath query unexpectedly set depsCachePath: %v", r)
+		}
+	}
+}
+
+// TestQueryCacheWarmDeps_EmptyScope asserts that a workflow with no TASK steps
+// returns an empty slice, not nil.
+func TestQueryCacheWarmDeps_EmptyScope(t *testing.T) {
+	raw := map[string]any{
+		"schemaVersion": 1,
+		"featDir":       "docs/browzer/feat-empty",
+		"steps":         []any{},
+	}
+	got, err := queryCacheWarmDeps(raw)
+	if err != nil {
+		t.Fatalf("queryCacheWarmDeps on empty: %v", err)
+	}
+	records, ok := got.([]CacheWarmRecord)
+	if !ok {
+		t.Fatalf("expected []CacheWarmRecord, got %T", got)
+	}
+	if len(records) != 0 {
+		t.Errorf("expected 0 records for empty scope, got %d", len(records))
+	}
+}
+
+// TestQueryCacheWarmDeps_SlugEncoding asserts forward slashes in file paths are
+// replaced with underscores in the cache path filename component.
+func TestQueryCacheWarmDeps_SlugEncoding(t *testing.T) {
+	raw := map[string]any{
+		"schemaVersion": float64(1),
+		"featDir":       "docs/browzer/feat-slug",
+		"steps": []any{
+			map[string]any{
+				"stepId": "STEP_01_TASK_01",
+				"name":   StepTask,
+				"status": StatusCompleted,
+				"task": map[string]any{
+					"scope": []any{"apps/api/src/server.ts"},
+				},
+			},
+		},
+	}
+	got, err := queryCacheWarmDeps(raw)
+	if err != nil {
+		t.Fatalf("queryCacheWarmDeps: %v", err)
+	}
+	records := got.([]CacheWarmRecord)
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	// Slug must not contain raw slashes (only underscores from the tr replacement).
+	slug := records[0].CachePath
+	// The cache path ends with <slug>.json — extract the filename part.
+	lastSlash := strings.LastIndexByte(slug, '/')
+	filename := slug[lastSlash+1:]
+	if strings.Contains(filename, "/") {
+		t.Errorf("slug filename %q contains a raw slash; expected underscores only", filename)
+	}
+}
+
+// containsSubstr is a convenience wrapper so test code doesn't import strings.
+func containsSubstr(s, sub string) bool {
+	return strings.Contains(s, sub)
 }

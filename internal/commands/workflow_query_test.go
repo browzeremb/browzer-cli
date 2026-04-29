@@ -60,7 +60,7 @@ func TestWorkflowQuery_KnownQueryEmitsJSON(t *testing.T) {
 	wfPath := writeWorkflowFile(t, queryWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "query", "reused-gates", "--workflow", wfPath})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -81,7 +81,7 @@ func TestWorkflowQuery_UnknownQueryFailsWithList(t *testing.T) {
 	wfPath := writeWorkflowFile(t, queryWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "query", "made-up-query", "--workflow", wfPath})
 	err := root.Execute()
 	if err == nil {
@@ -103,7 +103,7 @@ func TestWorkflowQuery_AuditLineEmitted(t *testing.T) {
 	wfPath := writeWorkflowFile(t, queryWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "query", "changed-files", "--workflow", wfPath})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -123,7 +123,7 @@ func TestWorkflowQuery_ChangedFilesRoundtrip(t *testing.T) {
 	wfPath := writeWorkflowFile(t, queryWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "query", "changed-files", "--workflow", wfPath})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -148,7 +148,7 @@ func TestWorkflowQuery_ChangedFilesRoundtrip(t *testing.T) {
 // registered query's name + description so authors can discover them.
 func TestWorkflowQuery_HelpListsRegistry(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "query", "--help"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -163,9 +163,106 @@ func TestWorkflowQuery_HelpListsRegistry(t *testing.T) {
 		"deferred-scope-adjustments",
 		"open-findings",
 		"next-step-id",
+		"cache-warm-deps",
+		"cache-warm-mentions",
 	} {
 		if !strings.Contains(out, name) {
 			t.Errorf("query --help missing query %q (stdout: %q)", name, out)
+		}
+	}
+}
+
+// TestWorkflowQuery_CacheWarmDeps exercises the cache-warm-deps query via the
+// CLI layer (cobra → registry → queryCacheWarmDeps). The fixture has 2 TASK
+// steps each containing 2 scope files with one duplicate → expects 3 records.
+func TestWorkflowQuery_CacheWarmDeps(t *testing.T) {
+	const cacheWarmWorkflowJSON = `{
+  "schemaVersion": 1,
+  "featureId": "feat-cw",
+  "featDir": "docs/browzer/feat-cw",
+  "originalRequest": "test",
+  "operator": {"locale": "en"},
+  "config": {"mode": "autonomous", "setAt": "2026-04-29T00:00:00Z"},
+  "startedAt": "2026-04-29T00:00:00Z",
+  "updatedAt": "2026-04-29T00:00:00Z",
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_02_TASK_02",
+  "nextStepId": "",
+  "totalSteps": 2,
+  "completedSteps": 2,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_TASK_01",
+      "name": "TASK",
+      "taskId": "TASK_01",
+      "status": "COMPLETED",
+      "applicability": {"applicable": true, "reason": "default"},
+      "startedAt": "2026-04-29T00:00:00Z",
+      "completedAt": "2026-04-29T00:01:00Z",
+      "elapsedMin": 1.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "STEP_02_TASK_02",
+      "skillsToInvoke": ["execute-task"],
+      "skillsInvoked": ["execute-task"],
+      "owner": null,
+      "worktrees": {"used": false, "worktrees": []},
+      "warnings": [],
+      "reviewHistory": [],
+      "task": {
+        "scope": ["apps/api/src/routes/ask.ts", "apps/api/src/server.ts"]
+      }
+    },
+    {
+      "stepId": "STEP_02_TASK_02",
+      "name": "TASK",
+      "taskId": "TASK_02",
+      "status": "COMPLETED",
+      "applicability": {"applicable": true, "reason": "default"},
+      "startedAt": "2026-04-29T00:01:00Z",
+      "completedAt": "2026-04-29T00:02:00Z",
+      "elapsedMin": 1.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["execute-task"],
+      "skillsInvoked": ["execute-task"],
+      "owner": null,
+      "worktrees": {"used": false, "worktrees": []},
+      "warnings": [],
+      "reviewHistory": [],
+      "task": {
+        "scope": ["apps/worker/src/consumers/ingest.ts", "apps/api/src/server.ts"]
+      }
+    }
+  ]
+}`
+	wfPath := writeWorkflowFile(t, cacheWarmWorkflowJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "query", "cache-warm-deps", "--workflow", wfPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v (stderr: %s)", err, stderr.String())
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode stdout JSON: %v\nraw: %s", err, stdout.String())
+	}
+
+	// 3 unique files from 4 scope entries (apps/api/src/server.ts deduped).
+	if len(got) != 3 {
+		t.Fatalf("expected 3 records (deduped), got %d: %v", len(got), got)
+	}
+	for _, r := range got {
+		if _, hasFile := r["file"]; !hasFile {
+			t.Errorf("record missing 'file' key: %v", r)
+		}
+		if _, hasDeps := r["depsCachePath"]; !hasDeps {
+			t.Errorf("record missing 'depsCachePath' key: %v", r)
 		}
 	}
 }

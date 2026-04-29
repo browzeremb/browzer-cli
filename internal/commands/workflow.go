@@ -27,18 +27,27 @@ func registerWorkflow(parent *cobra.Command) {
 	}
 	cmd.PersistentFlags().String("workflow", "", "path to workflow.json (overrides BROWZER_WORKFLOW env and walk-up discovery)")
 	cmd.PersistentFlags().Bool("no-lock", false, "skip advisory file lock (use for read-only commands)")
+	// Write-mode flags. Mutually exclusive: --async, --sync, --await. When
+	// none is set, resolveWriteMode falls through to config + default. Read
+	// verbs ignore these flags.
+	cmd.PersistentFlags().Bool("async", false, "send mutation through the daemon and return immediately (default mode)")
+	cmd.PersistentFlags().Bool("sync", false, "skip the daemon and apply the mutation in-process (historic behaviour)")
+	cmd.PersistentFlags().Bool("await", false, "send mutation through the daemon and block until durable (file + parent dir fsync)")
 
 	registerWorkflowAppendReviewHistory(cmd)
 	registerWorkflowAppendStep(cmd)
+	registerWorkflowAuditModelOverride(cmd)
 	registerWorkflowCompleteStep(cmd)
 	registerWorkflowGetConfig(cmd)
 	registerWorkflowGetStep(cmd)
 	registerWorkflowPatch(cmd)
 	registerWorkflowQuery(cmd)
+	registerWorkflowReapplyAdditionalContext(cmd)
 	registerWorkflowSchema(cmd)
 	registerWorkflowSetConfig(cmd)
 	registerWorkflowSetCurrentStep(cmd)
 	registerWorkflowSetStatus(cmd)
+	registerWorkflowTruncationAudit(cmd)
 	registerWorkflowUpdateStep(cmd)
 	registerWorkflowValidate(cmd)
 

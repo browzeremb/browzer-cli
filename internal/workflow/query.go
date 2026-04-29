@@ -22,6 +22,12 @@ const (
 	QueryDeferredScopeAdjustments QueryName = "deferred-scope-adjustments"
 	QueryOpenFindings             QueryName = "open-findings"
 	QueryNextStepID               QueryName = "next-step-id"
+	// Cache pre-warm queries (added 2026-04-29, Phase 5 feature cache).
+	// Note: explore queries are NOT pre-warmable — they are on-demand
+	// (user intent varies per turn). Only deps + mentions cover the
+	// deterministic blast-radius surfaces that benefit from pre-warming.
+	QueryCacheWarmDeps     QueryName = "cache-warm-deps"
+	QueryCacheWarmMentions QueryName = "cache-warm-mentions"
 )
 
 // QueryDefinition describes a single registered query.
@@ -76,6 +82,22 @@ func QueryRegistry() map[QueryName]QueryDefinition {
 			Name:        QueryNextStepID,
 			Description: "Next monotonic step ordinal (max(STEP_NN) + 1) — for skill stepId derivation.",
 			Run:         queryNextStepID,
+		},
+		QueryCacheWarmDeps: {
+			Name: QueryCacheWarmDeps,
+			Description: "For each unique file in any TASK step's task.scope[], emit { file, depsCachePath } " +
+				"pointing to <featDir>/.browzer-cache/deps/<slug>.json. The orchestrator (Step 2.5) iterates " +
+				"this output and runs `browzer deps <file> --save <depsCachePath>` in parallel. " +
+				"This query does NOT run browzer deps itself — callers own the execution.",
+			Run: queryCacheWarmDeps,
+		},
+		QueryCacheWarmMentions: {
+			Name: QueryCacheWarmMentions,
+			Description: "For each unique file in any TASK step's task.scope[], emit { file, mentionsCachePath } " +
+				"pointing to <featDir>/.browzer-cache/mentions/<slug>.json. The orchestrator (Step 2.5) iterates " +
+				"this output and runs `browzer mentions <file> --save <mentionsCachePath>` in parallel. " +
+				"This query does NOT run browzer mentions itself — callers own the execution.",
+			Run: queryCacheWarmMentions,
 		},
 	}
 }
@@ -473,6 +495,63 @@ func queryOpenFindings(raw map[string]any) (any, error) {
 	return out, nil
 }
 
+// ── cache-warm helpers ────────────────────────────────────────────────────────
+
+// fileSlug converts a file path to a safe filename component by replacing
+// path separators and other non-identifier characters with underscores.
+// Mirrors the `tr / _` convention used by existing cr-deps-<slug>.json
+// patterns in the code-review skill.
+//
+// Cache layout (documented here; runtime dirs are created by the orchestrator):
+//
+//	$WORKFLOW_DIR/.browzer-cache/
+//	  deps/<file-slug>.json       # output of `browzer deps <path> --save`
+//	  rdeps/<file-slug>.json      # output of `browzer deps <path> --reverse --save`
+//	  mentions/<file-slug>.json   # output of `browzer mentions <path> --save`
+func fileSlug(path string) string {
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		" ", "_",
+		".", "_",
+	)
+	return replacer.Replace(path)
+}
+
+// collectTaskScopeFiles returns the deduped, sorted union of all file paths
+// listed in task.scope[] across every TASK step. It reads the top-level
+// .featDir to construct cache paths. When featDir is absent or empty the
+// paths are relative to ".browzer-cache" (callers should handle this).
+func collectTaskScopeFiles(raw map[string]any) (files []string, featDir string) {
+	if d, ok := raw["featDir"].(string); ok {
+		featDir = d
+	}
+	seen := make(map[string]struct{})
+	for _, s := range stepsArray(raw) {
+		step := stepObject(s)
+		if step == nil || stringField(step, "name") != StepTask {
+			continue
+		}
+		// task.scope is []string in the schema (file paths for the task).
+		taskPayload := nestedMap(step, "task")
+		scope := nestedSlice(taskPayload, "scope")
+		for _, v := range scope {
+			f, ok := v.(string)
+			if !ok || f == "" {
+				continue
+			}
+			if _, dup := seen[f]; dup {
+				continue
+			}
+			seen[f] = struct{}{}
+			files = append(files, f)
+		}
+	}
+	sort.Strings(files)
+	return files, featDir
+}
+
 // ── next-step-id ──────────────────────────────────────────────────────────────
 
 // queryNextStepID returns the next monotonic step ordinal as an integer (max
@@ -510,4 +589,66 @@ func queryNextStepID(raw map[string]any) (any, error) {
 		}
 	}
 	return max + 1, nil
+}
+
+// ── cache-warm-deps ───────────────────────────────────────────────────────────
+
+// CacheWarmRecord is the JSON-serialisable output record for cache-warm-* queries.
+type CacheWarmRecord struct {
+	File      string `json:"file"`
+	CachePath string `json:"depsCachePath,omitempty"`
+	// MentionsCachePath is populated for the cache-warm-mentions query.
+	MentionsCachePath string `json:"mentionsCachePath,omitempty"`
+}
+
+// queryCacheWarmDeps iterates over all TASK steps' task.scope[] (deduped union)
+// and for each file emits a CacheWarmRecord with the file path and the path
+// where the orchestrator should write the deps cache JSON.
+//
+// Output shape: []{ file, depsCachePath }
+//
+// The orchestrator (Step 2.5) iterates this output and runs:
+//
+//	browzer deps "$FILE" --json --save "$CACHE_PATH" &
+//	browzer deps "$FILE" --reverse --json --save "${CACHE_PATH/deps/rdeps}" &
+//
+// This query does NOT run browzer deps — callers own the execution. Keeping
+// the CLI orthogonal avoids coupling the query layer to external tools.
+func queryCacheWarmDeps(raw map[string]any) (any, error) {
+	files, featDir := collectTaskScopeFiles(raw)
+	cacheBase := featDir + "/.browzer-cache/deps"
+	out := make([]CacheWarmRecord, 0, len(files))
+	for _, f := range files {
+		out = append(out, CacheWarmRecord{
+			File:      f,
+			CachePath: cacheBase + "/" + fileSlug(f) + ".json",
+		})
+	}
+	return out, nil
+}
+
+// ── cache-warm-mentions ───────────────────────────────────────────────────────
+
+// queryCacheWarmMentions iterates over all TASK steps' task.scope[] (deduped
+// union) and for each file emits a CacheWarmRecord with the file path and the
+// path where the orchestrator should write the mentions cache JSON.
+//
+// Output shape: []{ file, mentionsCachePath }
+//
+// The orchestrator (Step 2.5) iterates this output and runs:
+//
+//	browzer mentions "$FILE" --json --save "$CACHE_PATH" &
+//
+// This query does NOT run browzer mentions — callers own the execution.
+func queryCacheWarmMentions(raw map[string]any) (any, error) {
+	files, featDir := collectTaskScopeFiles(raw)
+	cacheBase := featDir + "/.browzer-cache/mentions"
+	out := make([]CacheWarmRecord, 0, len(files))
+	for _, f := range files {
+		out = append(out, CacheWarmRecord{
+			File:              f,
+			MentionsCachePath: cacheBase + "/" + fileSlug(f) + ".json",
+		})
+	}
+	return out, nil
 }

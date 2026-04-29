@@ -83,7 +83,7 @@ Pick whichever channel matches your environment.
 curl -fsSL https://browzeremb.com/install.sh | sh
 ```
 
-Detects OS/arch, downloads the matching tarball from the latest GitHub release, verifies the SHA-256 checksum, and drops the binary into `~/.local/bin/browzer`. Pin a tag with `BROWZER_VERSION=v1.3.3` (current).
+Detects OS/arch, downloads the matching tarball from the latest GitHub release, verifies the SHA-256 checksum, and drops the binary into `~/.local/bin/browzer`. Pin a specific release with `BROWZER_VERSION=v1.5.0` (or any tag from `git tag -l 'cli-v*'`); omit the variable to install the latest tag.
 
 ### Homebrew (macOS / Linux)
 
@@ -202,6 +202,30 @@ Introduced in v0.8.0 to reduce token burn when Claude Code reads files, globs, o
 | `browzer gain [--since 7d]`           | Tabular token-savings report. `--ultra` gives a one-line summary                               |
 | `browzer config <key> [value]`        | Get/set persisted config. Keys: `tracking`, `hook`, `telemetry`, `daemon.idle_timeout_seconds` |
 | `browzer plugin`                      | Print marketplace install instructions (the plugin is installed from **inside** Claude Code)   |
+
+### Workflow state (`docs/browzer/<feat>/workflow.json`)
+
+The `browzer workflow *` surface is the canonical I/O for the skills plugin's workflow.json (schema v1). Every mutation acquires an advisory flock, validates the post-mutation shape, and writes atomically (tmp+rename + optional fsync). Skills no longer roll their own `jq | mv` blocks.
+
+| Command                                                              | Purpose                                                                                  |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `browzer workflow append-step --workflow <p>`                        | Append a new step JSON (stdin or `--payload`); recomputes counters                       |
+| `browzer workflow update-step <stepId> --workflow <p>`               | Patch fields on an existing step                                                         |
+| `browzer workflow complete-step <stepId> --workflow <p>`             | Flip status → `COMPLETED`; auto-stamps `completedAt` AND auto-computes `elapsedMin`      |
+| `browzer workflow set-status <stepId> <STATUS> --workflow <p>`       | Lifecycle transition; auto-stamps `startedAt` on the FIRST `RUNNING` (re-entry-safe)     |
+| `browzer workflow set-config <key> <value> --workflow <p>`           | Set `.config.<key>` (e.g. `mode`, `setAt`, `executionStrategy`)                          |
+| `browzer workflow get-step <stepId> [--field jq] [--render T]`       | Read a step or sub-field; `--render` emits compressed prompt-embed templates (8 templates: `execute-task`, `code-review`, `update-docs`, `brainstorming`, `generate-task`, `task-context`, `task-evidence`, `finding`) |
+| `browzer workflow get-config <key>`                                  | Print a scalar config field unquoted                                                     |
+| `browzer workflow query <name> --workflow <p>`                       | Pre-baked cross-step aggregations (10 queries: `reused-gates`, `failed-findings`, `open-deferred-actions`, `task-gates-baseline`, `changed-files`, `deferred-scope-adjustments`, `open-findings`, `next-step-id`, `cache-warm-deps`, `cache-warm-mentions`) |
+| `browzer workflow patch --jq '<expr>' --workflow <p>`                | Arbitrary jq mutation (escape hatch when no semantic verb fits)                          |
+| `browzer workflow append-review-history <stepId> --workflow <p>`     | Append review-mode operator decision                                                     |
+| `browzer workflow set-current-step <stepId> --workflow <p>`          | Set `currentStepId` and propagate `nextStepId`                                           |
+| `browzer workflow validate --workflow <p>`                           | Structural integrity check; exits non-zero on schema violations                          |
+| `browzer workflow reapply-additional-context <stepId> --workflow <p>` | Walk `task.reviewer.additionalContext.changes[]` and apply `corrected`/`added`/`dropped` to `task.scope` |
+| `browzer workflow audit-model-override <stepId> <from> <to> <reason> --workflow <p>` | Record a model-tier override under `task.execution.modelOverride`                        |
+| `browzer workflow truncation-audit <stepId> --last-checkpoint <s> --workflow <p>` | Record a suspected mid-stream truncation (subagent stopped without Step-4 atomic write)  |
+
+**Write modes**: every mutating verb honors `--sync` (in-process standalone), `--async` (daemon FIFO, default), `--await` (daemon + fsync). The env-var `BROWZER_WORKFLOW_MODE=sync|async|await` overrides config defaults — useful in CI / tests to force standalone path when a long-running daemon binary may be stale.
 
 ### Organization / RBAC
 

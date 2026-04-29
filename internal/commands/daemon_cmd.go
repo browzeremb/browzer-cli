@@ -93,6 +93,60 @@ func cptFor(manifestLang, path string) float64 {
 	return defaultCharsPerToken
 }
 
+// readConfigInt reads a non-negative integer config key from
+// `~/.browzer/config.json`. Returns 0 (caller's "use default" sentinel) when
+// the key is missing, malformed, or the file doesn't exist.
+//
+// Used by the daemon start path to thread `daemon.workflow_keepalive_seconds`
+// into Options.WorkflowKeepalive without forcing every caller to do the
+// json.Unmarshal dance.
+func readConfigInt(key string) int {
+	cur, err := loadConfig(config.ConfigPath())
+	if err != nil {
+		return 0
+	}
+	v, ok := cur[key]
+	if !ok {
+		return 0
+	}
+	switch t := v.(type) {
+	case float64:
+		if t < 0 {
+			return 0
+		}
+		return int(t)
+	case int:
+		if t < 0 {
+			return 0
+		}
+		return t
+	case string:
+		n, err := strconv.Atoi(t)
+		if err != nil || n < 0 {
+			return 0
+		}
+		return n
+	}
+	return 0
+}
+
+// readConfigString reads a string config key. Returns "" when missing/
+// malformed.
+func readConfigString(key string) string {
+	cur, err := loadConfig(config.ConfigPath())
+	if err != nil {
+		return ""
+	}
+	v, ok := cur[key]
+	if !ok {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
 // SetDaemonVersion is called from cmd/browzer/main.go at startup.
 func SetDaemonVersion(v string) { daemonVersion.Store(v) }
 
@@ -158,10 +212,15 @@ func daemonStartCmd() *cobra.Command {
 				return p.Start()
 			}
 			sockPath := config.SocketPath(os.Getuid())
+			keepalive := time.Duration(config.DefaultWorkflowKeepaliveSeconds) * time.Second
+			if v := readConfigInt(config.ConfigKeyDaemonWorkflowKeepaliveSec); v > 0 {
+				keepalive = time.Duration(v) * time.Second
+			}
 			srv := daemon.NewServer(daemon.Options{
-				SocketPath:  sockPath,
-				DBPath:      config.HistoryDBPath(),
-				IdleTimeout: time.Duration(config.DefaultDaemonIdleSeconds) * time.Second,
+				SocketPath:        sockPath,
+				DBPath:            config.HistoryDBPath(),
+				IdleTimeout:       time.Duration(config.DefaultDaemonIdleSeconds) * time.Second,
+				WorkflowKeepalive: keepalive,
 			})
 			deps, tr, err := defaultDaemonDeps(srv)
 			if err != nil {

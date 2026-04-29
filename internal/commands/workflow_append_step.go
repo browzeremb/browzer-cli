@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -29,54 +28,18 @@ func registerWorkflowAppendStep(parent *cobra.Command) {
 				noLock, _ = cmd.InheritedFlags().GetBool("no-lock")
 			}
 
-			lock, lockHeld, lockErr := acquireMutatorLock(cmd, wfPath, noLock, lockTimeout)
-			if lockErr != nil {
-				if lockErr == wf.ErrLockTimeout {
-					return errLockTimeoutExitCode
-				}
-				return lockErr
-			}
-			if lock != nil {
-				defer func() { _ = lock.Release() }()
-			}
-
-			// Read payload.
 			payloadBytes, err := readPayload(cmd, payloadFile)
 			if err != nil {
 				return fmt.Errorf("read payload: %w", err)
 			}
 
-			// Parse the payload as a step map.
-			var stepMap map[string]any
-			if err := json.Unmarshal(payloadBytes, &stepMap); err != nil {
-				return fmt.Errorf("parse step payload: %w", err)
-			}
-
-			// Load the current workflow (inside the lock window).
-			_, raw, err := loadWorkflow(wfPath)
+			mode, err := resolveWriteMode(cmd)
 			if err != nil {
 				return err
 			}
-
-			// Append the step.
-			stepsRaw := raw["steps"]
-			stepsSlice, _ := stepsRaw.([]any)
-			stepsSlice = append(stepsSlice, stepMap)
-			raw["steps"] = stepsSlice
-
-			recomputeCounters(raw)
-
-			stepID, _ := stepMap["stepId"].(string)
-
-			if err := saveWorkflow(wfPath, raw); err != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "validation or write error: %v\n", err)
-				return err
-			}
-
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-				"verb=append-step stepId=%s lockHeldMs=%d validatedOk=true\n",
-				stepID, lockHeld.Milliseconds())
-			return nil
+			return dispatchToDaemonOrFallback(cmd, wfPath, "append-step", wf.MutatorArgs{
+				Payload: payloadBytes,
+			}, mode, noLock, lockTimeout)
 		},
 	}
 

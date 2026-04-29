@@ -23,8 +23,14 @@ func Render(step Step, template string) (string, error) {
 		return renderUpdateDocs(step)
 	case "generate-task":
 		return renderGenerateTask(step)
+	case "task-context":
+		return renderTaskContext(step)
+	case "task-evidence":
+		return renderTaskEvidence(step)
+	case "finding":
+		return renderFinding(step, "")
 	default:
-		return "", fmt.Errorf("unknown template %q (known: execute-task, code-review, brainstorming, update-docs, generate-task)", template)
+		return "", fmt.Errorf("unknown template %q (known: execute-task, code-review, brainstorming, update-docs, generate-task, task-context, task-evidence, finding)", template)
 	}
 }
 
@@ -499,6 +505,324 @@ func renderExecuteTask(step Step) (string, error) {
 		trivial = "yes"
 	}
 	fmt.Fprintf(&b, "Trivial: %s\n", trivial)
+
+	return b.String(), nil
+}
+
+// ── task-context ──────────────────────────────────────────────────────────────
+//
+// Compact TASK step summary for code-review reviewers and feature-acceptance
+// Phase 2.3. Stays under ~150 tokens.
+
+type taskACEntry struct {
+	ID string `json:"id"`
+	FR string `json:"fr"`
+}
+
+type taskContextPayload struct {
+	Title              string         `json:"title"`
+	Scope              []string       `json:"scope"`
+	Invariants         []taskInvariant `json:"invariants"`
+	AcceptanceCriteria []taskACEntry  `json:"acceptanceCriteria"`
+	Explorer           taskExplorer   `json:"explorer"`
+}
+
+func renderTaskContext(step Step) (string, error) {
+	if step.Name != StepTask {
+		return "", fmt.Errorf("task-context template requires a TASK step, got %q", step.Name)
+	}
+
+	var tp taskContextPayload
+	if len(step.Task) > 0 {
+		if err := json.Unmarshal(step.Task, &tp); err != nil {
+			return "", fmt.Errorf("task-context: decode task payload: %w", err)
+		}
+	}
+
+	var b strings.Builder
+
+	// Title
+	title := tp.Title
+	if title == "" {
+		title = "(none)"
+	}
+	fmt.Fprintf(&b, "Task: %s\n", title)
+
+	// Scope
+	n := len(tp.Scope)
+	if n == 0 {
+		fmt.Fprintf(&b, "Scope (0 files): —\n")
+	} else {
+		fmt.Fprintf(&b, "Scope (%d files): %s\n", n, strings.Join(tp.Scope, "; "))
+	}
+
+	// Invariants
+	if len(tp.Invariants) == 0 {
+		fmt.Fprintf(&b, "Invariants: (none)\n")
+	} else {
+		fmt.Fprintf(&b, "Invariants:\n")
+		for _, inv := range tp.Invariants {
+			fmt.Fprintf(&b, "  - %s\n", inv.Rule)
+		}
+	}
+
+	// AC binds
+	if len(tp.AcceptanceCriteria) == 0 {
+		fmt.Fprintf(&b, "AC binds: (none)\n")
+	} else {
+		pairs := make([]string, 0, len(tp.AcceptanceCriteria))
+		for _, ac := range tp.AcceptanceCriteria {
+			if ac.FR != "" {
+				pairs = append(pairs, ac.ID+" → "+ac.FR)
+			} else {
+				pairs = append(pairs, ac.ID)
+			}
+		}
+		fmt.Fprintf(&b, "AC binds: %s\n", strings.Join(pairs, ", "))
+	}
+
+	// Skills
+	if len(tp.Explorer.SkillsFound) == 0 {
+		fmt.Fprintf(&b, "Skills: (none)\n")
+	} else {
+		skills := make([]string, 0, len(tp.Explorer.SkillsFound))
+		for _, sf := range tp.Explorer.SkillsFound {
+			skills = append(skills, sf.Skill)
+		}
+		fmt.Fprintf(&b, "Skills: %s\n", strings.Join(skills, ", "))
+	}
+
+	return b.String(), nil
+}
+
+// ── task-evidence ─────────────────────────────────────────────────────────────
+//
+// TASK step execution evidence for feature-acceptance Phase 2.3.
+
+type taskExecutionGates struct {
+	LintBaseline     string `json:"lintBaseline"`
+	LintPost         string `json:"lintPost"`
+	TypecheckBaseline string `json:"typecheckBaseline"`
+	TypecheckPost    string `json:"typecheckPost"`
+	TestsBaseline    string `json:"testsBaseline"`
+	TestsPost        string `json:"testsPost"`
+}
+
+type taskExecutionRegression struct {
+	File    string `json:"file"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+type taskExecutionScopeAdj struct {
+	Kind string `json:"kind"`
+	Note string `json:"note"`
+}
+
+type taskExecution struct {
+	FilesCreated      []string                  `json:"filesCreated"`
+	FilesModified     []string                  `json:"filesModified"`
+	FilesDeleted      []string                  `json:"filesDeleted"`
+	Gates             taskExecutionGates        `json:"gates"`
+	Regressions       []taskExecutionRegression `json:"regressions"`
+	ScopeAdjustments  []taskExecutionScopeAdj   `json:"scopeAdjustments"`
+}
+
+type taskEvidencePayload struct {
+	Execution taskExecution `json:"execution"`
+}
+
+func renderTaskEvidence(step Step) (string, error) {
+	if step.Name != StepTask {
+		return "", fmt.Errorf("task-evidence template requires a TASK step, got %q", step.Name)
+	}
+
+	var tp taskEvidencePayload
+	if len(step.Task) > 0 {
+		if err := json.Unmarshal(step.Task, &tp); err != nil {
+			return "", fmt.Errorf("task-evidence: decode task payload: %w", err)
+		}
+	}
+
+	var b strings.Builder
+	ex := tp.Execution
+
+	fmt.Fprintf(&b, "Status: %s\n", step.Status)
+
+	fmt.Fprintf(&b, "Files: created %d, modified %d, deleted %d\n",
+		len(ex.FilesCreated), len(ex.FilesModified), len(ex.FilesDeleted))
+
+	g := ex.Gates
+	lb := g.LintBaseline
+	if lb == "" {
+		lb = "n/a"
+	}
+	lp := g.LintPost
+	if lp == "" {
+		lp = "n/a"
+	}
+	tb := g.TypecheckBaseline
+	if tb == "" {
+		tb = "n/a"
+	}
+	tp2 := g.TypecheckPost
+	if tp2 == "" {
+		tp2 = "n/a"
+	}
+	tsb := g.TestsBaseline
+	if tsb == "" {
+		tsb = "n/a"
+	}
+	tsp := g.TestsPost
+	if tsp == "" {
+		tsp = "n/a"
+	}
+	fmt.Fprintf(&b, "Gates: lint %s→%s · typecheck %s→%s · tests %s→%s\n",
+		lb, lp, tb, tp2, tsb, tsp)
+
+	if len(ex.Regressions) == 0 {
+		fmt.Fprintf(&b, "Regression: none\n")
+	} else {
+		parts := make([]string, 0, len(ex.Regressions))
+		for _, r := range ex.Regressions {
+			parts = append(parts, r.File+":"+r.Type+":"+r.Message)
+		}
+		fmt.Fprintf(&b, "Regression: %s\n", strings.Join(parts, "; "))
+	}
+
+	adj := len(ex.ScopeAdjustments)
+	if adj == 0 {
+		fmt.Fprintf(&b, "Scope adjustments: 0\n")
+	} else {
+		notes := make([]string, 0, len(ex.ScopeAdjustments))
+		for _, a := range ex.ScopeAdjustments {
+			notes = append(notes, a.Kind+": "+a.Note)
+		}
+		fmt.Fprintf(&b, "Scope adjustments: %d (%s)\n", adj, strings.Join(notes, "; "))
+	}
+
+	return b.String(), nil
+}
+
+// ── finding ───────────────────────────────────────────────────────────────────
+//
+// Emit a single finding from a CODE_REVIEW step's findings[] array.
+//
+// Design decision on finding selector:
+//   - The public Render() entry-point ("finding" case) calls renderFinding with
+//     an empty findingID, which returns the first open (non-"closed") finding.
+//   - Callers that need a specific finding call RenderFinding(step, id) directly.
+//   - The get-step cobra command reads a --finding flag and passes it via
+//     RenderFinding when --render finding is requested.
+//
+// This keeps the Render() interface uniform (single-string template name) while
+// giving the cobra layer a clean API for the ID selector without bolting extra
+// state onto the template name string.
+
+// RenderFinding is like Render("finding", ...) but accepts an explicit finding
+// ID. When findingID is "", it returns the first open finding.
+func RenderFinding(step Step, findingID string) (string, error) {
+	return renderFinding(step, findingID)
+}
+
+type findingEntry struct {
+	ID            string `json:"id"`
+	Severity      string `json:"severity"`
+	Category      string `json:"category"`
+	File          string `json:"file"`
+	Line          int    `json:"line"`
+	Domain        string `json:"domain"`
+	Description   string `json:"description"`
+	SuggestedFix  string `json:"suggestedFix"`
+	AssignedSkill string `json:"assignedSkill"`
+	Status        string `json:"status"`
+}
+
+type findingPayload struct {
+	Findings []findingEntry `json:"findings"`
+}
+
+func renderFinding(step Step, findingID string) (string, error) {
+	if step.Name != StepCodeReview {
+		return "", fmt.Errorf("finding template requires a CODE_REVIEW step, got %q", step.Name)
+	}
+
+	var p findingPayload
+	if len(step.Task) > 0 {
+		if err := json.Unmarshal(step.Task, &p); err != nil {
+			return "", fmt.Errorf("finding: decode payload: %w", err)
+		}
+	}
+
+	if len(p.Findings) == 0 {
+		return "", fmt.Errorf("finding: CODE_REVIEW step %q has no findings", step.StepID)
+	}
+
+	// Select finding by ID, or first open finding.
+	var selected *findingEntry
+	for i := range p.Findings {
+		f := &p.Findings[i]
+		if findingID != "" {
+			if f.ID == findingID {
+				selected = f
+				break
+			}
+		} else {
+			// First open (not "closed") finding.
+			if f.Status != "closed" {
+				selected = f
+				break
+			}
+		}
+	}
+	// Fallback: if all are closed or exact ID not found, use first entry.
+	if selected == nil {
+		selected = &p.Findings[0]
+	}
+
+	var b strings.Builder
+
+	sev := selected.Severity
+	if sev == "" {
+		sev = "n/a"
+	}
+	cat := selected.Category
+	if cat == "" {
+		cat = "n/a"
+	}
+	fmt.Fprintf(&b, "Finding %s (severity: %s, category: %s)\n", selected.ID, sev, cat)
+
+	fileLine := selected.File
+	if fileLine == "" {
+		fileLine = "n/a"
+	} else if selected.Line > 0 {
+		fileLine = fmt.Sprintf("%s:%d", selected.File, selected.Line)
+	}
+	fmt.Fprintf(&b, "File: %s\n", fileLine)
+
+	domain := selected.Domain
+	if domain == "" {
+		domain = "n/a"
+	}
+	fmt.Fprintf(&b, "Domain: %s\n", domain)
+
+	desc := selected.Description
+	if desc == "" {
+		desc = "(none)"
+	}
+	fmt.Fprintf(&b, "Description: %s\n", desc)
+
+	fix := selected.SuggestedFix
+	if fix == "" {
+		fix = "(none)"
+	}
+	fmt.Fprintf(&b, "Suggested fix: %s\n", fix)
+
+	skill := selected.AssignedSkill
+	if skill == "" {
+		skill = "(none)"
+	}
+	fmt.Fprintf(&b, "AssignedSkill: %s\n", skill)
 
 	return b.String(), nil
 }

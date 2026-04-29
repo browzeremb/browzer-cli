@@ -654,3 +654,405 @@ func TestRender_GenerateTask_WrongStepType(t *testing.T) {
 		t.Errorf("expected error to mention actual step name %q, got: %v", StepBrainstorming, err)
 	}
 }
+
+// ── task-context fixtures ─────────────────────────────────────────────────────
+
+func taskContextStepFixture(t *testing.T) Step {
+	t.Helper()
+	payload := map[string]any{
+		"title": "Implement reapply-additional-context mutator",
+		"scope": []any{"packages/cli/internal/workflow/apply.go", "packages/cli/internal/commands/workflow_reapply_additional_context.go"},
+		"invariants": []any{
+			map[string]any{"rule": "Mutators must be idempotent", "source": "CLAUDE.md"},
+			map[string]any{"rule": "No cobra imports in workflow package", "source": "arch"},
+		},
+		"acceptanceCriteria": []any{
+			map[string]any{"id": "AC-1", "fr": "FR-3"},
+			map[string]any{"id": "AC-2", "fr": "FR-4"},
+		},
+		"explorer": map[string]any{
+			"skillsFound": []any{
+				map[string]any{"skill": "go-best-practices", "domain": "go"},
+				map[string]any{"skill": "browzer:execute-task", "domain": "platform"},
+			},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("taskContextStepFixture: marshal: %v", err)
+	}
+	completedAt := "2026-04-29T10:00:00Z"
+	return Step{
+		StepID:      "STEP_05_TASK_01",
+		Name:        StepTask,
+		Status:      StatusCompleted,
+		CompletedAt: &completedAt,
+		Task:        json.RawMessage(raw),
+	}
+}
+
+func minimalTaskContextStepFixture(t *testing.T) Step {
+	t.Helper()
+	payload := map[string]any{
+		"title": "Minimal Context Task",
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("minimalTaskContextStepFixture: marshal: %v", err)
+	}
+	return Step{
+		StepID: "STEP_05_TASK_01",
+		Name:   StepTask,
+		Task:   json.RawMessage(raw),
+	}
+}
+
+func TestRender_TaskContext_AllFieldsPresent(t *testing.T) {
+	step := taskContextStepFixture(t)
+
+	out, err := Render(step, "task-context")
+	if err != nil {
+		t.Fatalf("Render task-context: unexpected error: %v", err)
+	}
+
+	checks := []struct {
+		label string
+		want  string
+	}{
+		{"title", "Implement reapply-additional-context mutator"},
+		{"scope count", "2 files"},
+		{"scope file 1", "packages/cli/internal/workflow/apply.go"},
+		{"scope file 2", "packages/cli/internal/commands/workflow_reapply_additional_context.go"},
+		{"invariant rule", "Mutators must be idempotent"},
+		{"invariant rule 2", "No cobra imports in workflow package"},
+		{"ac bind 1", "AC-1 → FR-3"},
+		{"ac bind 2", "AC-2 → FR-4"},
+		{"skills 1", "go-best-practices"},
+		{"skills 2", "browzer:execute-task"},
+		{"task label", "Task:"},
+		{"scope label", "Scope"},
+		{"invariants label", "Invariants:"},
+		{"ac label", "AC binds:"},
+		{"skills label", "Skills:"},
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(out, c.want) {
+			t.Errorf("[%s] expected output to contain %q\nfull output:\n%s", c.label, c.want, out)
+		}
+	}
+}
+
+func TestRender_TaskContext_MissingOptionalFields(t *testing.T) {
+	step := minimalTaskContextStepFixture(t)
+
+	out, err := Render(step, "task-context")
+	if err != nil {
+		t.Fatalf("Render task-context: unexpected error for minimal step: %v", err)
+	}
+
+	if !strings.Contains(out, "Minimal Context Task") {
+		t.Errorf("expected output to contain title\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "(none)") {
+		t.Errorf("expected (none) for missing optional fields\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "0 files") || !strings.Contains(out, "—") {
+		t.Errorf("expected '0 files' and '—' for empty scope\nfull output:\n%s", out)
+	}
+}
+
+func TestRender_TaskContext_WrongStepType(t *testing.T) {
+	step := brainstormingStepFixture(t)
+
+	_, err := Render(step, "task-context")
+	if err == nil {
+		t.Fatal("expected error for wrong step type, got nil")
+	}
+	if !strings.Contains(err.Error(), "task-context") {
+		t.Errorf("expected error to mention template name, got: %v", err)
+	}
+}
+
+// ── task-evidence fixtures ────────────────────────────────────────────────────
+
+func taskEvidenceStepFixture(t *testing.T) Step {
+	t.Helper()
+	payload := map[string]any{
+		"execution": map[string]any{
+			"filesCreated":  []any{"apps/api/src/new-file.ts"},
+			"filesModified": []any{"apps/api/src/routes/ask.ts", "packages/core/src/search/chain.ts"},
+			"filesDeleted":  []any{},
+			"gates": map[string]any{
+				"lintBaseline":      "0 errors",
+				"lintPost":          "0 errors",
+				"typecheckBaseline": "0 errors",
+				"typecheckPost":     "0 errors",
+				"testsBaseline":     "42 pass",
+				"testsPost":         "45 pass",
+			},
+			"regressions": []any{
+				map[string]any{
+					"file":    "apps/api/src/__tests__/ask.test.ts",
+					"type":    "typecheck",
+					"message": "Property 'x' does not exist on type 'Y'",
+				},
+			},
+			"scopeAdjustments": []any{
+				map[string]any{"kind": "added", "note": "added chain.ts for search refactor"},
+			},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("taskEvidenceStepFixture: marshal: %v", err)
+	}
+	completedAt := "2026-04-29T12:00:00Z"
+	return Step{
+		StepID:      "STEP_05_TASK_01",
+		Name:        StepTask,
+		Status:      StatusCompleted,
+		CompletedAt: &completedAt,
+		Task:        json.RawMessage(raw),
+	}
+}
+
+func minimalTaskEvidenceStepFixture(t *testing.T) Step {
+	t.Helper()
+	payload := map[string]any{
+		"execution": map[string]any{},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("minimalTaskEvidenceStepFixture: marshal: %v", err)
+	}
+	return Step{
+		StepID: "STEP_05_TASK_01",
+		Name:   StepTask,
+		Status: StatusRunning,
+		Task:   json.RawMessage(raw),
+	}
+}
+
+func TestRender_TaskEvidence_AllFieldsPresent(t *testing.T) {
+	step := taskEvidenceStepFixture(t)
+
+	out, err := Render(step, "task-evidence")
+	if err != nil {
+		t.Fatalf("Render task-evidence: unexpected error: %v", err)
+	}
+
+	checks := []struct {
+		label string
+		want  string
+	}{
+		{"status", "Status: COMPLETED"},
+		{"files created", "created 1"},
+		{"files modified", "modified 2"},
+		{"files deleted", "deleted 0"},
+		{"lint gates", "lint 0 errors→0 errors"},
+		{"typecheck gates", "typecheck 0 errors→0 errors"},
+		{"tests gates", "tests 42 pass→45 pass"},
+		{"regression file", "apps/api/src/__tests__/ask.test.ts"},
+		{"regression type", "typecheck"},
+		{"scope adjustments", "Scope adjustments: 1"},
+		{"scope adj note", "added chain.ts for search refactor"},
+		{"files label", "Files:"},
+		{"gates label", "Gates:"},
+		{"regression label", "Regression:"},
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(out, c.want) {
+			t.Errorf("[%s] expected output to contain %q\nfull output:\n%s", c.label, c.want, out)
+		}
+	}
+}
+
+func TestRender_TaskEvidence_MissingOptionalFields(t *testing.T) {
+	step := minimalTaskEvidenceStepFixture(t)
+
+	out, err := Render(step, "task-evidence")
+	if err != nil {
+		t.Fatalf("Render task-evidence: unexpected error for minimal step: %v", err)
+	}
+
+	if !strings.Contains(out, "Status: RUNNING") {
+		t.Errorf("expected status RUNNING\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "created 0") {
+		t.Errorf("expected 0 created files\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "n/a") {
+		t.Errorf("expected n/a for missing gate fields\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "none") {
+		t.Errorf("expected 'none' for missing regressions\nfull output:\n%s", out)
+	}
+}
+
+func TestRender_TaskEvidence_WrongStepType(t *testing.T) {
+	step := brainstormingStepFixture(t)
+
+	_, err := Render(step, "task-evidence")
+	if err == nil {
+		t.Fatal("expected error for wrong step type, got nil")
+	}
+	if !strings.Contains(err.Error(), "task-evidence") {
+		t.Errorf("expected error to mention template name, got: %v", err)
+	}
+}
+
+// ── finding fixtures ──────────────────────────────────────────────────────────
+
+func codeReviewFindingsStepFixture(t *testing.T) Step {
+	t.Helper()
+	payload := map[string]any{
+		"mode": "parallel",
+		"tier": "recommended",
+		"scope": map[string]any{"files": 5, "lines": 200, "tier": "small"},
+		"agentTeam": map[string]any{
+			"roundTrips": 2,
+			"teammates":  []any{},
+		},
+		"findings": []any{
+			map[string]any{
+				"id":            "F-SE-1",
+				"severity":      "high",
+				"category":      "security",
+				"file":          "apps/api/src/routes/ask.ts",
+				"line":          42,
+				"domain":        "api",
+				"description":   "Missing input validation on workspaceId",
+				"suggestedFix":  "Add Zod schema validation before route handler",
+				"assignedSkill": "browzer:receiving-code-review",
+				"status":        "open",
+			},
+			map[string]any{
+				"id":            "F-QA-1",
+				"severity":      "medium",
+				"category":      "testing",
+				"file":          "packages/core/src/search/chain.ts",
+				"line":          17,
+				"domain":        "core",
+				"description":   "Missing unit test for error branch",
+				"suggestedFix":  "Add test for null chain result",
+				"assignedSkill": "browzer:write-tests",
+				"status":        "open",
+			},
+		},
+		"severityCounts": map[string]any{"high": 1, "medium": 1, "low": 0},
+		"themes":         []any{},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("codeReviewFindingsStepFixture: marshal: %v", err)
+	}
+	completedAt := "2026-04-29T08:00:00Z"
+	return Step{
+		StepID:      "STEP_06_CODE_REVIEW",
+		Name:        StepCodeReview,
+		Status:      StatusCompleted,
+		CompletedAt: &completedAt,
+		Task:        json.RawMessage(raw),
+	}
+}
+
+func TestRender_Finding_FirstOpenFinding(t *testing.T) {
+	step := codeReviewFindingsStepFixture(t)
+
+	// No finding ID → first open finding.
+	out, err := Render(step, "finding")
+	if err != nil {
+		t.Fatalf("Render finding: unexpected error: %v", err)
+	}
+
+	checks := []struct {
+		label string
+		want  string
+	}{
+		{"finding id", "Finding F-SE-1"},
+		{"severity", "severity: high"},
+		{"category", "category: security"},
+		{"file with line", "apps/api/src/routes/ask.ts:42"},
+		{"domain", "Domain: api"},
+		{"description", "Missing input validation on workspaceId"},
+		{"suggested fix", "Add Zod schema validation before route handler"},
+		{"assigned skill", "browzer:receiving-code-review"},
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(out, c.want) {
+			t.Errorf("[%s] expected output to contain %q\nfull output:\n%s", c.label, c.want, out)
+		}
+	}
+}
+
+func TestRender_Finding_BySpecificID(t *testing.T) {
+	step := codeReviewFindingsStepFixture(t)
+
+	// Select second finding by ID.
+	out, err := RenderFinding(step, "F-QA-1")
+	if err != nil {
+		t.Fatalf("RenderFinding: unexpected error: %v", err)
+	}
+
+	if !strings.Contains(out, "Finding F-QA-1") {
+		t.Errorf("expected F-QA-1 finding, got:\n%s", out)
+	}
+	if !strings.Contains(out, "severity: medium") {
+		t.Errorf("expected medium severity\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "browzer:write-tests") {
+		t.Errorf("expected browzer:write-tests skill\nfull output:\n%s", out)
+	}
+}
+
+func TestRender_Finding_EmptyFindingsReturnsError(t *testing.T) {
+	payload := map[string]any{
+		"findings": []any{},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := Step{
+		StepID: "STEP_06_CODE_REVIEW",
+		Name:   StepCodeReview,
+		Task:   json.RawMessage(raw),
+	}
+
+	_, err = Render(step, "finding")
+	if err == nil {
+		t.Fatal("expected error for empty findings, got nil")
+	}
+	if !strings.Contains(err.Error(), "no findings") {
+		t.Errorf("expected error to mention 'no findings', got: %v", err)
+	}
+}
+
+func TestRender_Finding_WrongStepType(t *testing.T) {
+	step := taskStepFixture(t)
+
+	_, err := Render(step, "finding")
+	if err == nil {
+		t.Fatal("expected error for wrong step type, got nil")
+	}
+	if !strings.Contains(err.Error(), "finding") {
+		t.Errorf("expected error to mention template name, got: %v", err)
+	}
+}
+
+func TestRender_UnknownTemplate_IncludesNewTemplates(t *testing.T) {
+	step := taskStepFixture(t)
+
+	_, err := Render(step, "totally-unknown")
+	if err == nil {
+		t.Fatal("expected error for unknown template, got nil")
+	}
+	for _, known := range []string{"task-context", "task-evidence", "finding"} {
+		if !strings.Contains(err.Error(), known) {
+			t.Errorf("expected error to mention new template %q in known list, got: %v", known, err)
+		}
+	}
+}

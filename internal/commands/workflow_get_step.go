@@ -15,6 +15,7 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 	var jsonMode bool
 	var renderTemplate string
 	var bashVars bool
+	var findingID string
 
 	cmd := &cobra.Command{
 		Use:          "get-step <stepId>",
@@ -115,7 +116,18 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 						}
 					}
 				}
-				out, err := wf.Render(*step, renderTemplate)
+				var (
+					out string
+					err error
+				)
+				// The "finding" template accepts an optional --finding <id> flag
+				// to select a specific finding by ID. All other templates ignore
+				// the flag.
+				if renderTemplate == "finding" {
+					out, err = wf.RenderFinding(*step, findingID)
+				} else {
+					out, err = wf.Render(*step, renderTemplate)
+				}
 				if err != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "render: %v\n", err)
 					return err
@@ -145,8 +157,9 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 
 	cmd.Flags().StringVar(&field, "field", "", "dot-path expression to extract a specific field from the step")
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "output scalars as JSON literals (quoted strings, numbers as JSON)")
-	cmd.Flags().StringVar(&renderTemplate, "render", "", "render the step using a named template (e.g. execute-task)")
+	cmd.Flags().StringVar(&renderTemplate, "render", "", "render the step using a named template (e.g. execute-task, finding)")
 	cmd.Flags().BoolVar(&bashVars, "bash-vars", false, "output shell-export-compatible KEY=value lines suitable for eval")
+	cmd.Flags().StringVar(&findingID, "finding", "", "finding ID to render (used with --render finding; defaults to first open finding)")
 	parent.AddCommand(cmd)
 }
 

@@ -17,7 +17,7 @@ func TestValidateCmd_CleanFixtureExits0PrintsValid(t *testing.T) {
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "validate", "--workflow", wfPath})
 
 	if err := root.Execute(); err != nil {
@@ -79,7 +79,7 @@ func TestValidateCmd_TamperedFixtureExitsNonZeroWithViolations(t *testing.T) {
 	wfPath := writeWorkflowFile(t, tampered)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "validate", "--workflow", wfPath})
 
 	err := root.Execute()
@@ -120,7 +120,7 @@ func TestValidateCmd_DoesNotMutateFile(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "validate", "--workflow", wfPath})
 	_ = root.Execute()
 
@@ -184,7 +184,7 @@ func TestValidateCmd_WithStepsValidatesEachStep(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "validate", "--workflow", wfPath})
 
 	if err := root.Execute(); err != nil {

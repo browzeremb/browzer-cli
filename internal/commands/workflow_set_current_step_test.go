@@ -81,7 +81,7 @@ func TestSetCurrentStep_UpdatesCurrentStepIdAndPropagatesNextStep(t *testing.T) 
 	wfPath := writeWorkflowFile(t, twoStepWithNextWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "set-current-step", "STEP_01_BRAINSTORMING",
 		"--workflow", wfPath,
@@ -116,7 +116,7 @@ func TestSetCurrentStep_EmptyNextStepClearsNextStepId(t *testing.T) {
 	wfPath := writeWorkflowFile(t, twoStepWithNextWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	// STEP_02_PRD has nextStep="" so nextStepId should be cleared.
 	root.SetArgs([]string{
 		"workflow", "set-current-step", "STEP_02_PRD",
@@ -151,7 +151,7 @@ func TestSetCurrentStep_NonExistentStepExitsNonZero(t *testing.T) {
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "set-current-step", "STEP_99_NONEXISTENT",
 		"--workflow", wfPath,

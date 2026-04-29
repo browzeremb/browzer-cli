@@ -120,3 +120,101 @@ func (m *WorkspaceManifest) All() []ManifestEntry {
 	}
 	return out
 }
+
+// ── Per-feature cache metadata ────────────────────────────────────────────────
+
+// FeatureCacheEntry tracks the pre-warm state for a single feature's
+// .browzer-cache/ directory. It is keyed by featureId in WorkspaceManifest.FeatureCache.
+//
+// Cache invalidation: compare WarmedAtSHA against the current `git rev-parse HEAD`.
+// When they differ the cache is stale and the orchestrator should re-run Step 2.5.
+//
+// Cache layout (runtime dirs are created by the orchestrator; documented here):
+//
+//	$CacheDir/
+//	  deps/<file-slug>.json       # output of `browzer deps <path> --save`
+//	  rdeps/<file-slug>.json      # output of `browzer deps <path> --reverse --save`
+//	  mentions/<file-slug>.json   # output of `browzer mentions <path> --save`
+//
+// <file-slug> = path with / replaced by _ (mirrors fileSlug in internal/workflow/query.go).
+type FeatureCacheEntry struct {
+	FeatureID     string    `json:"featureId"`
+	WarmedAt      time.Time `json:"warmedAt"`
+	WarmedAtSHA   string    `json:"warmedAtSHA"`   // git rev-parse HEAD when warming started
+	CacheDir      string    `json:"cacheDir"`       // absolute path to .browzer-cache/ for the feature
+	DepsFiles     []string  `json:"depsFiles"`     // source files with deps cached
+	MentionsFiles []string  `json:"mentionsFiles"` // source files with mentions cached
+}
+
+// featureManifestFilePath returns the path to the shared feature-cache manifest:
+// <cachePath>/feature-cache.json
+func featureManifestFilePath(cachePath string) string {
+	return filepath.Join(cachePath, "feature-cache.json")
+}
+
+// LoadFeatureCache reads the feature-cache manifest from cachePath.
+// Returns an empty (non-nil) map when the file is missing or malformed.
+func LoadFeatureCache(cachePath string) (map[string]FeatureCacheEntry, error) {
+	out := make(map[string]FeatureCacheEntry)
+
+	data, err := os.ReadFile(featureManifestFilePath(cachePath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return out, fmt.Errorf("read feature-cache manifest: %w", err)
+	}
+
+	var raw []FeatureCacheEntry
+	if jsonErr := json.Unmarshal(data, &raw); jsonErr != nil {
+		// Corrupt file — return empty map so the next sync rebuilds it.
+		return out, nil
+	}
+	for _, e := range raw {
+		out[e.FeatureID] = e
+	}
+	return out, nil
+}
+
+// SaveFeatureCache writes the feature-cache manifest atomically to
+// cachePath/feature-cache.json.
+func SaveFeatureCache(cachePath string, cache map[string]FeatureCacheEntry) error {
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		return fmt.Errorf("create feature-cache dir: %w", err)
+	}
+
+	raw := make([]FeatureCacheEntry, 0, len(cache))
+	for _, e := range cache {
+		raw = append(raw, e)
+	}
+
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal feature-cache: %w", err)
+	}
+	data = append(data, '\n')
+
+	final := featureManifestFilePath(cachePath)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write feature-cache tmp: %w", err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		return fmt.Errorf("rename feature-cache: %w", err)
+	}
+	return nil
+}
+
+// IsCacheStale returns true when the feature's cached SHA differs from
+// currentSHA or when no cache entry exists for featureID.
+//
+// Per Risk Checkpoint #7 from the Phase 5 plan: the orchestrator MUST call
+// IsCacheStale before consuming any cached file. A stale cache (HEAD moved
+// mid-feature) means blast-radius data may no longer reflect the live tree.
+func IsCacheStale(cache map[string]FeatureCacheEntry, featureID, currentSHA string) bool {
+	entry, ok := cache[featureID]
+	if !ok {
+		return true
+	}
+	return entry.WarmedAtSHA != currentSHA
+}

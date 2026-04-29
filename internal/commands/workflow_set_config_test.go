@@ -15,7 +15,7 @@ func TestSetConfig_ModeRoundTrip(t *testing.T) {
 
 	// First: set mode to "review".
 	var setStdout, setStderr bytes.Buffer
-	setRoot := buildWorkflowCommand(&setStdout, &setStderr)
+	setRoot := buildWorkflowCommandT(t, &setStdout, &setStderr)
 	setRoot.SetArgs([]string{
 		"workflow", "set-config", "mode", "review",
 		"--workflow", wfPath,
@@ -26,7 +26,7 @@ func TestSetConfig_ModeRoundTrip(t *testing.T) {
 
 	// Second: get-config mode should now return "review".
 	var getStdout, getStderr bytes.Buffer
-	getRoot := buildWorkflowCommand(&getStdout, &getStderr)
+	getRoot := buildWorkflowCommandT(t, &getStdout, &getStderr)
 	getRoot.SetArgs([]string{
 		"workflow", "get-config", "mode",
 		"--workflow", wfPath,
@@ -48,7 +48,7 @@ func TestSetConfig_SetsSetAt(t *testing.T) {
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "set-config", "mode", "review",
 		"--workflow", wfPath,
@@ -59,7 +59,7 @@ func TestSetConfig_SetsSetAt(t *testing.T) {
 
 	// Read setAt via get-config.
 	var getStdout, getStderr bytes.Buffer
-	getRoot := buildWorkflowCommand(&getStdout, &getStderr)
+	getRoot := buildWorkflowCommandT(t, &getStdout, &getStderr)
 	getRoot.SetArgs([]string{
 		"workflow", "get-config", "setAt",
 		"--workflow", wfPath,
@@ -81,7 +81,7 @@ func TestSetConfig_IllegalValueExitsNonZero(t *testing.T) {
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "set-config", "mode", "ILLEGAL_MODE_VALUE",
 		"--workflow", wfPath,

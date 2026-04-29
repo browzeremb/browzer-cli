@@ -1,8 +1,13 @@
 package commands
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/config"
@@ -98,18 +103,45 @@ Examples:
 			}
 			client := ac.Client
 
+			// Idempotency guard. 2026-04-29 incident: 3 sequential
+			// `browzer init` calls on the same repo (each starting
+			// with .browzer/config.json missing) produced 3 separate
+			// workspace nodes pointing at the same gitRoot, then the
+			// duplicates burned plan slots and the user could not
+			// delete them because of a separate Neo4j bug. Match
+			// precedence (`reuseExistingWorkspace`):
+			//
+			//   1. rootPath == gitRoot          (re-init on same machine)
+			//   2. name == git-remote owner/repo (same project, new path)
+			//   3. name == package.json#name     (last-resort identity)
+			//
+			// Cross-user dedup of "same logical project" is out of
+			// scope — server-side workspaces remain per-caller and
+			// this guard only prevents a single caller from
+			// duplicating their own work.
+			var ws *api.WorkspaceDto
+			if existing, lookupErr := reuseExistingWorkspace(ctx, client, gitRoot, name); lookupErr != nil {
+				ui.Warn(fmt.Sprintf("Could not list existing workspaces (%v); proceeding to create.", lookupErr))
+			} else if existing != nil {
+				ws = existing
+				ui.Success(fmt.Sprintf("Reusing existing workspace %q (%s)", existing.Name, existing.ID))
+			}
+
 			// Create the workspace. If the caller is at their plan
 			// limit, the server returns 409 "workspace limit reached"
 			// which bubbles up as a CliError here. We do NOT try to
 			// auto-list existing workspaces on failure — that's the
 			// user's call via `browzer workspace list` + `delete`.
-			sp := ui.StartSpinner("Creating workspace...")
-			ws, err := client.CreateWorkspace(ctx, api.CreateWorkspaceRequest{Name: name, RootPath: gitRoot})
-			if err != nil {
-				sp.Failure("Create workspace failed")
-				return cliErrors.Newf("Failed to create workspace (%s).", err.Error())
+			if ws == nil {
+				sp := ui.StartSpinner("Creating workspace...")
+				created, err := client.CreateWorkspace(ctx, api.CreateWorkspaceRequest{Name: name, RootPath: gitRoot})
+				if err != nil {
+					sp.Failure("Create workspace failed")
+					return cliErrors.Newf("Failed to create workspace (%s).", err.Error())
+				}
+				sp.Success(fmt.Sprintf("Workspace created: %s", created.ID))
+				ws = created
 			}
-			sp.Success(fmt.Sprintf("Workspace created: %s", ws.ID))
 
 			// Persist the config + add the cache dir to .gitignore
 			// (still needed because `workspace docs` will populate the
@@ -194,6 +226,111 @@ func runInitDryRun(gitRoot, nameFlag string, jsonFlag bool, saveFlag string) err
 		name, gitRoot,
 	)
 	return emitOrFail(payload, output.Options{JSON: jsonFlag, Save: saveFlag}, human)
+}
+
+// reuseExistingWorkspace returns a server-side workspace that should be
+// adopted instead of creating a new one. Match precedence:
+//
+//  1. rootPath equals the local gitRoot (re-init on the same machine).
+//  2. name equals the git remote's owner/repo segment (same project,
+//     different local path on the same caller).
+//  3. name equals the project's package.json `name` field (last-resort
+//     identity for projects without a git remote, e.g. monorepo-internal
+//     packages or repos hosted on hosts the regex below doesn't cover).
+//
+// All best-effort: any helper that fails returns the empty string and
+// the loop falls through. Returns (nil, nil) when no candidate matches.
+func reuseExistingWorkspace(ctx context.Context, client *api.Client, gitRoot, candidateName string) (*api.WorkspaceDto, error) {
+	list, err := client.ListWorkspaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// (1) Exact rootPath match — covers the reported bug (3x init on
+	// the same machine).
+	for i := range list {
+		if list[i].RootPath == gitRoot {
+			return &list[i], nil
+		}
+	}
+	// (2) Git remote's owner/repo (e.g. "browzeremb/rag"). Stable across
+	// machines for the same project; empty when the repo has no remote.
+	if remoteName := gitRemoteOwnerRepo(gitRoot); remoteName != "" {
+		for i := range list {
+			if list[i].Name == remoteName {
+				return &list[i], nil
+			}
+		}
+	}
+	// (3) package.json#name as final source of truth for non-git or
+	// no-remote projects. Empty when the file is missing or unparseable.
+	if pkgName := readPackageJSONName(gitRoot); pkgName != "" {
+		for i := range list {
+			if list[i].Name == pkgName {
+				return &list[i], nil
+			}
+		}
+	}
+	_ = candidateName // currently informational; reserved for richer match heuristics.
+	return nil, nil
+}
+
+// gitRemoteOwnerRepo returns the "owner/repo" segment derived from the
+// repo's `origin` remote, or an empty string when the remote is missing
+// or the URL doesn't match a recognizable host pattern. Supports both
+// SSH (`git@github.com:owner/repo.git`) and HTTPS
+// (`https://github.com/owner/repo.git`) forms; the trailing `.git` is
+// stripped. Best-effort — exec failure or parse failure returns "".
+func gitRemoteOwnerRepo(gitRoot string) string {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = gitRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	url := strings.TrimSpace(string(out))
+	if url == "" {
+		return ""
+	}
+	// SSH form: git@host:owner/repo(.git)
+	if idx := strings.Index(url, ":"); strings.HasPrefix(url, "git@") && idx >= 0 {
+		url = url[idx+1:]
+	} else {
+		// HTTPS / git:// — strip scheme then host.
+		for _, prefix := range []string{"https://", "http://", "git://", "ssh://"} {
+			if strings.HasPrefix(url, prefix) {
+				url = url[len(prefix):]
+				break
+			}
+		}
+		if slash := strings.Index(url, "/"); slash >= 0 {
+			url = url[slash+1:]
+		}
+	}
+	url = strings.TrimSuffix(url, ".git")
+	url = strings.TrimSuffix(url, "/")
+	// Validate shape: exactly one separator and both sides non-empty.
+	parts := strings.Split(url, "/")
+	if len(parts) < 2 || parts[len(parts)-1] == "" || parts[len(parts)-2] == "" {
+		return ""
+	}
+	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+}
+
+// readPackageJSONName returns the `name` field from <gitRoot>/package.json
+// or the empty string when the file is missing, unreadable, malformed,
+// or the field is absent/non-string. Best-effort — never errors.
+func readPackageJSONName(gitRoot string) string {
+	data, err := os.ReadFile(filepath.Join(gitRoot, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(pkg.Name)
 }
 
 // resolveWorkspaceName picks the workspace name from --name → TTY prompt

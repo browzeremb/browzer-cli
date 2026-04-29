@@ -26,6 +26,11 @@ type Options struct {
 	IdleTimeout time.Duration
 	// DBPath is reported by the Health method. Optional in tests.
 	DBPath string
+	// WorkflowKeepalive is how long a per-path workflow drainer stays
+	// alive after the queue goes empty. Zero falls back to
+	// defaultQueueIdleTimeout (30 min). Sourced from the
+	// `daemon.workflow_keepalive_seconds` config key by daemon_cmd.
+	WorkflowKeepalive time.Duration
 }
 
 // Server is the Browzer daemon JSON-RPC server.
@@ -46,6 +51,15 @@ type Server struct {
 	tokensEconomized atomic.Int64
 	stopOnce         sync.Once
 	stopped          chan struct{}
+	// workflowDispatcher owns the per-path FIFO + drainer goroutines that
+	// serialise workflow.json mutations. nil-safe: when nil (e.g. tests
+	// that construct a bare Server), WorkflowMutate returns
+	// "workflow_dispatcher_disabled". Allocated by NewServer.
+	workflowDispatcher *workflowDispatcher
+	// capabilities is the static list of feature strings the daemon
+	// advertises via Health. Frozen at startup. Order matters for stable
+	// diffs in tests/snapshots.
+	capabilities []string
 }
 
 // Handler is the signature for a JSON-RPC method handler. It receives the
@@ -60,10 +74,29 @@ func NewServer(opts Options) *Server {
 		stopped: make(chan struct{}),
 	}
 	s.handlers = map[string]Handler{
-		"Health":            s.handleHealth,
-		"Shutdown":          s.handleShutdown,
-		"TokensEconomized":  s.handleTokensEconomized,
+		"Health":           s.handleHealth,
+		"Shutdown":         s.handleShutdown,
+		"TokensEconomized": s.handleTokensEconomized,
 		// Read, Track, SessionRegister wired by methods.go (Task 3).
+	}
+	s.workflowDispatcher = newWorkflowDispatcher(opts.WorkflowKeepalive)
+	// Baseline capabilities reflecting the methods this binary always
+	// supports. WorkflowMutate is added when the dispatcher exists (always
+	// today; left guarded so a future codepath that disables it stays
+	// honest).
+	s.capabilities = []string{
+		"read.v1",
+		"track.v1",
+		"session-register.v1",
+	}
+	if s.workflowDispatcher != nil {
+		s.capabilities = append(s.capabilities, "workflow.v1", "workflow.fsync.v1")
+		// Register WorkflowMutate eagerly. Unlike Read/Track/SessionRegister
+		// (wired by methods.Wire with external Deps), WorkflowMutate has no
+		// external dependencies — the dispatcher + workflow package are the
+		// whole story. This lets tests that don't call Wire still exercise
+		// the verb.
+		s.handlers["WorkflowMutate"] = s.handleWorkflowMutate
 	}
 	return s
 }
@@ -234,11 +267,43 @@ func (s *Server) writeErr(w io.Writer, id json.RawMessage, code int, msg string)
 }
 
 func (s *Server) handleHealth(_ context.Context, _ json.RawMessage) (any, error) {
+	// Use a flat map (not the typed HealthResponse struct) so that
+	// hand-tested daemon clients keep working — the historic shape is
+	// preserved verbatim and we only ADD `capabilities` to it. Older
+	// clients ignore unknown fields; newer clients (HasCapability) read
+	// the new field.
 	return map[string]any{
-		"uptimeSec": int(time.Since(s.startedAt).Seconds()),
-		"queueLen":  s.queueLen.Load(),
-		"dbPath":    s.opts.DBPath,
+		"uptimeSec":    int(time.Since(s.startedAt).Seconds()),
+		"queueLen":     s.queueLen.Load(),
+		"dbPath":       s.opts.DBPath,
+		"capabilities": s.capabilities,
 	}, nil
+}
+
+// RegisterHandler is the post-Wire override hook used by tests. Re-export
+// the capability list adjustment when a handler is added at runtime: tests
+// that inject a stub WorkflowMutate handler still want the matching
+// capability advertised. We DO NOT auto-add — registry semantics are
+// "register OR override", not "register AND advertise". Capabilities are
+// authored by NewServer; tests wanting custom advertise-sets call
+// SetCapabilities.
+
+// SetCapabilities replaces the advertised capability list. Tests that
+// stand up a degraded daemon (e.g. "no workflow.v1 to verify fallback")
+// call SetCapabilities([]string{...}) before Serve.
+func (s *Server) SetCapabilities(c []string) {
+	cp := make([]string, len(c))
+	copy(cp, c)
+	s.capabilities = cp
+}
+
+// Capabilities returns a copy of the advertised capability list. Mostly
+// useful for tests; production callers read the list via Health over the
+// socket.
+func (s *Server) Capabilities() []string {
+	cp := make([]string, len(s.capabilities))
+	copy(cp, s.capabilities)
+	return cp
 }
 
 func (s *Server) handleShutdown(_ context.Context, _ json.RawMessage) (any, error) {

@@ -61,7 +61,7 @@ func TestCompleteStep_RunningTransitionsToCompletedWithCompletedAt(t *testing.T)
 	wfPath := writeWorkflowFile(t, inProgressWorkflowJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "complete-step", "STEP_01_BRAINSTORMING",
 		"--workflow", wfPath,
@@ -90,6 +90,89 @@ func TestCompleteStep_RunningTransitionsToCompletedWithCompletedAt(t *testing.T)
 	if step.CompletedAt == nil || *step.CompletedAt == "" {
 		t.Error("expected completedAt to be set after complete-step")
 	}
+	// Phase 1 spine item #5: complete-step on a step with startedAt
+	// pre-populated MUST also auto-compute elapsedMin so retro-analysis
+	// gets non-zero wall-clock without skills having to compute it.
+	if step.ElapsedMin <= 0 {
+		t.Errorf("expected elapsedMin > 0 (startedAt %s, completedAt %s), got %v",
+			step.StartedAt, *step.CompletedAt, step.ElapsedMin)
+	}
+}
+
+// TestCompleteStep_NoStartedAtLeavesElapsedMinZero verifies the graceful
+// fallback when complete-step runs against a step that never went through
+// RUNNING (legacy workflows or skipped steps that jumped to COMPLETED).
+// Don't lie — if startedAt is missing, leave elapsedMin alone rather than
+// stamp a bogus delta.
+// Covers Phase 1 spine item #5 fallback path.
+func TestCompleteStep_NoStartedAtLeavesElapsedMinZero(t *testing.T) {
+	noStartedWorkflow := `{
+  "schemaVersion": 1,
+  "featureId": "feat-no-started",
+  "featureName": "No StartedAt Test",
+  "featDir": "docs/browzer/feat-no-started",
+  "originalRequest": "test",
+  "operator": {"locale": "pt-BR"},
+  "config": {"mode": "autonomous", "setAt": "2026-04-29T00:00:00Z"},
+  "startedAt": "2026-04-29T00:00:00Z",
+  "updatedAt": "2026-04-29T00:00:00Z",
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_BRAINSTORMING",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 0,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_BRAINSTORMING",
+      "name": "BRAINSTORMING",
+      "status": "RUNNING",
+      "applicability": {"applicable": true, "reason": "default"},
+      "startedAt": "",
+      "completedAt": null,
+      "elapsedMin": 0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": [],
+      "skillsInvoked": [],
+      "owner": null,
+      "worktrees": {"used": false, "worktrees": []},
+      "warnings": [],
+      "reviewHistory": [],
+      "task": {}
+    }
+  ]
+}`
+	wfPath := writeWorkflowFile(t, noStartedWorkflow)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "complete-step", "STEP_01_BRAINSTORMING",
+		"--workflow", wfPath,
+	})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("complete-step should still succeed with empty startedAt, got: %v\nstderr: %s", err, stderr.String())
+	}
+
+	data, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc wf.Workflow
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Steps[0].Status != wf.StatusCompleted {
+		t.Errorf("expected status COMPLETED, got %q", doc.Steps[0].Status)
+	}
+	if doc.Steps[0].ElapsedMin != 0 {
+		t.Errorf("expected elapsedMin to remain 0 when startedAt is empty, got %v",
+			doc.Steps[0].ElapsedMin)
+	}
 }
 
 // TestCompleteStep_IdempotentOnAlreadyCompletedExits0WithWarning verifies that
@@ -111,7 +194,7 @@ func TestCompleteStep_IdempotentOnAlreadyCompletedExits0WithWarning(t *testing.T
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "complete-step", "STEP_01_BRAINSTORMING",
 		"--workflow", wfPath,

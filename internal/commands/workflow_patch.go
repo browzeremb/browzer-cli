@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -22,64 +21,21 @@ func registerWorkflowPatch(parent *cobra.Command) {
 			if jqExpr == "" {
 				return fmt.Errorf("--jq is required; provide a jq mutation expression")
 			}
-
 			wfPath, err := getWorkflowPath(cmd)
 			if err != nil {
 				return err
 			}
-
 			noLock, _ := cmd.Flags().GetBool("no-lock")
 			if !noLock {
 				noLock, _ = cmd.InheritedFlags().GetBool("no-lock")
 			}
-
-			lock, lockHeld, lockErr := acquireMutatorLock(cmd, wfPath, noLock, lockTimeout)
-			if lockErr != nil {
-				if lockErr == wf.ErrLockTimeout {
-					return errLockTimeoutExitCode
-				}
-				return lockErr
-			}
-			if lock != nil {
-				defer func() { _ = lock.Release() }()
-			}
-
-			_, raw, err := loadWorkflow(wfPath)
+			mode, err := resolveWriteMode(cmd)
 			if err != nil {
 				return err
 			}
-
-			// Apply the jq expression.
-			result, err := wf.ApplyJQ(raw, jqExpr)
-			if err != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "jq error: %v\n", err)
-				return err
-			}
-
-			// The result must be a map[string]any for a valid workflow document.
-			resultMap, ok := result.(map[string]any)
-			if !ok {
-				// gojq may return map[interface{}]interface{} — round-trip through JSON.
-				b, marshalErr := json.Marshal(result)
-				if marshalErr != nil {
-					return fmt.Errorf("jq result is not a JSON object: %T", result)
-				}
-				if err := json.Unmarshal(b, &resultMap); err != nil {
-					return fmt.Errorf("jq result is not a JSON object: %T", result)
-				}
-			}
-
-			resultMap["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
-
-			if err := saveWorkflow(wfPath, resultMap); err != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "validation error: %v\n", err)
-				return err
-			}
-
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-				"verb=patch lockHeldMs=%d validatedOk=true\n",
-				lockHeld.Milliseconds())
-			return nil
+			return dispatchToDaemonOrFallback(cmd, wfPath, "patch", wf.MutatorArgs{
+				JQExpr: jqExpr,
+			}, mode, noLock, lockTimeout)
 		},
 	}
 

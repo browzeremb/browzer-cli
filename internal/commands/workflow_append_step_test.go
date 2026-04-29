@@ -52,7 +52,7 @@ func TestAppendStep_ValidPayloadAppendsStepAndRecomputes(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-step",
 		"--payload", payloadFile,
@@ -113,7 +113,7 @@ func TestAppendStep_InvalidPayloadExitsNonZeroWithNoMutation(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-step",
 		"--payload", payloadFile,
@@ -157,7 +157,7 @@ func TestAppendStep_LockContentionExitsCode16(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-step",
 		"--payload", payloadFile,
@@ -207,7 +207,7 @@ func TestAppendStep_NoLockBypassEmitsWarningAndMutates(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-step",
 		"--payload", payloadFile,
@@ -263,7 +263,7 @@ func TestAppendStep_ConcurrencyN8NoLostWrites(t *testing.T) {
 
 			// Each goroutine gets its own cobra command + buffers.
 			var stdout, stderr bytes.Buffer
-			root := buildWorkflowCommand(&stdout, &stderr)
+			root := buildWorkflowCommandT(t, &stdout, &stderr)
 
 			// Build a unique valid step payload.
 			stepID := fmt.Sprintf("STEP_%02d_TASK", n+2)
@@ -347,7 +347,7 @@ func TestAppendStep_AuditLineOnStderr(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "append-step",
 		"--payload", payloadFile,

@@ -92,7 +92,7 @@ func TestGetStep_ExistingStepReturnsFullJSON(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-step", "STEP_01_BRAINSTORMING", "--workflow", wfPath})
 
 	if err := root.Execute(); err != nil {
@@ -122,7 +122,7 @@ func TestGetStep_MissingStepExitsNonZeroWithMessage(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{"workflow", "get-step", "STEP_99_NONEXISTENT", "--workflow", wfPath})
 
 	err := root.Execute()
@@ -143,7 +143,7 @@ func TestGetStep_FieldScalarUnquoted(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_01_BRAINSTORMING",
 		"--field", "task.dimensions.successSignal",
@@ -170,7 +170,7 @@ func TestGetStep_FieldObjectAsJSON(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_01_BRAINSTORMING",
 		"--field", "task",
@@ -195,7 +195,7 @@ func TestGetStep_FieldNonexistentExitsNonZero(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_01_BRAINSTORMING",
 		"--field", "nonexistent.deep.path",
@@ -282,7 +282,7 @@ func TestGetStep_RenderExecuteTaskReturnsFormattedBlock(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -307,7 +307,7 @@ func TestGetStep_RenderUnknownTemplateExitsNonZero(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -328,7 +328,7 @@ func TestGetStep_RenderConflictsWithField(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -460,7 +460,7 @@ func TestGetStep_BashVars_TaskStepEmitsExpectedKeys(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -493,7 +493,7 @@ func TestGetStep_BashVars_PrdStepEmitsPrdKeys(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithPRDStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_02_PRD",
 		"--workflow", wfPath,
@@ -524,7 +524,7 @@ func TestGetStep_BashVars_ConflictsWithField(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -543,7 +543,7 @@ func TestGetStep_BashVars_ConflictsWithJson(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -562,7 +562,7 @@ func TestGetStep_BashVars_ConflictsWithRender(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -582,7 +582,7 @@ func TestGetStep_BashVars_OutputIsEvalSafe(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowWithTaskStepWithQuotesJSON)
 
 	var stdout, stderr bytes.Buffer
-	root := buildWorkflowCommand(&stdout, &stderr)
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
 	root.SetArgs([]string{
 		"workflow", "get-step", "STEP_04_TASK_01",
 		"--workflow", wfPath,
@@ -612,7 +612,7 @@ func TestGetStep_FieldScalarJSONMode(t *testing.T) {
 
 	t.Run("string-scalar", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		root := buildWorkflowCommand(&stdout, &stderr)
+		root := buildWorkflowCommandT(t, &stdout, &stderr)
 		root.SetArgs([]string{
 			"workflow", "get-step", "STEP_01_BRAINSTORMING",
 			"--field", "task.dimensions.successSignal",
@@ -633,7 +633,7 @@ func TestGetStep_FieldScalarJSONMode(t *testing.T) {
 
 	t.Run("number-scalar", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		root := buildWorkflowCommand(&stdout, &stderr)
+		root := buildWorkflowCommandT(t, &stdout, &stderr)
 		root.SetArgs([]string{
 			"workflow", "get-step", "STEP_01_BRAINSTORMING",
 			"--field", "task.questionsAsked",
