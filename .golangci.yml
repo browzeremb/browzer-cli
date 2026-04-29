@@ -9,3 +9,16 @@ linters:
       - path: ".*_test\\.go"
         linters:
           - errcheck
+      # staticcheck SA5011 fires on the standard test idiom
+      #   x, err := f()
+      #   if err != nil { t.Fatalf(...) }
+      #   if x == nil   { t.Fatal(...)  }
+      #   x.Field // <- "possible nil pointer dereference"
+      # because staticcheck does not always recognise *testing.T.Fatal as a
+      # halting call. The pattern is correct (the t.Fatal call IS halting);
+      # excluding only this check on test files preserves SA5011 coverage on
+      # production code.
+      - path: ".*_test\\.go"
+        text: "SA5011"
+        linters:
+          - staticcheck
