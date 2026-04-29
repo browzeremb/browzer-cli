@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	gitignore "github.com/sabhiram/go-gitignore"
 )
@@ -18,7 +19,12 @@ import (
 // matchers are ANDed together by the walker.
 type BrowzerIgnoreMatcher struct {
 	compiled *gitignore.GitIgnore
-	present  bool
+	// negations is a secondary matcher compiled from the bare pattern of every
+	// "!<pattern>" line. It is used by ExplicitlyIncludes to detect opt-in
+	// overrides of the default-ignore list without relying on go-gitignore's
+	// MatchesPathHow semantics (which only returns the last *positive* rule).
+	negations *gitignore.GitIgnore
+	present   bool
 }
 
 // LoadBrowzerIgnore reads <rootPath>/.browzerignore. Missing file returns a
@@ -34,17 +40,30 @@ func LoadBrowzerIgnore(rootPath string) *BrowzerIgnoreMatcher {
 		if !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Warning: could not read .browzerignore: %v — ignoring.\n", err)
 		}
-		return &BrowzerIgnoreMatcher{compiled: gitignore.CompileIgnoreLines(), present: false}
+		return &BrowzerIgnoreMatcher{
+			compiled:  gitignore.CompileIgnoreLines(),
+			negations: gitignore.CompileIgnoreLines(),
+			present:   false,
+		}
 	}
 
-	// go-gitignore silently tolerates invalid patterns, so we just compile.
-	_ = data // ReadFile succeeded; use the path-based API for correct line-split.
-	compiled, compErr := gitignore.CompileIgnoreFile(path)
-	if compErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not parse .browzerignore: %v — ignoring.\n", compErr)
-		return &BrowzerIgnoreMatcher{compiled: gitignore.CompileIgnoreLines(), present: false}
+	// Parse the file content we already have: split into lines so we can feed
+	// both the main compiler and the negations scanner from the same read.
+	lines := strings.Split(string(data), "\n")
+	compiled := gitignore.CompileIgnoreLines(lines...)
+
+	// Build the negations matcher: strip the leading "!" from every negation
+	// line and compile those bare patterns so ExplicitlyIncludes can match them.
+	var negLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "!") {
+			negLines = append(negLines, trimmed[1:]) // bare pattern without "!"
+		}
 	}
-	return &BrowzerIgnoreMatcher{compiled: compiled, present: true}
+	negations := gitignore.CompileIgnoreLines(negLines...)
+
+	return &BrowzerIgnoreMatcher{compiled: compiled, negations: negations, present: true}
 }
 
 // IsIgnored reports whether the forward-slash relative path is excluded by
@@ -55,4 +74,18 @@ func (m *BrowzerIgnoreMatcher) IsIgnored(relPath string) bool {
 		return false
 	}
 	return m.compiled.MatchesPath(relPath)
+}
+
+// ExplicitlyIncludes returns true when .browzerignore contains an explicit
+// negation rule (e.g. "!CLAUDE.md") whose bare pattern matches relPath. This
+// is the escape hatch that lets users re-include files that are blocked by the
+// default-ignore list (DefaultIgnorePathSuffixes) without modifying .gitignore.
+//
+// Returns false when no .browzerignore is present or no negation rule
+// matches the path.
+func (m *BrowzerIgnoreMatcher) ExplicitlyIncludes(relPath string) bool {
+	if !m.present {
+		return false
+	}
+	return m.negations.MatchesPath(relPath)
 }

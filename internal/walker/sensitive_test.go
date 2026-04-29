@@ -1,6 +1,11 @@
 package walker
 
-import "testing"
+import (
+	"path/filepath"
+	"slices"
+	"sort"
+	"testing"
+)
 
 // TestIsSensitive mirrors the test cases from
 // packages/shared/src/__tests__/sensitive-filter.test.ts (legacy).
@@ -107,5 +112,67 @@ func TestRerootGitignore(t *testing.T) {
 		if got != c.want {
 			t.Errorf("RerootGitignore(%q,%q):\n got: %q\nwant: %q", c.text, c.relDir, got, c.want)
 		}
+	}
+}
+
+// TestWalkRepo_DefaultIgnoresClaudeMd verifies that CLAUDE.md files at the
+// repo root and in nested directories are excluded from the docs walker by
+// default (DOG-CLI-1 / dogfood F-15). Basename match — any directory's
+// CLAUDE.md is ignored, not just the root.
+func TestWalkRepo_DefaultIgnoresClaudeMd(t *testing.T) {
+	root := t.TempDir()
+
+	// CLAUDE.md at root level.
+	mustWrite(t, filepath.Join(root, "CLAUDE.md"), "# root claude\n")
+	// CLAUDE.md nested inside a subdirectory.
+	mustWrite(t, filepath.Join(root, "docs", "CLAUDE.md"), "# nested claude\n")
+	// A regular doc that should still be included.
+	mustWrite(t, filepath.Join(root, "README.md"), "# readme\n")
+
+	docs, err := WalkDocs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths := make([]string, 0, len(docs))
+	for _, d := range docs {
+		paths = append(paths, d.RelativePath)
+	}
+	sort.Strings(paths)
+
+	for _, p := range paths {
+		if p == "CLAUDE.md" || p == "docs/CLAUDE.md" {
+			t.Errorf("WalkDocs included %q — expected it to be default-ignored (DOG-CLI-1)", p)
+		}
+	}
+
+	if !slices.Contains(paths, "README.md") {
+		t.Errorf("WalkDocs did not include README.md — non-CLAUDE docs must still be walked")
+	}
+}
+
+// TestWalkRepo_BrowzerignoreNegationRestoresClaudeMd verifies the escape hatch:
+// a .browzerignore containing "!CLAUDE.md" re-includes CLAUDE.md so users who
+// DO want to index their agent-context file can opt back in.
+func TestWalkRepo_BrowzerignoreNegationRestoresClaudeMd(t *testing.T) {
+	root := t.TempDir()
+
+	// Write .browzerignore that negates the default CLAUDE.md exclusion.
+	mustWrite(t, filepath.Join(root, ".browzerignore"), "!CLAUDE.md\n")
+	mustWrite(t, filepath.Join(root, "CLAUDE.md"), "# root claude re-included\n")
+	mustWrite(t, filepath.Join(root, "README.md"), "# readme\n")
+
+	docs, err := WalkDocs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths := make([]string, 0, len(docs))
+	for _, d := range docs {
+		paths = append(paths, d.RelativePath)
+	}
+
+	if !slices.Contains(paths, "CLAUDE.md") {
+		t.Errorf("WalkDocs did not include CLAUDE.md after .browzerignore negation — escape hatch broken")
 	}
 }

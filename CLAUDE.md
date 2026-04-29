@@ -10,6 +10,10 @@ Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
 - Build locally with `cd packages/cli && go build -o "$HOME/.local/bin/browzer" ./cmd/browzer`.
 - Latest release tag: `cli-v1.4.1`. Notable shipped capabilities: `--workspace-ids` on `ask`, `search`, `explore`, `deps` for cross-workspace queries (since v1.3.x); `internal/format/score.go` normalizes `score` via `(2/π)·atan(raw)` — the same arctan transform used by the TS pipeline, so scores are comparable across surfaces; `browzer mentions` graph traversal (`File ← RELEVANT_TO ← Entity ← MENTIONS ← Chunk ← HAS_CHUNK ← Document`) consumed by the `update-docs` skill; `--anchors` flag on `explore` with a stable `anchor` field; a `staleness` block in `status --json`; `--no-wait` on `workspace sync`; the v0.8.0 token-economy subsystem (daemon + tracker + telemetry + hooks + `read`/`gain`/`plugin`/`config` commands); the v1.0.0 marketplace-based plugin flow (`/plugin marketplace add browzeremb/skills`) — the old file-drop `browzer plugin install` is now a printer of marketplace instructions. See `git tag -l 'cli-v*'` for the complete version history.
 
+## Default-ignored files (walker)
+
+`CLAUDE.md` is excluded by default from `browzer sync --skip-code` (and the legacy `browzer workspace docs` path). The walker treats it as a basename match — any `CLAUDE.md` at any directory depth is silently skipped. This prevents rogue rows from appearing in `/dashboard/documents` on workspaces that don't intentionally publish their agent-context file (dogfood finding F-15 / DOG-CLI-1, 2026-04-29). The same default applies to `AGENTS.md`. To re-include `CLAUDE.md` in a workspace, add `!CLAUDE.md` to `.browzerignore` at the repo root — the browzerignore negation rule takes precedence over the default-ignore list and the file will be indexed on the next `browzer sync`.
+
 ## Canonical reconciliation command
 
 `browzer sync` is the single canonical command to bring the server-side

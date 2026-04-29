@@ -84,7 +84,7 @@ func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, browzerMatcher *
 			if _, skip := DefaultIgnoreDirs[name]; skip {
 				continue
 			}
-			if IsDefaultIgnoredPath(relPath) {
+			if IsDefaultIgnoredPath(relPath) && !browzerMatcher.ExplicitlyIncludes(relPath+"/") {
 				continue
 			}
 			if matcher.matches(relPath + "/") {
@@ -103,6 +103,12 @@ func walkDocsRec(absDir, relDir string, matcher *ignoreMatcher, browzerMatcher *
 			continue
 		}
 		if IsSensitive(relPath) {
+			continue
+		}
+		// Apply default file-name ignore list (e.g. CLAUDE.md — DOG-CLI-1).
+		// browzerignore negation ("!CLAUDE.md") overrides this gate so users
+		// can opt back in without modifying .gitignore.
+		if IsDefaultIgnoredPath(relPath) && !browzerMatcher.ExplicitlyIncludes(relPath) {
 			continue
 		}
 		if !IsDocExtension(filepath.Ext(name)) {
