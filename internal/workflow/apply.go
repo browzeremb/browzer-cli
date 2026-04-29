@@ -703,8 +703,7 @@ func mutatorReapplyAdditionalContext(raw map[string]any, args MutatorArgs, out *
 	}
 
 	// Read current scope.
-	scopeRaw, _ := taskMap["scope"]
-	scopeSlice, _ := scopeRaw.([]any)
+	scopeSlice, _ := taskMap["scope"].([]any)
 
 	// Apply changes. Track whether anything actually changed.
 	changed := false

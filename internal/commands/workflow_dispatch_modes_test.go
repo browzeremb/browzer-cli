@@ -97,7 +97,12 @@ func TestAppendStep_ConcurrencyN8AcrossModes(t *testing.T) {
 				go func(n int) {
 					defer wg.Done()
 					var stdout, stderr bytes.Buffer
-					root := buildWorkflowCommandT(t, &stdout, &stderr)
+					// NOTE: buildWorkflowCommand (not …T) — the parallel
+					// goroutines inside this test forbid t.Setenv. The mode
+					// is set explicitly via the flag in `args` below
+					// (--sync / --async / --await), so we don't need the
+					// BROWZER_WORKFLOW_MODE env override here.
+					root := buildWorkflowCommand(&stdout, &stderr)
 
 					stepID := fmt.Sprintf("STEP_%02d_TASK", n+2)
 					payload := fmt.Sprintf(`{

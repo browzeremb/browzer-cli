@@ -245,6 +245,12 @@ func TestAppendStep_NoLockBypassEmitsWarningAndMutates(t *testing.T) {
 // totalSteps/completedSteps counters and no corruption.
 // Covers T3-T-11.
 func TestAppendStep_ConcurrencyN8NoLostWrites(t *testing.T) {
+	// t.Setenv is forbidden from the goroutines spawned below — set the
+	// dispatch-mode env once at the parent test boundary so every spawned
+	// cobra root inherits it and resolves to writeModeStandalone via
+	// resolveWriteMode's BROWZER_WORKFLOW_MODE branch.
+	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 
 	const N = 8
@@ -262,8 +268,10 @@ func TestAppendStep_ConcurrencyN8NoLostWrites(t *testing.T) {
 			defer wg.Done()
 
 			// Each goroutine gets its own cobra command + buffers.
+			// NOTE: buildWorkflowCommand (not …T) — t.Setenv is unsafe from
+			// spawned goroutines. The env was set at the parent test above.
 			var stdout, stderr bytes.Buffer
-			root := buildWorkflowCommandT(t, &stdout, &stderr)
+			root := buildWorkflowCommand(&stdout, &stderr)
 
 			// Build a unique valid step payload.
 			stepID := fmt.Sprintf("STEP_%02d_TASK", n+2)
