@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	wf "github.com/browzeremb/browzer-cli/internal/workflow"
 	"github.com/spf13/cobra"
@@ -40,6 +41,7 @@ func registerWorkflow(parent *cobra.Command) {
 	registerWorkflowCompleteStep(cmd)
 	registerWorkflowGetConfig(cmd)
 	registerWorkflowGetStep(cmd)
+	registerWorkflowInit(cmd)
 	registerWorkflowPatch(cmd)
 	registerWorkflowQuery(cmd)
 	registerWorkflowReapplyAdditionalContext(cmd)
@@ -55,7 +57,12 @@ func registerWorkflow(parent *cobra.Command) {
 }
 
 // getWorkflowPath resolves the workflow.json path for the given command using
-// the --workflow flag, BROWZER_WORKFLOW env, or git-style walk-up.
+// the --workflow flag, BROWZER_WORKFLOW env, or git-style walk-up. The result
+// is ALWAYS absolute — relative paths leak into the daemon RPC and trip the
+// `path_must_be_absolute` guard in internal/daemon/methods.go (the standalone
+// fallback tolerates relative, but the daemon's stricter contract is the
+// authoritative one). Resolving here means every consumer (lock acquisition,
+// mutator, audit line) sees the same canonical path regardless of CWD.
 func getWorkflowPath(cmd *cobra.Command) (string, error) {
 	flagPath, _ := cmd.Flags().GetString("workflow")
 	if flagPath == "" {
@@ -66,7 +73,18 @@ func getWorkflowPath(cmd *cobra.Command) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getwd: %w", err)
 	}
-	return wf.ResolveWorkflowPath(flagPath, cwd, cmd.Root().ErrOrStderr())
+	resolved, err := wf.ResolveWorkflowPath(flagPath, cwd, cmd.Root().ErrOrStderr())
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(resolved) {
+		return resolved, nil
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", fmt.Errorf("absolute path: %w", err)
+	}
+	return abs, nil
 }
 
 // loadWorkflow loads and JSON-decodes the workflow.json found at path.
