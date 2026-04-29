@@ -49,6 +49,32 @@ func (c *Client) DeleteWorkspace(ctx context.Context, workspaceID string) error 
 	return c.deleteCall(ctx, "api/workspaces/"+workspaceID, nil)
 }
 
+// UpdateWorkspaceRequest is the body of PATCH /api/workspaces/:id.
+// Both fields are optional — supply only the ones you want to change.
+type UpdateWorkspaceRequest struct {
+	Name     string `json:"name,omitempty"`
+	RootPath string `json:"rootPath,omitempty"`
+}
+
+// UpdateWorkspace calls PATCH /api/workspaces/:id with the supplied name
+// and/or rootPath. The server applies last-writer-wins semantics per field.
+func (c *Client) UpdateWorkspace(ctx context.Context, workspaceID, name, rootPath string) error {
+	req := UpdateWorkspaceRequest{Name: name, RootPath: rootPath}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodPatch, "api/workspaces/"+workspaceID, nil, bytes.NewReader(body), "application/json")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return httpStatusError(resp)
+}
+
 // ParseWorkspaceResponse captures the fields of POST /api/workspaces/parse
 // that the CLI cares about. Only `Status` is populated when the server
 // short-circuits with `{ status: "unchanged" }` (PR 3 fingerprint hit) —

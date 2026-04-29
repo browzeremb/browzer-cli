@@ -32,13 +32,20 @@ type Options struct {
 type Server struct {
 	opts      Options
 	startedAt time.Time
-	mu        sync.Mutex  // guards listener
+	mu        sync.Mutex // guards listener
 	listener  net.Listener
 	handlers  map[string]Handler
 	queueLen  atomic.Int64
 	lastReqAt atomic.Int64 // unix nano
-	stopOnce  sync.Once
-	stopped   chan struct{}
+	// tokensEconomized is a cumulative-since-daemon-start counter of
+	// `savedTokens` recorded via `Track` / `RecordSavedTokens`. Reset only on
+	// daemon restart (acceptable per the dashboard KPI PRD — server-side
+	// aggregation in apps/api is the canonical cumulative value; this counter
+	// is the daemon's view exposed via TokensEconomized RPC + GET /metrics/
+	// tokens-economized for diagnostics).
+	tokensEconomized atomic.Int64
+	stopOnce         sync.Once
+	stopped          chan struct{}
 }
 
 // Handler is the signature for a JSON-RPC method handler. It receives the
@@ -53,11 +60,33 @@ func NewServer(opts Options) *Server {
 		stopped: make(chan struct{}),
 	}
 	s.handlers = map[string]Handler{
-		"Health":   s.handleHealth,
-		"Shutdown": s.handleShutdown,
+		"Health":            s.handleHealth,
+		"Shutdown":          s.handleShutdown,
+		"TokensEconomized":  s.handleTokensEconomized,
 		// Read, Track, SessionRegister wired by methods.go (Task 3).
 	}
 	return s
+}
+
+// RecordSavedTokens atomically adds `delta` to the cumulative
+// tokens-economized counter. Negative or zero deltas are ignored.
+//
+// Called from the Track RPC dependency (daemon_cmd.go) on every Track event,
+// so the counter shadows the SQLite tracker without taking ownership of it
+// (subsystem isolation: a broken tracker MUST NOT lose this number, but the
+// authoritative cumulative is always the server-side SUM(saved_tokens)).
+func (s *Server) RecordSavedTokens(delta int) {
+	if delta <= 0 {
+		return
+	}
+	s.tokensEconomized.Add(int64(delta))
+}
+
+// TokensEconomized returns the daemon's in-memory cumulative counter.
+// Exported so the parent process / tests can read it directly without
+// going over the JSON-RPC socket.
+func (s *Server) TokensEconomized() int64 {
+	return s.tokensEconomized.Load()
 }
 
 // RegisterHandler attaches a handler to a method name. Used by methods.go
@@ -218,4 +247,15 @@ func (s *Server) handleShutdown(_ context.Context, _ json.RawMessage) (any, erro
 		s.Stop()
 	}()
 	return map[string]any{"ok": true}, nil
+}
+
+// handleTokensEconomized returns the cumulative-since-daemon-start counter
+// of saved tokens recorded by Track. The result includes the daemon start
+// time so callers can disambiguate between "low number = quiet daemon" and
+// "low number = recently restarted".
+func (s *Server) handleTokensEconomized(_ context.Context, _ json.RawMessage) (any, error) {
+	return map[string]any{
+		"tokensEconomized": s.tokensEconomized.Load(),
+		"since":            s.startedAt.UTC().Format(time.RFC3339),
+	}, nil
 }

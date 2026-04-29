@@ -522,6 +522,113 @@ func registerWorkspaceSync(parent *cobra.Command) {
 	parent.AddCommand(cmd)
 }
 
+// ReconcileWorkspaceManifest applies bidirectional last-writer-wins reconciliation
+// between the local WorkspaceManifest and the server-fetched workspace list
+// (AC-5-cli).
+//
+// Pull direction (server → local):
+//   - Server entry exists, local manifest entry has a different Name/RootPath
+//     → update local manifest with server's values (server wins per record).
+//   - Manifest entry exists but server list has no matching entry
+//     → remove from local manifest (server delete wins).
+//
+// Push direction (local → server):
+//   - Local entries with LocallyModified=true and PendingDelete=true
+//     → call client.DeleteWorkspace(ctx, id) then remove from manifest.
+//   - Local entries with LocallyModified=true (rename, not delete)
+//     → call client.UpdateWorkspace(ctx, id, name, rootPath) then clear the flag.
+//
+// Returns the modified manifest. The caller is responsible for saving it.
+func ReconcileWorkspaceManifest(
+	ctx context.Context,
+	client WorkspaceSyncClient,
+	manifest WorkspaceSyncManifest,
+	serverList []api.WorkspaceDto,
+) error {
+	// Build a set of server IDs for fast lookup.
+	serverByID := make(map[string]api.WorkspaceDto, len(serverList))
+	for _, ws := range serverList {
+		serverByID[ws.ID] = ws
+	}
+
+	// Push: flush locally-modified entries to the server before pulling, so
+	// that the server's response reflects local intent on the next pull pass.
+	for _, local := range manifest.All() {
+		if !local.LocallyModified {
+			continue
+		}
+		if local.PendingDelete {
+			// Local delete: remove from server then from manifest.
+			if err := client.DeleteWorkspace(ctx, local.ID); err != nil {
+				return fmt.Errorf("delete workspace %s: %w", local.ID, err)
+			}
+			manifest.Remove(local.ID)
+		} else {
+			// Local rename / rootPath change: push to server and clear the flag.
+			if err := client.UpdateWorkspace(ctx, local.ID, local.Name, local.RootPath); err != nil {
+				return fmt.Errorf("update workspace %s: %w", local.ID, err)
+			}
+			manifest.Upsert(cache.ManifestEntry{
+				ID:              local.ID,
+				Name:            local.Name,
+				RootPath:        local.RootPath,
+				UpdatedAt:       time.Now(),
+				LocallyModified: false,
+			})
+		}
+	}
+
+	// Pull: update or remove local entries based on server state.
+	for _, local := range manifest.All() {
+		srv, exists := serverByID[local.ID]
+		if !exists {
+			// Server deleted this workspace → remove from manifest.
+			manifest.Remove(local.ID)
+			continue
+		}
+		// Server-wins per record: sync name and rootPath if they differ.
+		if srv.Name != local.Name || srv.RootPath != local.RootPath {
+			manifest.Upsert(cache.ManifestEntry{
+				ID:        local.ID,
+				Name:      srv.Name,
+				RootPath:  srv.RootPath,
+				UpdatedAt: time.Now(),
+			})
+		}
+	}
+
+	// Add server entries not yet in the manifest.
+	for _, srv := range serverList {
+		if _, ok := manifest.Get(srv.ID); !ok {
+			manifest.Upsert(cache.ManifestEntry{
+				ID:        srv.ID,
+				Name:      srv.Name,
+				RootPath:  srv.RootPath,
+				UpdatedAt: time.Now(),
+			})
+		}
+	}
+
+	return nil
+}
+
+// WorkspaceSyncClient is the subset of api.Client used by ReconcileWorkspaceManifest.
+// Defined as an interface so tests can inject a mock HTTP server.
+type WorkspaceSyncClient interface {
+	UpdateWorkspace(ctx context.Context, workspaceID, name, rootPath string) error
+	DeleteWorkspace(ctx context.Context, workspaceID string) error
+}
+
+// WorkspaceSyncManifest is the subset of cache.WorkspaceManifest used by
+// ReconcileWorkspaceManifest. Defined as an interface so tests can inject
+// a controlled in-memory manifest without hitting the filesystem.
+type WorkspaceSyncManifest interface {
+	Get(id string) (cache.ManifestEntry, bool)
+	Upsert(entry cache.ManifestEntry)
+	Remove(id string)
+	All() []cache.ManifestEntry
+}
+
 // applySyncSelection adjusts the Selected flag of each DocPickerItem to
 // reflect the sync reconciler's intent:
 //

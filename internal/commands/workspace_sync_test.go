@@ -1,8 +1,11 @@
 package commands
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/cache"
 	"github.com/browzeremb/browzer-cli/internal/walker"
 )
@@ -259,5 +262,213 @@ func TestMergeAndApply_NewLocalFileAdded(t *testing.T) {
 	plan := computeDocDelta(items, cache.DocsCache{Files: make(map[string]cache.CachedDoc)})
 	if len(plan.ToInsert) != 1 {
 		t.Fatalf("expected ToInsert=1, got %d", len(plan.ToInsert))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bidirectional workspace manifest reconciliation tests (AC-5-cli)
+// ---------------------------------------------------------------------------
+
+// mockSyncManifest is an in-memory WorkspaceSyncManifest for testing.
+type mockSyncManifest struct {
+	entries map[string]cache.ManifestEntry
+}
+
+func newMockManifest(initial ...cache.ManifestEntry) *mockSyncManifest {
+	m := &mockSyncManifest{entries: make(map[string]cache.ManifestEntry)}
+	for _, e := range initial {
+		m.entries[e.ID] = e
+	}
+	return m
+}
+
+func (m *mockSyncManifest) Get(id string) (cache.ManifestEntry, bool) {
+	e, ok := m.entries[id]
+	return e, ok
+}
+func (m *mockSyncManifest) Upsert(entry cache.ManifestEntry) {
+	m.entries[entry.ID] = entry
+}
+func (m *mockSyncManifest) Remove(id string) {
+	delete(m.entries, id)
+}
+func (m *mockSyncManifest) All() []cache.ManifestEntry {
+	out := make([]cache.ManifestEntry, 0, len(m.entries))
+	for _, e := range m.entries {
+		out = append(out, e)
+	}
+	return out
+}
+
+// mockSyncClient is an in-memory WorkspaceSyncClient for testing. It records
+// which PATCH and DELETE calls were made so tests can assert on them.
+type mockSyncClient struct {
+	patchCalls  []struct{ id, name, rootPath string }
+	deleteCalls []string
+}
+
+func (c *mockSyncClient) UpdateWorkspace(_ context.Context, id, name, rootPath string) error {
+	c.patchCalls = append(c.patchCalls, struct{ id, name, rootPath string }{id, name, rootPath})
+	return nil
+}
+func (c *mockSyncClient) DeleteWorkspace(_ context.Context, id string) error {
+	c.deleteCalls = append(c.deleteCalls, id)
+	return nil
+}
+
+// TestWorkspaceSync_ServerRename_UpdatesLocalManifest (T-1 / AC-5-cli):
+// When the server renames a workspace (Name differs), ReconcileWorkspaceManifest
+// must update the local manifest entry with the server's new name (last-writer-wins pull).
+func TestWorkspaceSync_ServerRename_UpdatesLocalManifest(t *testing.T) {
+	manifest := newMockManifest(cache.ManifestEntry{
+		ID:        "ws-1",
+		Name:      "old-name",
+		RootPath:  "/repo",
+		UpdatedAt: time.Now().Add(-1 * time.Hour),
+	})
+	client := &mockSyncClient{}
+
+	serverList := []api.WorkspaceDto{
+		{ID: "ws-1", Name: "new-name", RootPath: "/repo"},
+	}
+
+	if err := ReconcileWorkspaceManifest(context.Background(), client, manifest, serverList); err != nil {
+		t.Fatalf("ReconcileWorkspaceManifest returned error: %v", err)
+	}
+
+	entry, ok := manifest.Get("ws-1")
+	if !ok {
+		t.Fatal("expected manifest entry ws-1 to exist after reconciliation")
+	}
+	if entry.Name != "new-name" {
+		t.Errorf("expected Name=%q, got %q (server rename should win)", "new-name", entry.Name)
+	}
+}
+
+// TestWorkspaceSync_ServerDelete_RemovesFromManifest (T-2 / AC-5-cli):
+// When the server no longer lists a workspace that exists in the local manifest,
+// ReconcileWorkspaceManifest must remove it from the manifest.
+func TestWorkspaceSync_ServerDelete_RemovesFromManifest(t *testing.T) {
+	manifest := newMockManifest(cache.ManifestEntry{
+		ID:        "ws-gone",
+		Name:      "was-here",
+		RootPath:  "/repo",
+		UpdatedAt: time.Now().Add(-1 * time.Hour),
+	})
+	client := &mockSyncClient{}
+
+	// Server returns an empty list — ws-gone was deleted server-side.
+	serverList := []api.WorkspaceDto{}
+
+	if err := ReconcileWorkspaceManifest(context.Background(), client, manifest, serverList); err != nil {
+		t.Fatalf("ReconcileWorkspaceManifest returned error: %v", err)
+	}
+
+	if _, ok := manifest.Get("ws-gone"); ok {
+		t.Error("expected manifest entry ws-gone to be removed after server-side delete")
+	}
+}
+
+// TestWorkspaceSync_LocalRename_PatchesServer (T-3 / AC-5-cli):
+// When a manifest entry has LocallyModified=true (but PendingDelete=false),
+// ReconcileWorkspaceManifest must call UpdateWorkspace on the client, clear
+// the LocallyModified flag in the manifest, and preserve the new name.
+func TestWorkspaceSync_LocalRename_PatchesServer(t *testing.T) {
+	client := &mockSyncClient{}
+
+	manifest := newMockManifest(cache.ManifestEntry{
+		ID:              "ws-2",
+		Name:            "renamed-locally",
+		RootPath:        "/repo",
+		UpdatedAt:       time.Now().Add(-1 * time.Hour),
+		LocallyModified: true,
+		PendingDelete:   false,
+	})
+
+	// Server reflects the new name (what the server returns after a successful
+	// PATCH in production). The push path fires first via LocallyModified, then
+	// the pull pass sees name already matches and makes no further change.
+	serverList := []api.WorkspaceDto{
+		{ID: "ws-2", Name: "renamed-locally", RootPath: "/repo"},
+	}
+
+	ctx := context.Background()
+	if err := ReconcileWorkspaceManifest(ctx, client, manifest, serverList); err != nil {
+		t.Fatalf("ReconcileWorkspaceManifest returned error: %v", err)
+	}
+
+	// Verify UpdateWorkspace was called with the locally-renamed name.
+	if len(client.patchCalls) != 1 {
+		t.Fatalf("expected 1 UpdateWorkspace call, got %d", len(client.patchCalls))
+	}
+	call := client.patchCalls[0]
+	if call.id != "ws-2" {
+		t.Errorf("expected UpdateWorkspace id=ws-2, got %q", call.id)
+	}
+	if call.name != "renamed-locally" {
+		t.Errorf("expected UpdateWorkspace name=renamed-locally, got %q", call.name)
+	}
+
+	// Verify LocallyModified flag is cleared in the manifest.
+	entry, ok := manifest.Get("ws-2")
+	if !ok {
+		t.Fatal("expected manifest entry ws-2 to exist after reconciliation")
+	}
+	if entry.LocallyModified {
+		t.Error("expected LocallyModified=false after successful push")
+	}
+	if entry.Name != "renamed-locally" {
+		t.Errorf("expected Name=renamed-locally in manifest, got %q", entry.Name)
+	}
+
+	// Verify no spurious DeleteWorkspace calls.
+	if len(client.deleteCalls) != 0 {
+		t.Errorf("expected 0 DeleteWorkspace calls, got %d", len(client.deleteCalls))
+	}
+}
+
+// TestWorkspaceSync_LocalDelete_CallsDeleteAndRemovesManifest (T-4 / AC-5-cli):
+// When a manifest entry has LocallyModified=true and PendingDelete=true,
+// ReconcileWorkspaceManifest must call DeleteWorkspace on the client and
+// remove the entry from the manifest.
+func TestWorkspaceSync_LocalDelete_CallsDeleteAndRemovesManifest(t *testing.T) {
+	client := &mockSyncClient{}
+
+	manifest := newMockManifest(cache.ManifestEntry{
+		ID:              "ws-3",
+		Name:            "to-delete",
+		RootPath:        "/repo",
+		UpdatedAt:       time.Now().Add(-1 * time.Hour),
+		LocallyModified: true,
+		PendingDelete:   true,
+	})
+
+	// Server does not list the workspace — simulates the state after a
+	// successful DELETE. The push path calls DeleteWorkspace on the client
+	// (which removes it from the server), then the pull pass sees an empty list
+	// and makes no change (entry already removed from manifest in push pass).
+	serverList := []api.WorkspaceDto{}
+
+	ctx := context.Background()
+	if err := ReconcileWorkspaceManifest(ctx, client, manifest, serverList); err != nil {
+		t.Fatalf("ReconcileWorkspaceManifest returned error: %v", err)
+	}
+
+	// Verify DeleteWorkspace was called.
+	if len(client.deleteCalls) != 1 {
+		t.Fatalf("expected 1 DeleteWorkspace call, got %d", len(client.deleteCalls))
+	}
+	if client.deleteCalls[0] != "ws-3" {
+		t.Errorf("expected DeleteWorkspace id=ws-3, got %q", client.deleteCalls[0])
+	}
+
+	// Verify the manifest entry was removed.
+	if _, ok := manifest.Get("ws-3"); ok {
+		t.Error("expected manifest entry ws-3 to be removed after local delete")
+	}
+
+	// Verify no spurious UpdateWorkspace calls.
+	if len(client.patchCalls) != 0 {
+		t.Errorf("expected 0 UpdateWorkspace calls, got %d", len(client.patchCalls))
 	}
 }

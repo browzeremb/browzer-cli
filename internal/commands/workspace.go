@@ -277,6 +277,45 @@ Examples:
 	deleteCmd.Flags().BoolVar(&deleteYes, "yes", false, "Skip the interactive prompt (still requires --confirm-name in non-TTY shells)")
 	ws.AddCommand(deleteCmd)
 
+	// rename — push a local rename to the server (PATCH /api/workspaces/:id).
+	// Used by AC-5 of feat-20260428-web-dashboard-improvements: lets the
+	// operator change a workspace's name from the CLI; the change is
+	// pushed to apps/api immediately. Pulling a server-originated rename
+	// happens through `browzer sync`, which already reconciles via the
+	// WorkspaceManifest cache (see workspace_sync.go).
+	renameCmd := &cobra.Command{
+		Use:   "rename <id> <new-name>",
+		Short: "Rename a workspace (PATCH /api/workspaces/:id)",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("workspace rename requires <id> and <new-name>. Run `browzer workspace list` to see available workspaces")
+			}
+			return nil
+		},
+		Long: `Rename a workspace by id.
+
+The new name is pushed to apps/api via PATCH /api/workspaces/:id and the
+local manifest entry (if one exists) is refreshed. Server name conflicts
+are surfaced as errors; choose another name and retry.
+
+Examples:
+  browzer workspace rename ws-123 my-renamed-repo`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+			newName := args[1]
+			ac, err := requireAuth(0)
+			if err != nil {
+				return err
+			}
+			if err := ac.Client.UpdateWorkspace(rootContext(cmd), id, newName, ""); err != nil {
+				return err
+			}
+			ui.Success(fmt.Sprintf("Renamed workspace %s → %q", id, newName))
+			return nil
+		},
+	}
+	ws.AddCommand(renameCmd)
+
 	registerWorkspaceUnlink(ws)
 	registerWorkspaceRelink(ws)
 	registerWorkspaceSync(ws)

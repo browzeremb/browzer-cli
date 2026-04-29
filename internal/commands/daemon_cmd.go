@@ -163,7 +163,7 @@ func daemonStartCmd() *cobra.Command {
 				DBPath:      config.HistoryDBPath(),
 				IdleTimeout: time.Duration(config.DefaultDaemonIdleSeconds) * time.Second,
 			})
-			deps, tr, err := defaultDaemonDeps()
+			deps, tr, err := defaultDaemonDeps(srv)
 			if err != nil {
 				return err
 			}
@@ -320,7 +320,12 @@ func checkStaleDaemon() error {
 // Returns `deps, tracker, err`. The tracker handle is surfaced so the
 // caller (daemonStartCmd) can pass it to the telemetry batcher
 // goroutine AND own its lifecycle (Close on Serve return).
-func defaultDaemonDeps() (daemon.Deps, *tracker.Tracker, error) {
+//
+// The `srv` argument is used to forward `SavedTokens` deltas from the Track
+// RPC into the server's atomic cumulative counter, which is exposed via the
+// TokensEconomized RPC method (consumed by the dashboard KPI card via
+// apps/api `GET /api/telemetry/tokens-economized`).
+func defaultDaemonDeps(srv *daemon.Server) (daemon.Deps, *tracker.Tracker, error) {
 	manifests := daemon.NewManifestCache(config.ManifestCachePath)
 	sessions := daemon.NewSessionCache(config.SessionCachePath)
 
@@ -336,6 +341,13 @@ func defaultDaemonDeps() (daemon.Deps, *tracker.Tracker, error) {
 			return doRead(manifests, sessions, p)
 		},
 		Track: func(ctx context.Context, p daemon.TrackParams) (map[string]any, error) {
+			// Update the in-memory cumulative counter regardless of tracker
+			// state. Subsystem isolation: a broken SQLite tracker MUST NOT
+			// drop the daemon-side savings number; the server-side SUM in
+			// apps/api remains authoritative either way.
+			if srv != nil {
+				srv.RecordSavedTokens(p.SavedTokens)
+			}
 			if tr == nil {
 				return map[string]any{"ok": true}, nil
 			}
