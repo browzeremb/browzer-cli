@@ -27,15 +27,18 @@ var legalStatuses = map[StepStatus]bool{
 
 // legalNames is the set of accepted StepName values.
 var legalNames = map[StepName]bool{
-	StepBrainstorming:     true,
-	StepPRD:               true,
-	StepTasksManifest:     true,
-	StepTask:              true,
-	StepCodeReview:        true,
-	StepUpdateDocs:        true,
-	StepFeatureAcceptance: true,
-	StepCommit:            true,
-	StepFixFindings:       true,
+	StepBrainstorming:       true,
+	StepPRD:                 true,
+	StepTasksManifest:       true,
+	StepTask:                true,
+	StepCodeReview:          true,
+	StepReceivingCodeReview: true,
+	StepWriteTests:          true,
+	StepUpdateDocs:          true,
+	StepFeatureAcceptance:   true,
+	StepCommit:              true,
+	// Deprecated FIX_FINDINGS still accepted so historical workflow.json files validate.
+	StepFixFindings: true,
 }
 
 // legalConfigModes is the set of accepted config.mode values.

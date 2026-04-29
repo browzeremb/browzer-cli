@@ -103,7 +103,8 @@ func TestSchema_JSONSchemaContainsAllStepNames(t *testing.T) {
 	}
 	expected := []string{
 		"BRAINSTORMING", "PRD", "TASKS_MANIFEST", "TASK",
-		"CODE_REVIEW", "UPDATE_DOCS", "FEATURE_ACCEPTANCE", "COMMIT", "FIX_FINDINGS",
+		"CODE_REVIEW", "RECEIVING_CODE_REVIEW", "WRITE_TESTS",
+		"UPDATE_DOCS", "FEATURE_ACCEPTANCE", "COMMIT", "FIX_FINDINGS",
 	}
 	for _, name := range expected {
 		if !enumSet[name] {

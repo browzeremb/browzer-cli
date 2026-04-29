@@ -171,6 +171,8 @@ func buildWorkflowSchema() map[string]any {
 							"TASKS_MANIFEST",
 							"TASK",
 							"CODE_REVIEW",
+							"RECEIVING_CODE_REVIEW",
+							"WRITE_TESTS",
 							"UPDATE_DOCS",
 							"FEATURE_ACCEPTANCE",
 							"COMMIT",
@@ -350,10 +352,12 @@ func buildSchemaMarkdown() string {
 	b.WriteString("- TASKS_MANIFEST — payload: tasksManifest\n")
 	b.WriteString("- TASK — payload: task\n")
 	b.WriteString("- CODE_REVIEW — payload: codeReview\n")
+	b.WriteString("- RECEIVING_CODE_REVIEW — payload: receivingCodeReview\n")
+	b.WriteString("- WRITE_TESTS — payload: writeTests\n")
 	b.WriteString("- UPDATE_DOCS — payload: updateDocs\n")
 	b.WriteString("- FEATURE_ACCEPTANCE — payload: featureAcceptance\n")
 	b.WriteString("- COMMIT — payload: commit\n")
-	b.WriteString("- FIX_FINDINGS — payload: fixFindings\n\n")
+	b.WriteString("- FIX_FINDINGS — payload: fixFindings (deprecated — replaced by RECEIVING_CODE_REVIEW; still recognised for legacy workflow.json files)\n\n")
 
 	b.WriteString("## Step lifecycle (.steps[].status)\n")
 	b.WriteString("PENDING → RUNNING → COMPLETED | AWAITING_REVIEW | SKIPPED | STOPPED | PAUSED_PENDING_OPERATOR\n\n")

@@ -24,13 +24,15 @@ func TestValidate_AcceptsTopLevelSkeleton(t *testing.T) {
 }
 
 // TestValidate_AcceptsEachStepTypeName verifies that Validate accepts steps
-// with each of the nine legal step type names.
-// Covers T1-T-6: each step type (BRAINSTORMING, PRD, TASKS_MANIFEST, TASK,
-// CODE_REVIEW, UPDATE_DOCS, FEATURE_ACCEPTANCE, COMMIT, FIX_FINDINGS).
+// with each legal step type name.
+// Covers: each step type (BRAINSTORMING, PRD, TASKS_MANIFEST, TASK,
+// CODE_REVIEW, RECEIVING_CODE_REVIEW, WRITE_TESTS, UPDATE_DOCS,
+// FEATURE_ACCEPTANCE, COMMIT, FIX_FINDINGS — last is deprecated but still legal).
 func TestValidate_AcceptsEachStepTypeName(t *testing.T) {
 	stepNames := []string{
 		"BRAINSTORMING", "PRD", "TASKS_MANIFEST", "TASK",
-		"CODE_REVIEW", "UPDATE_DOCS", "FEATURE_ACCEPTANCE", "COMMIT", "FIX_FINDINGS",
+		"CODE_REVIEW", "RECEIVING_CODE_REVIEW", "WRITE_TESTS",
+		"UPDATE_DOCS", "FEATURE_ACCEPTANCE", "COMMIT", "FIX_FINDINGS",
 	}
 	for _, name := range stepNames {
 		t.Run(name, func(t *testing.T) {

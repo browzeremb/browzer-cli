@@ -7,15 +7,19 @@ type StepName = string
 
 // Legal StepName values.
 const (
-	StepBrainstorming      StepName = "BRAINSTORMING"
-	StepPRD                StepName = "PRD"
-	StepTasksManifest      StepName = "TASKS_MANIFEST"
-	StepTask               StepName = "TASK"
-	StepCodeReview         StepName = "CODE_REVIEW"
-	StepUpdateDocs         StepName = "UPDATE_DOCS"
-	StepFeatureAcceptance  StepName = "FEATURE_ACCEPTANCE"
-	StepCommit             StepName = "COMMIT"
-	StepFixFindings        StepName = "FIX_FINDINGS"
+	StepBrainstorming       StepName = "BRAINSTORMING"
+	StepPRD                 StepName = "PRD"
+	StepTasksManifest       StepName = "TASKS_MANIFEST"
+	StepTask                StepName = "TASK"
+	StepCodeReview          StepName = "CODE_REVIEW"
+	StepReceivingCodeReview StepName = "RECEIVING_CODE_REVIEW"
+	StepWriteTests          StepName = "WRITE_TESTS"
+	StepUpdateDocs          StepName = "UPDATE_DOCS"
+	StepFeatureAcceptance   StepName = "FEATURE_ACCEPTANCE"
+	StepCommit              StepName = "COMMIT"
+	// Deprecated: replaced by StepReceivingCodeReview in the receiving-code-review redesign.
+	// Kept in legalNames so historical workflow.json files still validate.
+	StepFixFindings StepName = "FIX_FINDINGS"
 )
 
 // StepStatus is the lifecycle status of a step.

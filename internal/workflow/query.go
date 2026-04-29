@@ -317,8 +317,11 @@ func appendStrings(dst []string, raw []any) []string {
 }
 
 // queryChangedFiles returns the deduped, sorted union of modified + created
-// files across every TASK step (.task.execution.files.{modified,created}) and
-// every FIX_FINDINGS dispatch (.fixFindings.dispatches[].filesChanged).
+// files across every TASK step (.task.execution.files.{modified,created}),
+// every RECEIVING_CODE_REVIEW dispatch (.receivingCodeReview.dispatches[].filesChanged),
+// the WRITE_TESTS step's authored files (.writeTests.filesAuthored), and the
+// legacy FIX_FINDINGS dispatch (.fixFindings.dispatches[].filesChanged) for
+// backwards compat with pre-redesign workflow.json files.
 func queryChangedFiles(raw map[string]any) (any, error) {
 	seen := make(map[string]struct{})
 	var collected []string
@@ -333,7 +336,19 @@ func queryChangedFiles(raw map[string]any) (any, error) {
 			files = nestedMap(files, "files")
 			collected = appendStrings(collected, nestedSlice(files, "modified"))
 			collected = appendStrings(collected, nestedSlice(files, "created"))
+		case StepReceivingCodeReview:
+			dispatches := nestedSlice(nestedMap(step, "receivingCodeReview"), "dispatches")
+			for _, d := range dispatches {
+				dm, ok := d.(map[string]any)
+				if !ok {
+					continue
+				}
+				collected = appendStrings(collected, nestedSlice(dm, "filesChanged"))
+			}
+		case StepWriteTests:
+			collected = appendStrings(collected, nestedSlice(nestedMap(step, "writeTests"), "filesAuthored"))
 		case StepFixFindings:
+			// Legacy: pre-redesign workflow.json files keyed dispatches under fixFindings.
 			dispatches := nestedSlice(nestedMap(step, "fixFindings"), "dispatches")
 			for _, d := range dispatches {
 				dm, ok := d.(map[string]any)
