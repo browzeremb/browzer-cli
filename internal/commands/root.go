@@ -101,6 +101,9 @@ func NewRootCommand(version string) *cobra.Command {
 	registerGain(root)
 	registerPlugin(root)
 
+	// `workflow` subcommand group.
+	registerWorkflow(root)
+
 	// `org` subcommand group.
 	registerOrg(root)
 
