@@ -544,3 +544,92 @@ func errStringContains(err error, sub string) bool {
 // the package no-op compile passes need to see it; keep the silent import.
 var _ = errors.New
 var _ sync.Mutex
+
+// TestWorkflowMutateParams_AdditiveJQVarsContract (QA-11 + RT-1 wire portion)
+// — pins the additive JSON-RPC contract for JQVars: a NEW CLI sending
+// `jqVars` to a daemon binary STRUCTURALLY OLDER than 1.6.0 (no JQVars field
+// in the local copy of WorkflowMutateParams) must NOT error on json.Unmarshal.
+// The unknown field is silently dropped; the daemon proceeds to call ApplyJQ
+// without bind variables, and gojq fails downstream with "undefined variable
+// $id" — which is the documented user-facing behavior (see CHANGELOG +
+// JQVars docstring + workflow_patch.go RunE hint).
+//
+// This test guards against a future tightening of the daemon's decoder
+// (e.g. adding json.NewDecoder().DisallowUnknownFields()) which would silently
+// break new-CLI ↔ old-daemon pairings.
+func TestWorkflowMutateParams_AdditiveJQVarsContract(t *testing.T) {
+	// Structurally OLDER copy of the params struct: same JSON tags but
+	// missing the JQVars field. Simulates a v1.5.x daemon binary.
+	type oldParams struct {
+		Verb            string          `json:"verb"`
+		Path            string          `json:"path"`
+		Payload         json.RawMessage `json:"payload,omitempty"`
+		Args            []string        `json:"args,omitempty"`
+		JQExpr          string          `json:"jqExpr,omitempty"`
+		NoLock          bool            `json:"noLock,omitempty"`
+		AwaitDurability bool            `json:"awaitDurability,omitempty"`
+		LockTimeoutMs   int64           `json:"lockTimeoutMs,omitempty"`
+		WriteID         string          `json:"writeId,omitempty"`
+	}
+
+	// Wire payload that a NEW CLI 1.6.0 would emit when the operator runs
+	// `browzer workflow patch --arg id=ABC --jq '.featureId = $id'`.
+	wirePayload := []byte(`{
+	  "verb": "patch",
+	  "path": "/tmp/wf.json",
+	  "jqExpr": ".featureId = $id",
+	  "jqVars": {"id": "ABC"},
+	  "writeId": "wf-test-1"
+	}`)
+
+	var op oldParams
+	if err := json.Unmarshal(wirePayload, &op); err != nil {
+		t.Fatalf("OLD daemon decoder MUST tolerate unknown jqVars field; got: %v", err)
+	}
+
+	// Surviving fields must be intact.
+	if op.Verb != "patch" {
+		t.Errorf("verb dropped or mangled: got %q", op.Verb)
+	}
+	if op.JQExpr != ".featureId = $id" {
+		t.Errorf("jqExpr dropped or mangled: got %q", op.JQExpr)
+	}
+	if op.WriteID != "wf-test-1" {
+		t.Errorf("writeId dropped or mangled: got %q", op.WriteID)
+	}
+
+	// Confirm the modern decoder also accepts the SAME payload AND populates
+	// JQVars correctly — this is the symmetric guarantee for a 1.6.0 daemon.
+	var np WorkflowMutateParams
+	if err := json.Unmarshal(wirePayload, &np); err != nil {
+		t.Fatalf("NEW daemon decoder must accept wire payload; got: %v", err)
+	}
+	if np.JQVars["id"] != "ABC" {
+		t.Errorf("NEW decoder lost jqVars binding; got %v", np.JQVars)
+	}
+}
+
+// TestWorkflowMutateParams_AbsentJQVarsDecodesAsNilMap (RT-1 partial) —
+// when an OLDER CLI sends a payload WITHOUT jqVars to a NEW daemon, the
+// daemon must decode it as a nil map (not error) and route through the
+// standard ApplyJQ path. Pairs with the additivity test above; together
+// they pin both directions of the version-skew matrix.
+func TestWorkflowMutateParams_AbsentJQVarsDecodesAsNilMap(t *testing.T) {
+	wirePayload := []byte(`{
+	  "verb": "patch",
+	  "path": "/tmp/wf.json",
+	  "jqExpr": ".featureId = \"abc\""
+	}`)
+
+	var p WorkflowMutateParams
+	if err := json.Unmarshal(wirePayload, &p); err != nil {
+		t.Fatalf("absent jqVars must decode without error; got: %v", err)
+	}
+	if p.JQVars != nil {
+		t.Errorf("absent jqVars should decode as nil map, got: %v", p.JQVars)
+	}
+	// JQExpr must still be intact for the no-vars path.
+	if p.JQExpr != `.featureId = "abc"` {
+		t.Errorf("jqExpr lost on no-vars path: got %q", p.JQExpr)
+	}
+}

@@ -166,6 +166,7 @@ Apply a single mutation to a `workflow.json` file. Used by the `browzer workflow
   "payload": {},
   "args": ["step-1", "RUNNING"],
   "jqExpr": "",
+  "jqVars": null,
   "noLock": false,
   "awaitDurability": false,
   "lockTimeoutMs": 5000,
@@ -180,6 +181,7 @@ Apply a single mutation to a `workflow.json` file. Used by the `browzer workflow
 | `payload` | object \| undefined | Optional JSON payload (used by `append-step` + `append-review-history`). Embedded as `json.RawMessage` so structure is verb-defined. |
 | `args` | string[] \| undefined | Optional positional args after the verb (e.g. `["step-1", "RUNNING"]` for `set-status`). |
 | `jqExpr` | string \| undefined | Optional. Required for `verb: "patch"`. |
+| `jqVars` | map[string]any \| undefined | Optional. Used only by `verb: "patch"`. Bind variables for the jq expression — gojq equivalent of `jq --arg KEY VALUE` / `jq --argjson KEY <json>`. Keys are bare identifiers (no leading `$`); values are arbitrary JSON-decoded scalars/objects/arrays. **Additive contract:** older daemons (pre CLI 1.6.0) silently drop this field via standard `json.Unmarshal` (no `DisallowUnknownFields`); the operator-visible failure mode is then a runtime `gojq: undefined variable $<name>` from the patch verb's expression. Restart the daemon (`browzer daemon stop && browzer daemon start`) when upgrading the CLI. Tests pin both decode directions in `internal/daemon/workflow_mutate_test.go` (`TestWorkflowMutateParams_AdditiveJQVarsContract`, `TestWorkflowMutateParams_AbsentJQVarsDecodesAsNilMap`). |
 | `noLock` | bool \| undefined | **REJECTED** in the daemon path. Setting `noLock: true` returns `noLock_unsupported_in_daemon_path` so the caller falls back to standalone where `--no-lock` is honored. |
 | `awaitDurability` | bool \| undefined | When `true`, daemon returns only after the mutation has been written and `fsync`'d (file + parent dir). When `false`/omitted, daemon returns immediately after enqueue (`mode: "daemon-async"`). |
 | `lockTimeoutMs` | int \| undefined | Advisory lock acquisition timeout in milliseconds. Default 5000. The daemon's response ceiling for `awaitDurability=true` is `lockTimeoutMs + 2s`. |

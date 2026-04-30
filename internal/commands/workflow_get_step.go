@@ -132,8 +132,7 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "render: %v\n", err)
 					return err
 				}
-				_, _ = fmt.Fprint(cmd.OutOrStdout(), out)
-				return nil
+				return emitReadRaw(cmd, out)
 			}
 
 			if field != "" {
@@ -141,8 +140,7 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 				if err != nil {
 					return err
 				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), val)
-				return nil
+				return emitReadJSON(cmd, val)
 			}
 
 			// Print full step JSON.
@@ -150,8 +148,7 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 			if err != nil {
 				return fmt.Errorf("marshal step: %w", err)
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(b))
-			return nil
+			return emitReadJSON(cmd, string(b))
 		},
 	}
 
@@ -160,6 +157,7 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 	cmd.Flags().StringVar(&renderTemplate, "render", "", "render the step using a named template (e.g. execute-task, finding)")
 	cmd.Flags().BoolVar(&bashVars, "bash-vars", false, "output shell-export-compatible KEY=value lines suitable for eval")
 	cmd.Flags().StringVar(&findingID, "finding", "", "finding ID to render (used with --render finding; defaults to first open finding)")
+	cmd.Flags().String("save", "", "write the read payload to <path> instead of stdout")
 	parent.AddCommand(cmd)
 }
 

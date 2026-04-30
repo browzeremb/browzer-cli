@@ -82,6 +82,22 @@ type WorkflowMutateParams struct {
 	Payload         json.RawMessage `json:"payload,omitempty"`
 	Args            []string        `json:"args,omitempty"`
 	JQExpr          string          `json:"jqExpr,omitempty"`
+	// JQVars binds variables for the patch verb's jq expression. Keys are
+	// bare identifiers (no leading `$`); values are arbitrary JSON-decoded
+	// scalars/objects/arrays. Used only when Verb=="patch". Older daemons
+	// will silently ignore this field (additive contract, JSON unknown-field
+	// tolerance).
+	//
+	// Version-skew failure mode: when a NEW CLI sends --arg/--argjson
+	// bindings to an OLDER daemon binary that predates JQVars support, the
+	// daemon silently drops the field and executes the jq expression without
+	// any variable bindings. gojq then fails at compile time with
+	// "undefined variable $<name>". The caller sees a cryptic jq error, not a
+	// clear "daemon too old" message. Operators encountering this error should
+	// restart the daemon to pick up the new binary:
+	//
+	//   browzer daemon stop && browzer daemon start
+	JQVars          map[string]any  `json:"jqVars,omitempty"`
 	NoLock          bool            `json:"noLock,omitempty"`
 	AwaitDurability bool            `json:"awaitDurability,omitempty"`
 	LockTimeoutMs   int64           `json:"lockTimeoutMs,omitempty"`
@@ -191,6 +207,7 @@ func (s *Server) handleWorkflowMutate(ctx context.Context, raw json.RawMessage) 
 			Args:    p.Args,
 			Payload: []byte(p.Payload),
 			JQExpr:  p.JQExpr,
+			JQVars:  p.JQVars,
 		},
 		awaitDurability: p.AwaitDurability,
 		lockTimeout:     lockTimeout,

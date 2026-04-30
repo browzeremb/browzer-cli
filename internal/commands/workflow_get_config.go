@@ -36,9 +36,9 @@ func registerWorkflowGetConfig(parent *cobra.Command) {
 			if err != nil {
 				return fmt.Errorf("config key %q: %w", key, err)
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), val)
-			return nil
+			return emitReadJSON(cmd, val)
 		},
 	}
+	cmd.Flags().String("save", "", "write the read payload to <path> instead of stdout")
 	parent.AddCommand(cmd)
 }

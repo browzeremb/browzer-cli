@@ -81,6 +81,11 @@ type MutatorArgs struct {
 	Payload []byte
 	// JQExpr is the jq mutation expression. Used only by `patch`.
 	JQExpr string
+	// JQVars binds variables for the `patch` jq expression — the gojq
+	// equivalent of `jq --arg name value` / `jq --argjson name <json>`.
+	// Keys are bare identifiers (no leading `$`); values are Go-native
+	// JSON-decoded scalars/maps/arrays. Used only by `patch`.
+	JQVars map[string]any
 }
 
 // Mutators is the verb registry. Keep keys in sync with the cobra subcommand
@@ -578,7 +583,7 @@ func mutatorPatch(raw map[string]any, args MutatorArgs, _ *ApplyResult) error {
 	if args.JQExpr == "" {
 		return fmt.Errorf("patch: --jq is required")
 	}
-	result, err := ApplyJQ(raw, args.JQExpr)
+	result, err := ApplyJQWithVars(raw, args.JQExpr, args.JQVars)
 	if err != nil {
 		return fmt.Errorf("jq error: %w", err)
 	}

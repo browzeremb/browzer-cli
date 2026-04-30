@@ -57,14 +57,19 @@ func registerWorkflowQuery(parent *cobra.Command) {
 
 			elapsedMs := time.Since(start).Milliseconds()
 
-			// Audit line on stderr — symmetric with mutator verbs (NFR-4 from
+			// Audit line — symmetric with mutator verbs (NFR-4 from
 			// docs/superpowers/specs/2026-04-24-workflow-redesign-design.md §13).
 			// Reads don't hold the advisory lock, so lockHeldMs=0; validatedOk
-			// reflects whether load+decode succeeded.
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-				"verb=query name=%s elapsedMs=%d lockHeldMs=0 validatedOk=true\n",
-				name, elapsedMs,
-			)
+			// reflects whether load+decode succeeded. Routing under --quiet /
+			// --llm / BROWZER_WORKFLOW_QUIET / BROWZER_LLM is owned by
+			// emitAuditLine: stderr by default; SQLite tracker on the LLM
+			// gate (SA-8); dropped on the explicit-quiet gate.
+			emitAuditLine(cmd, cmd.ErrOrStderr(), wf.AuditLine{
+				Verb:        "query",
+				Reason:      "name=" + name,
+				ElapsedMs:   elapsedMs,
+				ValidatedOk: true,
+			})
 
 			// Emit JSON (always); --json is reserved as a no-op flag for
 			// symmetry with get-step / get-config so callers can pass it
@@ -74,12 +79,12 @@ func registerWorkflowQuery(parent *cobra.Command) {
 			if err != nil {
 				return fmt.Errorf("marshal query result: %w", err)
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(b))
-			return nil
+			return emitReadJSON(cmd, string(b))
 		},
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "explicit JSON output (default; flag retained for verb symmetry)")
+	cmd.Flags().String("save", "", "write the read payload to <path> instead of stdout")
 	parent.AddCommand(cmd)
 }
 

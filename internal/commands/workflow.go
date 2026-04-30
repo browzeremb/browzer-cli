@@ -34,7 +34,14 @@ func registerWorkflow(parent *cobra.Command) {
 	cmd.PersistentFlags().Bool("async", false, "send mutation through the daemon and return immediately (default mode)")
 	cmd.PersistentFlags().Bool("sync", false, "skip the daemon and apply the mutation in-process (historic behaviour)")
 	cmd.PersistentFlags().Bool("await", false, "send mutation through the daemon and block until durable (file + parent dir fsync)")
-
+	// --quiet suppresses the per-mutation audit line on success. Errors and
+	// fallback warnings still print on stderr (the exit code remains the
+	// authoritative success signal). Also honored via BROWZER_WORKFLOW_QUIET
+	// or BROWZER_LLM/--llm so LLM-driven shells don't pollute the agent's
+	// tool-result context with high-frequency telemetry. On read verbs,
+	// --quiet only silences the post-save confirmation line emitted under
+	// --save; the data payload itself is never silenced.
+	cmd.PersistentFlags().Bool("quiet", false, "suppress the audit telemetry line on success (errors still print)")
 	registerWorkflowAppendReviewHistory(cmd)
 	registerWorkflowAppendStep(cmd)
 	registerWorkflowAuditModelOverride(cmd)

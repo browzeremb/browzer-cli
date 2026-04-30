@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/config"
 	"github.com/browzeremb/browzer-cli/internal/daemon"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
+	"github.com/browzeremb/browzer-cli/internal/tracker"
 	wf "github.com/browzeremb/browzer-cli/internal/workflow"
 	"github.com/spf13/cobra"
 )
@@ -168,6 +170,99 @@ func resolveWriteMode(cmd *cobra.Command) (writeMode, error) {
 // Reset on process boundaries (which is fine — agents re-fork per command).
 var daemonFallbackWarnOnce sync.Once
 
+// flagBoolEither returns true if the named boolean flag is set to true on
+// either the command's local FlagSet or its InheritedFlags.
+//
+// We check both Flags() and InheritedFlags() because the same flag may be
+// locally re-declared on a sub-command without InheritedFlags() reflecting
+// the override; defending against future flag-shadowing.
+func flagBoolEither(cmd *cobra.Command, name string) bool {
+	if v, err := cmd.Flags().GetBool(name); err == nil && v {
+		return true
+	}
+	if v, err := cmd.InheritedFlags().GetBool(name); err == nil && v {
+		return true
+	}
+	return false
+}
+
+// quietSource identifies which input silenced the audit line. Used by
+// auditQuietSource() so callers can branch on the gate (e.g. SA-8: route
+// the line through the SQLite tracker only when the LLM gate is active —
+// preserving observability for high-frequency LLM-driven traffic).
+type quietSource string
+
+const (
+	quietSourceNone     quietSource = ""
+	quietSourceQuietFlag quietSource = "quiet-flag"
+	quietSourceQuietEnv  quietSource = "quiet-env"
+	quietSourceLLMEnv    quietSource = "llm-env"
+	quietSourceLLMFlag   quietSource = "llm-flag"
+)
+
+// auditQuietRequested reports whether the per-mutation audit telemetry
+// line should be suppressed for this invocation. See auditQuietSource()
+// for which input gated the suppression.
+func auditQuietRequested(cmd *cobra.Command) bool {
+	_, src := auditQuietSource(cmd)
+	return src != quietSourceNone
+}
+
+// auditQuietSource reports (quiet, source) where source identifies which
+// input gated the suppression. Sources checked (any truthy → quiet):
+//
+//   - Four logical sources: --quiet, --llm, BROWZER_WORKFLOW_QUIET,
+//     BROWZER_LLM; each flag is checked at both local and inherited scopes.
+//
+// Errors and fallback warnings still print on stderr regardless of this
+// flag — exit code remains the authoritative success signal.
+// There is no --no-quiet escape hatch; to re-enable audit, unset the env
+// var or omit --quiet.
+//
+// Precedence: any source may set quiet to true; there is no way to opt out
+// from an env var via the flag (env-set quiet is sticky for the process
+// lifetime). Operators must `unset BROWZER_WORKFLOW_QUIET` if they want
+// flag-driven control.
+//
+// Source precedence (when multiple are truthy): quiet-flag > quiet-env >
+// llm-env > llm-flag. The order is significant only for telemetry routing:
+// LLM-gated suppressions route to the SQLite tracker (SA-8) so observability
+// survives the silenced stderr path.
+func auditQuietSource(cmd *cobra.Command) (bool, quietSource) {
+	if flagBoolEither(cmd, "quiet") {
+		return true, quietSourceQuietFlag
+	}
+	if envBoolish(os.Getenv("BROWZER_WORKFLOW_QUIET")) {
+		return true, quietSourceQuietEnv
+	}
+	if envBoolish(os.Getenv("BROWZER_LLM")) {
+		return true, quietSourceLLMEnv
+	}
+	if flagBoolEither(cmd, "llm") {
+		return true, quietSourceLLMFlag
+	}
+	return false, quietSourceNone
+}
+
+// isLLMGate reports whether the quiet source is one of the LLM-mode gates
+// (--llm or BROWZER_LLM) — i.e. the operator asked to silence audit for
+// LLM-context cleanliness, NOT for general quiet output. SA-8 routes audit
+// data to the SQLite tracker only when this is true; explicit --quiet /
+// BROWZER_WORKFLOW_QUIET genuinely want the line gone.
+func isLLMGate(s quietSource) bool {
+	return s == quietSourceLLMEnv || s == quietSourceLLMFlag
+}
+
+// envBoolish parses common truthy strings: 1, true, yes, on (case-insensitive).
+// Empty / unset / 0 / false / no / off → false.
+func envBoolish(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // dispatchToDaemonOrFallback runs verb on the daemon when feasible and
 // falls back to the standalone path otherwise. Audit emission happens at
 // the end of the chosen path; the verb's RunE no longer prints its own
@@ -240,7 +335,7 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	if awaitDurability {
 		auditMode = wf.AuditModeDaemonSync
 	}
-	wf.WriteAudit(stderr, wf.AuditLine{
+	line := wf.AuditLine{
 		Verb:            verb,
 		Path:            wfPath,
 		Mode:            auditMode,
@@ -251,7 +346,8 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 		Durable:         res.Durable,
 		QueueDepthAhead: res.QueueDepthAhead,
 		ElapsedMs:       time.Since(startedAt).Milliseconds(),
-	})
+	}
+	emitAuditLine(cmd, stderr, line)
 	return nil
 }
 
@@ -299,7 +395,7 @@ func runStandaloneAndAudit(cmd *cobra.Command, wfPath, verb string, args wf.Muta
 			"warn: step %q is already COMPLETED (idempotent no-op)\n", res.StepID)
 	}
 
-	wf.WriteAudit(stderr, wf.AuditLine{
+	line := wf.AuditLine{
 		Verb:        verb,
 		Path:        wfPath,
 		Mode:        mode,
@@ -309,8 +405,100 @@ func runStandaloneAndAudit(cmd *cobra.Command, wfPath, verb string, args wf.Muta
 		Durable:     res.Durable,
 		ElapsedMs:   time.Since(startedAt).Milliseconds(),
 		Reason:      auditReason,
-	})
+	}
+	emitAuditLine(cmd, stderr, line)
 	return nil
+}
+
+// emitAuditLine writes the workflow-mutation audit line to the right sink:
+//
+//   - Not silenced (no --quiet, no --llm, no env override) → stderr verbatim
+//     (legacy behaviour; observability via shell pipelines).
+//   - Silenced via --llm / BROWZER_LLM (LLM-mode gate) → SQLite tracker via
+//     tracker.Record(). Stderr stays clean (LLM tool-result context isn't
+//     polluted) but the data lands in the events table for `browzer gain`
+//     aggregation. SA-8 closure.
+//   - Silenced via --quiet / BROWZER_WORKFLOW_QUIET (operator explicitly
+//     wants the line gone) → drop. Operator chose silence.
+//
+// Tracker errors are best-effort and never propagate — observability is a
+// "nice to have" on the silenced path; if SQLite is locked / disk full /
+// schema-mismatched, the calling mutation already succeeded and we don't
+// want to fail it on telemetry. A failed Record bumps a single-line warning
+// once per process via trackerWarnOnce.
+func emitAuditLine(cmd *cobra.Command, stderr io.Writer, line wf.AuditLine) {
+	quiet, src := auditQuietSource(cmd)
+	if !quiet {
+		wf.WriteAudit(stderr, line)
+		return
+	}
+	if isLLMGate(src) {
+		recordAuditEventBestEffort(line, string(src))
+	}
+}
+
+// trackerWarnOnce limits "tracker.Record failed" warnings to one per process
+// boundary so high-frequency LLM-driven traffic doesn't spam stderr.
+var trackerWarnOnce sync.Once
+
+// recordAuditEventBestEffort persists one workflow-mutation audit line into
+// the SQLite tracker. Uses a fresh Open/Close per call — the daemon owns the
+// long-lived handle, but the CLI on the LLM-gate path is short-lived so a
+// per-call open is fine (WAL mode + the tracker's internal mutex handle the
+// concurrency).
+//
+// The Event shape is intentionally minimal: source="workflow-audit", command
+// is the verb (`patch`, `set-status`, `query`, ...), exec_ms is the audit
+// line's ElapsedMs, and the path-hash + writeId are stuffed into PathHash /
+// SessionID respectively so the gain query can group by them when desired.
+// Token-economy fields (input/output bytes, savings) are zero — workflow
+// mutations are not the savings surface, but they ARE traffic that operators
+// running with --llm want visibility into.
+func recordAuditEventBestEffort(line wf.AuditLine, src string) {
+	tr, err := tracker.Open(config.HistoryDBPath())
+	if err != nil {
+		trackerWarnOnce.Do(func() {
+			_, _ = fmt.Fprintf(os.Stderr, "warn: workflow audit tracker open failed (%v) — telemetry on the LLM-gate path is dropped for this run\n", err)
+		})
+		return
+	}
+	defer func() { _ = tr.Close() }()
+
+	pathHash := hashPathForTracker(line.Path)
+	writeID := line.WriteID
+	cmdStr := line.Verb
+	if line.Reason != "" {
+		cmdStr = line.Verb + ":" + line.Reason
+	}
+	stepID := line.StepID
+	ev := tracker.Event{
+		TS:          time.Now().UTC().Format(time.RFC3339),
+		Source:      "workflow-audit:" + src,
+		Command:     cmdStr,
+		PathHash:    &pathHash,
+		ExecMs:      int(line.ElapsedMs),
+		WorkspaceID: &stepID,
+		SessionID:   &writeID,
+	}
+	if err := tr.Record(ev); err != nil {
+		trackerWarnOnce.Do(func() {
+			_, _ = fmt.Fprintf(os.Stderr, "warn: workflow audit tracker record failed (%v) — telemetry on the LLM-gate path is dropped for this run\n", err)
+		})
+	}
+}
+
+// hashPathForTracker returns a stable short hash of an absolute workflow.json
+// path. The tracker schema treats path_hash as opaque; we want grouping by
+// path without persisting the full path (operator $HOME / org names leak
+// otherwise). FNV-1a is fast and collision-stable for our small N (paths
+// touched in one CLI process).
+func hashPathForTracker(p string) string {
+	if p == "" {
+		return ""
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(p))
+	return fmt.Sprintf("%016x", h.Sum64())
 }
 
 // daemonErrorReason converts a JSON-RPC error string into an audit-line
