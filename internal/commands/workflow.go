@@ -14,7 +14,33 @@ import (
 var workflowCmd = &cobra.Command{
 	Use:   "workflow",
 	Short: "Inspect and validate workflow.json files",
-	Long:  "Read and validate Browzer feature workflow.json files.\n\nRun `browzer workflow [command] --help` for subcommand details.",
+	Long: "Read and validate Browzer feature workflow.json files.\n" +
+		"\n" +
+		"Mutator verbs (acquire advisory lock + validate post-mutation):\n" +
+		"  append-step, update-step, complete-step, set-status, set-config,\n" +
+		"  set-current-step, append-review-history, append-dispatch,\n" +
+		"  audit-model-override, truncation-audit, reapply-additional-context,\n" +
+		"  patch --jq <expr> (generic; supports --arg KEY=VAL / --argjson KEY=<json>).\n" +
+		"\n" +
+		"Read verbs (no lock):\n" +
+		"  get-step [--field <jq-path>] [--render <template>] [--bash-vars]\n" +
+		"           [--save <path>] [--quiet]\n" +
+		"  get-config <key>, validate, schema [--json-schema], query <named>,\n" +
+		"  describe-step-type <NAME>.\n" +
+		"\n" +
+		"Quiet modes (silence the per-mutation audit line on stderr — errors\n" +
+		"and structured hints still print):\n" +
+		"  --quiet                       flag, persistent across the workflow group\n" +
+		"  BROWZER_WORKFLOW_QUIET=1      env var, equivalent to --quiet\n" +
+		"  --llm  / BROWZER_LLM=1        also strips banners + ANSI + spinners;\n" +
+		"                                audit line routes to the SQLite tracker\n" +
+		"                                (workflow-audit:llm-*) so `browzer gain`\n" +
+		"                                aggregation continues to work.\n" +
+		"\n" +
+		"There is no `patch step` / `patch <stepId>` verb. Generic mutations of\n" +
+		"a step's payload always go through `patch --jq '<expr>'`.\n" +
+		"\n" +
+		"Run `browzer workflow [command] --help` for subcommand details.",
 }
 
 // registerWorkflow adds the workflow command group to parent.

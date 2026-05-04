@@ -18,8 +18,27 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 	var findingID string
 
 	cmd := &cobra.Command{
-		Use:          "get-step <stepId>",
-		Short:        "Print a step from workflow.json by its stepId",
+		Use:   "get-step <stepId>",
+		Short: "Print a step from workflow.json by its stepId",
+		Long: "Print a step from workflow.json by its stepId.\n" +
+			"\n" +
+			"Output modes:\n" +
+			"  (default)         JSON object on stdout\n" +
+			"  --field <jq>      single field, scalar or array (use --json to quote)\n" +
+			"  --render <tmpl>   prompt-embed text block — templates:\n" +
+			"                      execute-task, code-review, brainstorming,\n" +
+			"                      update-docs, generate-task, finding\n" +
+			"  --bash-vars       shell-export `KEY=value` lines (eval-safe)\n" +
+			"\n" +
+			"Save / silence:\n" +
+			"  --save <path>     write payload to <path> instead of stdout. With\n" +
+			"                    --quiet (or BROWZER_WORKFLOW_QUIET=1, --llm,\n" +
+			"                    BROWZER_LLM=1) the post-save confirmation line\n" +
+			"                    is suppressed too — combined, the result is\n" +
+			"                    zero stdout, payload on disk, exit 0.\n" +
+			"  --quiet           suppress the post-save confirmation line.\n" +
+			"\n" +
+			"--field, --render, --bash-vars are mutually exclusive.\n",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -354,10 +354,22 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	// Collapsing them into one call would conflate "daemon reachable" with
 	// "daemon supports protocol v2" and obscure the fallback reason for
 	// audit logs. Keep both checks.
+	// WF-CLI-UX-1 (2026-05-04): daemon-fallback / protocol-mismatch
+	// warnings respect the same quiet gate as the audit line. When the
+	// operator has set --quiet / BROWZER_WORKFLOW_QUIET=1 / --llm /
+	// BROWZER_LLM=1 (skill orchestrators set BROWZER_LLM=1 once at entry),
+	// these soft warnings disappear from stderr but the fallback STILL
+	// happens and the audit line still records `mode=fallback-sync
+	// reason=…`. Schema validation errors and structured hints remain
+	// visible — only these per-process warn-once messages are gated.
+	quiet := auditQuietRequested(cmd)
+
 	if !cli.HasCapability(ctx, "workflow.v1") {
-		daemonFallbackWarnOnce.Do(func() {
-			_, _ = fmt.Fprintln(stderr, "warn: daemon path unavailable (no workflow.v1) — falling back to standalone for this run")
-		})
+		if !quiet {
+			daemonFallbackWarnOnce.Do(func() {
+				_, _ = fmt.Fprintln(stderr, "warn: daemon path unavailable (no workflow.v1) — falling back to standalone for this run")
+			})
+		}
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_unreachable", startedAt)
 	}
 
@@ -367,15 +379,19 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	// returns method_not_found, decode error) we fall back to standalone —
 	// the Daemon.Version method is the contract gate, not a soft hint.
 	if vresp, vErr := daemonVersionPreflight(ctx, cli); vErr != nil {
-		daemonFallbackWarnOnce.Do(func() {
-			_, _ = fmt.Fprintf(stderr, "warn: daemon version preflight failed (%v) — falling back to standalone for this run\n", vErr)
-		})
+		if !quiet {
+			daemonFallbackWarnOnce.Do(func() {
+				_, _ = fmt.Fprintf(stderr, "warn: daemon version preflight failed (%v) — falling back to standalone for this run\n", vErr)
+			})
+		}
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_version_unavailable", startedAt)
 	} else if vresp.ProtocolVersion != daemon.CurrentProtocolVersion {
-		daemonVersionMismatchWarnOnce.Do(func() {
-			_, _ = fmt.Fprintln(stderr,
-				"warn: daemon protocol mismatch (expected v"+strconv.Itoa(daemon.CurrentProtocolVersion)+", got v"+strconv.Itoa(vresp.ProtocolVersion)+") — falling back to standalone")
-		})
+		if !quiet {
+			daemonVersionMismatchWarnOnce.Do(func() {
+				_, _ = fmt.Fprintln(stderr,
+					"warn: daemon protocol mismatch (expected v"+strconv.Itoa(daemon.CurrentProtocolVersion)+", got v"+strconv.Itoa(vresp.ProtocolVersion)+") — falling back to standalone")
+			})
+		}
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_protocol_mismatch", startedAt)
 	}
 
@@ -396,9 +412,11 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 		// queue_full / unknown_verb / timeout / etc. Surface the reason in
 		// the audit line and fall back to standalone (which re-applies
 		// idempotently on retried verbs).
-		daemonFallbackWarnOnce.Do(func() {
-			_, _ = fmt.Fprintf(stderr, "warn: daemon WorkflowMutate failed (%v) — falling back to standalone for this run\n", err)
-		})
+		if !quiet {
+			daemonFallbackWarnOnce.Do(func() {
+				_, _ = fmt.Fprintf(stderr, "warn: daemon WorkflowMutate failed (%v) — falling back to standalone for this run\n", err)
+			})
+		}
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, daemonErrorReason(err), startedAt)
 	}
 
