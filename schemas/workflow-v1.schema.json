@@ -67,6 +67,21 @@
                     }
                 }
             },
+            "AdditionalContextObj": {
+                "description": "#AdditionalContextObj is the structured shape consumed by the\n`browzer workflow reapply-additional-context` mutator (apply.go:1011).\nEach #FileChange entry rewrites task.scope per its `kind`:\n  - corrected: replaces `from` with `to`\n  - added:     appends `path` (or `to` as fallback) to scope\n  - dropped:   removes `path` (or `from` as fallback) from scope\nSchema added 2026-05-04 (WF-SYNC-2): mutator already implemented this\nshape since 2026-04-24; the schema previously declared `string` only,\ncausing CUE rejection of the legitimate runtime contract.",
+                "type": "object",
+                "required": [
+                    "changes"
+                ],
+                "properties": {
+                    "changes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/FileChange"
+                        }
+                    }
+                }
+            },
             "AnchorDoc": {
                 "type": "object",
                 "required": [
@@ -1026,6 +1041,34 @@
                         ]
                     }
                 ]
+            },
+            "FileChange": {
+                "type": "object",
+                "required": [
+                    "kind"
+                ],
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "corrected",
+                            "added",
+                            "dropped"
+                        ]
+                    },
+                    "from": {
+                        "type": "string"
+                    },
+                    "to": {
+                        "type": "string"
+                    },
+                    "path": {
+                        "type": "string"
+                    },
+                    "reason": {
+                        "type": "string"
+                    }
+                }
             },
             "Finding": {
                 "type": "object",
@@ -2850,8 +2893,16 @@
                         "type": "string"
                     },
                     "additionalContext": {
-                        "type": "string",
-                        "default": ""
+                        "description": "additionalContext: free-form prose (default \"\") OR a structured object\nconsumable by the `reapply-additional-context` mutator (apply.go:1011).\nString form is preserved for back-compat and skill orchestrators that\nemit prose summaries; object form is the canonical shape consumed by\nthe mutator to translate Reviewer corrections into `task.scope` updates.",
+                        "default": "",
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "$ref": "#/components/schemas/AdditionalContextObj"
+                            }
+                        ]
                     },
                     "skipTestsReason": {
                         "type": "string",

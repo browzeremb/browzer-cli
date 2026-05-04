@@ -352,7 +352,12 @@ type TaskReviewer struct {
 
 	CompletedAt string `json:"completedAt,omitempty"`
 
-	AdditionalContext string `json:"additionalContext"`
+	// additionalContext: free-form prose (default "") OR a structured object
+	// consumable by the `reapply-additional-context` mutator (apply.go:1011).
+	// String form is preserved for back-compat and skill orchestrators that
+	// emit prose summaries; object form is the canonical shape consumed by
+	// the mutator to translate Reviewer corrections into `task.scope` updates.
+	AdditionalContext any/* CUE disjunction: (string|struct) */ `json:"additionalContext"`
 
 	SkipTestsReason any/* CUE disjunction: (null|string) */ `json:"skipTestsReason"`
 
@@ -435,6 +440,32 @@ type SkillFound struct {
 	Skill string `json:"skill"`
 
 	Relevance string `json:"relevance"`
+}
+
+// #AdditionalContextObj is the structured shape consumed by the
+// `browzer workflow reapply-additional-context` mutator (apply.go:1011).
+// Each #FileChange entry rewrites task.scope per its `kind`:
+//   - corrected: replaces `from` with `to`
+//   - added:     appends `path` (or `to` as fallback) to scope
+//   - dropped:   removes `path` (or `from` as fallback) from scope
+//
+// Schema added 2026-05-04 (WF-SYNC-2): mutator already implemented this
+// shape since 2026-04-24; the schema previously declared `string` only,
+// causing CUE rejection of the legitimate runtime contract.
+type AdditionalContextObj struct {
+	Changes []FileChange `json:"changes"`
+}
+
+type FileChange struct {
+	Kind string `json:"kind"`
+
+	From string `json:"from,omitempty"`
+
+	To string `json:"to,omitempty"`
+
+	Path string `json:"path,omitempty"`
+
+	Reason string `json:"reason,omitempty"`
 }
 
 type TestSpec struct {
