@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260504-brainstorming-fixture",
+  "featureName": "Brainstorming fixture",
+  "featDir": "docs/browzer/feat-20260504-brainstorming-fixture",
+  "originalRequest": "do a thing",
+  "operator": { "locale": "pt-BR" },
+  "config": { "mode": "review", "setAt": "2026-05-04T00:00:00Z" },
+  "startedAt": "2026-05-04T00:00:00Z",
+  "updatedAt": "2026-05-04T00:10:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 10.0,
+  "currentStepId": "STEP_01_BRAINSTORMING",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_BRAINSTORMING",
+      "name": "BRAINSTORMING",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "vague request" },
+      "startedAt": "2026-05-04T00:00:00Z",
+      "completedAt": "2026-05-04T00:10:00Z",
+      "elapsedMin": 10.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["brainstorming"],
+      "skillsInvoked": ["brainstorming"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [
+        {
+          "round": 1,
+          "proposal": "draft",
+          "operatorAction": "approve",
+          "operatorNote": "",
+          "decidedAt": "2026-05-04T00:09:00Z"
+        }
+      ],
+      "dispatches": [],
+      "brainstorming": {
+        "questionsAsked": 7,
+        "researchRoundRun": false,
+        "researchAgents": 0,
+        "dimensions": {
+          "primaryUser": "operator",
+          "jobToBeDone": "ship workflow contract",
+          "successSignal": "judge rubric collapses",
+          "inScope": ["cue schema"],
+          "outOfScope": ["rag pipeline"],
+          "repoSurface": ["packages/cli"],
+          "techConstraints": [],
+          "failureModes": [],
+          "acceptanceCriteria": [],
+          "dependencies": [],
+          "openQuestions": []
+        },
+        "researchFindings": [],
+        "assumptions": [],
+        "openRisks": []
+      }
+    }
+  ]
+}

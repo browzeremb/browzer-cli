@@ -1,0 +1,3495 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Single source of truth for docs/browzer/<feat>/workflow.json (schema v2).\nEdit this file ONLY — workflow-v1.schema.json, workflow_v1.go, and\npackages/skills/references/workflow-schema.md are regenerated from it via\n`make ci-check`. See README.md.\n\nHard cutoff: schemaVersion 2 introduced 2026-05-04 — workflows under v1 are\nread-only post-merge (per WORKFLOW_SYNC_REDESIGN.md §5).\n\n@addedIn dating convention:\n  2026-04-24T00:00:00Z — pre-existing fields from schema v1 (workflow.json\n                         introduction).\n  2026-04-30T18:00:00Z — fields added in feat-20260430-ci-flake-strike retro\n                         (kind enum, executionDepth, commandSource).\n  2026-05-04T00:00:00Z — fields newly required by this PR (totalElapsedMin,\n                         completedAt, elapsedMin, dispatches[], pluginVersion).",
+        "version": "no version"
+    },
+    "paths": {},
+    "components": {
+        "schemas": {
+            "AC": {
+                "type": "object",
+                "required": [
+                    "id"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^AC-[0-9]+$"
+                    },
+                    "text": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "bindsTo": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^FR-[0-9]+$"
+                        }
+                    }
+                }
+            },
+            "ACRelaxation": {
+                "type": "object",
+                "required": [
+                    "acId",
+                    "originalTarget",
+                    "relaxedTarget",
+                    "rationale",
+                    "source",
+                    "at"
+                ],
+                "properties": {
+                    "acId": {
+                        "type": "string",
+                        "pattern": "^AC-[0-9]+$"
+                    },
+                    "originalTarget": {
+                        "type": "string"
+                    },
+                    "relaxedTarget": {
+                        "type": "string"
+                    },
+                    "rationale": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": [
+                            "operator"
+                        ]
+                    },
+                    "at": {
+                        "type": "string"
+                    }
+                }
+            },
+            "AnchorDoc": {
+                "type": "object",
+                "required": [
+                    "doc",
+                    "source",
+                    "disposition"
+                ],
+                "properties": {
+                    "doc": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": [
+                            "repo-root-changelog",
+                            "walk-up",
+                            "repo-root-debts",
+                            "user-visible-change"
+                        ]
+                    },
+                    "disposition": {
+                        "type": "string",
+                        "enum": [
+                            "auto-included-fresh",
+                            "deduped-vs-direct-ref",
+                            "deduped-vs-mentions",
+                            "deduped-vs-concept",
+                            "skipped-no-user-visible-change",
+                            "skipped-historical-archived"
+                        ]
+                    }
+                }
+            },
+            "BrainstormAlternative": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "reason-rejected"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "reason-rejected": {
+                        "type": "string"
+                    }
+                }
+            },
+            "BrainstormDecision": {
+                "type": "object",
+                "required": [
+                    "chosen",
+                    "rationale",
+                    "alternativesConsidered"
+                ],
+                "properties": {
+                    "chosen": {
+                        "type": "string"
+                    },
+                    "rationale": {
+                        "type": "string"
+                    },
+                    "alternativesConsidered": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/BrainstormAlternative"
+                        }
+                    }
+                }
+            },
+            "BrainstormDimensions": {
+                "type": "object",
+                "required": [
+                    "primaryUser",
+                    "jobToBeDone",
+                    "successSignal",
+                    "inScope",
+                    "outOfScope",
+                    "repoSurface",
+                    "techConstraints",
+                    "failureModes",
+                    "acceptanceCriteria",
+                    "dependencies",
+                    "openQuestions"
+                ],
+                "properties": {
+                    "primaryUser": {
+                        "type": "string"
+                    },
+                    "jobToBeDone": {
+                        "type": "string"
+                    },
+                    "successSignal": {
+                        "type": "string"
+                    },
+                    "inScope": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "outOfScope": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "repoSurface": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "techConstraints": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "failureModes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "acceptanceCriteria": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "dependencies": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "openQuestions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "Brainstorming": {
+                "type": "object",
+                "required": [
+                    "questionsAsked",
+                    "researchRoundRun",
+                    "researchAgents",
+                    "dimensions",
+                    "researchFindings",
+                    "assumptions",
+                    "openRisks",
+                    "decision"
+                ],
+                "properties": {
+                    "questionsAsked": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "researchRoundRun": {
+                        "type": "boolean"
+                    },
+                    "researchAgents": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "dimensions": {
+                        "$ref": "#/components/schemas/BrainstormDimensions"
+                    },
+                    "researchFindings": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ResearchFinding"
+                        }
+                    },
+                    "assumptions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "openRisks": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "decision": {
+                        "type": "object",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/BrainstormDecision"
+                            },
+                            {
+                                "default": null
+                            }
+                        ],
+                        "nullable": true
+                    }
+                }
+            },
+            "BrainstormingStep": {
+                "description": "=============================================================\nBRAINSTORMING\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "BRAINSTORMING"
+                        ]
+                    },
+                    "brainstorming": {
+                        "$ref": "#/components/schemas/Brainstorming"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "brainstorming"
+                        ]
+                    }
+                ]
+            },
+            "CodeReview": {
+                "type": "object",
+                "required": [
+                    "dispatchMode",
+                    "reviewTier",
+                    "mandatoryMembers",
+                    "recommendedMembers",
+                    "customMembers",
+                    "duplicationFindings",
+                    "regressionRun",
+                    "findings"
+                ],
+                "properties": {
+                    "agentTeamsEnabled": {
+                        "type": "boolean"
+                    },
+                    "dispatchMode": {
+                        "type": "string",
+                        "enum": [
+                            "agent-teams",
+                            "parallel-with-consolidator"
+                        ]
+                    },
+                    "reviewTier": {
+                        "type": "string",
+                        "enum": [
+                            "basic",
+                            "recommended",
+                            "custom"
+                        ]
+                    },
+                    "tokenCostEstimate": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "mandatoryMembers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "recommendedMembers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "customMembers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "consolidator": {
+                        "$ref": "#/components/schemas/CodeReviewConsolidator"
+                    },
+                    "baseline": {
+                        "$ref": "#/components/schemas/CodeReviewBaseline"
+                    },
+                    "severityCounts": {
+                        "$ref": "#/components/schemas/SeverityCounts"
+                    },
+                    "cyclomaticAudit": {
+                        "$ref": "#/components/schemas/CyclomaticAudit"
+                    },
+                    "duplicationFindings": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/DuplicationFinding"
+                        }
+                    },
+                    "regressionRun": {
+                        "type": "object",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/RegressionRun"
+                            },
+                            {
+                                "default": null
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Finding"
+                        }
+                    }
+                }
+            },
+            "CodeReviewBaseline": {
+                "type": "object",
+                "required": [
+                    "source",
+                    "reusedGates",
+                    "freshGates"
+                ],
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "enum": [
+                            "workflow-json",
+                            "fresh-run",
+                            "hybrid"
+                        ]
+                    },
+                    "reusedGates": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "freshGates": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "duration": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CodeReviewConsolidator": {
+                "type": "object",
+                "required": [
+                    "mode"
+                ],
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "in-line",
+                            "dispatched-agent"
+                        ]
+                    },
+                    "reason": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CodeReviewStep": {
+                "description": "=============================================================\nCODE_REVIEW\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "CODE_REVIEW"
+                        ]
+                    },
+                    "codeReview": {
+                        "$ref": "#/components/schemas/CodeReview"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "codeReview"
+                        ]
+                    }
+                ]
+            },
+            "CommitDescriptor": {
+                "type": "object",
+                "required": [
+                    "conventionalType",
+                    "scope",
+                    "subject",
+                    "body",
+                    "trailers",
+                    "prePushAuditsRun",
+                    "pushAttempts",
+                    "prePushAudits"
+                ],
+                "properties": {
+                    "sha": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{7,40}$"
+                    },
+                    "conventionalType": {
+                        "type": "string",
+                        "enum": [
+                            "feat",
+                            "fix",
+                            "chore",
+                            "docs",
+                            "refactor",
+                            "test",
+                            "perf",
+                            "ci",
+                            "build",
+                            "style",
+                            "revert"
+                        ]
+                    },
+                    "scope": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "subject": {
+                        "type": "string"
+                    },
+                    "body": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "trailers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "prePushAuditsRun": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "pushAttempts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PushAttempt"
+                        }
+                    },
+                    "prePushAudits": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PrePushAudit"
+                        }
+                    }
+                }
+            },
+            "CommitStep": {
+                "description": "=============================================================\nCOMMIT\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "COMMIT"
+                        ]
+                    },
+                    "commit": {
+                        "$ref": "#/components/schemas/CommitDescriptor"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "commit"
+                        ]
+                    }
+                ]
+            },
+            "CyclomaticAudit": {
+                "type": "object",
+                "required": [
+                    "conductedBy",
+                    "files"
+                ],
+                "properties": {
+                    "conductedBy": {
+                        "type": "string"
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/CyclomaticFile"
+                        }
+                    }
+                }
+            },
+            "CyclomaticFile": {
+                "type": "object",
+                "required": [
+                    "file",
+                    "maxComplexity",
+                    "threshold",
+                    "verdict"
+                ],
+                "properties": {
+                    "file": {
+                        "type": "string"
+                    },
+                    "maxComplexity": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "threshold": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "enum": [
+                            "warn",
+                            "ok",
+                            "fail"
+                        ]
+                    }
+                }
+            },
+            "DispatchRecord": {
+                "type": "object",
+                "required": [
+                    "agentId",
+                    "dispatchPromptDigest",
+                    "promptByteCount",
+                    "promptPath",
+                    "renderTemplateUsed",
+                    "dispatchedAt",
+                    "model",
+                    "status",
+                    "findingsAddressed",
+                    "filesModified",
+                    "filesCreated",
+                    "filesDeleted"
+                ],
+                "properties": {
+                    "agentId": {
+                        "type": "string"
+                    },
+                    "dispatchPromptDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "promptByteCount": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "promptPath": {
+                        "type": "string"
+                    },
+                    "renderTemplateUsed": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "dispatchedAt": {
+                        "type": "string"
+                    },
+                    "model": {
+                        "type": "string",
+                        "enum": [
+                            "haiku",
+                            "sonnet",
+                            "opus"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "in_progress",
+                            "completed",
+                            "failed",
+                            "skipped"
+                        ],
+                        "default": "in_progress"
+                    },
+                    "findingsAddressed": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "filesModified": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "filesCreated": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "filesDeleted": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "DocMention": {
+                "type": "object",
+                "required": [
+                    "sourceFile",
+                    "mentionedBy"
+                ],
+                "properties": {
+                    "sourceFile": {
+                        "type": "string"
+                    },
+                    "mentionedBy": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "doc",
+                                "confidence"
+                            ],
+                            "properties": {
+                                "doc": {
+                                    "type": "string"
+                                },
+                                "confidence": {
+                                    "type": "number"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "DocPatch": {
+                "type": "object",
+                "required": [
+                    "doc",
+                    "reason",
+                    "linesChanged",
+                    "verdict"
+                ],
+                "properties": {
+                    "doc": {
+                        "type": "string"
+                    },
+                    "reason": {
+                        "type": "string"
+                    },
+                    "linesChanged": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "enum": [
+                            "applied",
+                            "skipped",
+                            "failed"
+                        ]
+                    },
+                    "notes": {
+                        "type": "string"
+                    }
+                }
+            },
+            "DuplicationFinding": {
+                "type": "object",
+                "required": [
+                    "pattern",
+                    "files",
+                    "suggestedExtraction"
+                ],
+                "properties": {
+                    "pattern": {
+                        "type": "string"
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "suggestedExtraction": {
+                        "type": "string"
+                    }
+                }
+            },
+            "FAcceptanceCriterion": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "status",
+                    "evidence",
+                    "method"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^AC-[0-9]+$"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "verified",
+                            "unverified",
+                            "failed"
+                        ]
+                    },
+                    "evidence": {
+                        "type": "string"
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": [
+                            "test",
+                            "inspect",
+                            "metric"
+                        ]
+                    },
+                    "rationale": {
+                        "type": "string"
+                    }
+                }
+            },
+            "FNFR": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "status",
+                    "coversAcceptanceSignal",
+                    "evidence",
+                    "measured",
+                    "target"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^NFR-[0-9]+$"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "verified",
+                            "partial",
+                            "failed"
+                        ]
+                    },
+                    "coversAcceptanceSignal": {
+                        "type": "string",
+                        "enum": [
+                            "pass",
+                            "warn",
+                            "block"
+                        ]
+                    },
+                    "evidence": {
+                        "type": "string"
+                    },
+                    "measured": {
+                        "type": "string"
+                    },
+                    "target": {
+                        "type": "string"
+                    }
+                }
+            },
+            "FR": {
+                "type": "object",
+                "required": [
+                    "id"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^FR-[0-9]+$"
+                    },
+                    "text": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": [
+                            "must",
+                            "should",
+                            "could"
+                        ]
+                    }
+                }
+            },
+            "FSuccessMetric": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "measured",
+                    "target",
+                    "status"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^M-[0-9]+$"
+                    },
+                    "measured": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ]
+                    },
+                    "target": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "met",
+                            "unmet"
+                        ]
+                    }
+                }
+            },
+            "FeatureAcceptance": {
+                "type": "object",
+                "required": [
+                    "mode",
+                    "modeNote",
+                    "acceptanceCriteria",
+                    "nfrVerifications",
+                    "successMetrics",
+                    "acRelaxations",
+                    "operatorActionsRequested",
+                    "executionRequiredProbe",
+                    "liveVerificationAttempt"
+                ],
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "autonomous",
+                            "manual",
+                            "hybrid"
+                        ]
+                    },
+                    "modeNote": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "acceptanceCriteria": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/FAcceptanceCriterion"
+                        }
+                    },
+                    "nfrVerifications": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/FNFR"
+                        }
+                    },
+                    "successMetrics": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/FSuccessMetric"
+                        }
+                    },
+                    "acRelaxations": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ACRelaxation"
+                        }
+                    },
+                    "operatorActionsRequested": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OperatorAction"
+                        }
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "enum": [
+                            "completed",
+                            "stopped",
+                            "paused-pending-operator"
+                        ]
+                    },
+                    "executionRequiredProbe": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "liveVerificationAttempt": {
+                        "type": "boolean",
+                        "default": false
+                    }
+                }
+            },
+            "FeatureAcceptanceStep": {
+                "description": "=============================================================\nFEATURE_ACCEPTANCE\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "FEATURE_ACCEPTANCE"
+                        ]
+                    },
+                    "featureAcceptance": {
+                        "$ref": "#/components/schemas/FeatureAcceptance"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "featureAcceptance"
+                        ]
+                    }
+                ]
+            },
+            "Finding": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "domain",
+                    "severity",
+                    "category",
+                    "file",
+                    "description",
+                    "suggestedFix",
+                    "assignedSkill",
+                    "status"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^F-[0-9]+$"
+                    },
+                    "domain": {
+                        "type": "string"
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": [
+                            "high",
+                            "medium",
+                            "low"
+                        ]
+                    },
+                    "category": {
+                        "type": "string"
+                    },
+                    "file": {
+                        "type": "string"
+                    },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "suggestedFix": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "assignedSkill": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "open",
+                            "fixing",
+                            "fixed",
+                            "wontfix"
+                        ]
+                    }
+                }
+            },
+            "GateRow": {
+                "type": "object",
+                "properties": {
+                    "lint": {
+                        "type": "string",
+                        "enum": [
+                            "pass",
+                            "fail",
+                            "skip"
+                        ]
+                    },
+                    "typecheck": {
+                        "type": "string"
+                    },
+                    "tests": {
+                        "type": "string"
+                    }
+                }
+            },
+            "GlobalWarning": {
+                "type": "object",
+                "required": [
+                    "at",
+                    "message"
+                ],
+                "properties": {
+                    "at": {
+                        "type": "string"
+                    },
+                    "stepId": {
+                        "type": "string",
+                        "pattern": "^STEP_[0-9]{2}_[A-Z0-9_]+$"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                }
+            },
+            "GreenTests": {
+                "type": "object",
+                "required": [
+                    "added",
+                    "augmented"
+                ],
+                "properties": {
+                    "added": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "augmented": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "duration": {
+                        "type": "string"
+                    }
+                }
+            },
+            "Invariant": {
+                "type": "object",
+                "required": [
+                    "rule"
+                ],
+                "properties": {
+                    "rule": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": "string"
+                    }
+                }
+            },
+            "InvariantCheck": {
+                "type": "object",
+                "required": [
+                    "rule",
+                    "source",
+                    "status"
+                ],
+                "properties": {
+                    "rule": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "passed",
+                            "failed"
+                        ]
+                    },
+                    "note": {
+                        "type": "string"
+                    }
+                }
+            },
+            "MutationCoverageGap": {
+                "type": "object",
+                "required": [
+                    "reason",
+                    "uncoveredFiles",
+                    "remediation"
+                ],
+                "properties": {
+                    "reason": {
+                        "type": "string"
+                    },
+                    "uncoveredFiles": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "remediation": {
+                        "type": "string"
+                    }
+                }
+            },
+            "MutationSurvivor": {
+                "type": "object",
+                "required": [
+                    "file",
+                    "line",
+                    "mutator",
+                    "killedByNewTest",
+                    "addedTestFile"
+                ],
+                "properties": {
+                    "file": {
+                        "type": "string"
+                    },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "mutator": {
+                        "type": "string"
+                    },
+                    "killedByNewTest": {
+                        "type": "boolean"
+                    },
+                    "addedTestFile": {
+                        "type": "string",
+                        "default": ""
+                    }
+                }
+            },
+            "MutationTesting": {
+                "type": "object",
+                "required": [
+                    "ran",
+                    "tool",
+                    "score",
+                    "target",
+                    "survivors",
+                    "coverageGap"
+                ],
+                "properties": {
+                    "ran": {
+                        "type": "boolean"
+                    },
+                    "tool": {
+                        "type": "string",
+                        "enum": [
+                            "stryker",
+                            "mutmut",
+                            "go-mutesting"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "score": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "default": 0
+                    },
+                    "target": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "default": 0
+                    },
+                    "survivors": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/MutationSurvivor"
+                        }
+                    },
+                    "coverageGap": {
+                        "type": "object",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/MutationCoverageGap"
+                            },
+                            {
+                                "default": null
+                            }
+                        ],
+                        "nullable": true
+                    }
+                }
+            },
+            "NFR": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "target"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^NFR-[0-9]+$"
+                    },
+                    "text": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "category": {
+                        "type": "string"
+                    },
+                    "target": {
+                        "type": "string"
+                    }
+                }
+            },
+            "Note": {
+                "type": "object",
+                "required": [
+                    "at",
+                    "message"
+                ],
+                "properties": {
+                    "at": {
+                        "type": "string"
+                    },
+                    "stepId": {
+                        "type": "string",
+                        "pattern": "^STEP_[0-9]{2}_[A-Z0-9_]+$"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                }
+            },
+            "OperatorAction": {
+                "type": "object",
+                "required": [
+                    "ac",
+                    "kind",
+                    "description",
+                    "at",
+                    "resolved",
+                    "resolution"
+                ],
+                "properties": {
+                    "ac": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true,
+                        "pattern": "^AC-[0-9]+$"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "deferred-post-merge",
+                            "manual-verification",
+                            "inherited-scope-adjustment",
+                            "blocks-commit",
+                            "deferred-follow-up",
+                            "deferred-pre-commit"
+                        ]
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "at": {
+                        "type": "string"
+                    },
+                    "resolved": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    }
+                }
+            },
+            "OperatorInfo": {
+                "type": "object",
+                "required": [
+                    "locale"
+                ],
+                "properties": {
+                    "locale": {
+                        "type": "string",
+                        "default": ""
+                    }
+                }
+            },
+            "PRD": {
+                "type": "object",
+                "required": [
+                    "title",
+                    "overview",
+                    "personas",
+                    "objectives",
+                    "inScope",
+                    "outOfScope",
+                    "deliverables",
+                    "functionalRequirements",
+                    "nonFunctionalRequirements",
+                    "successMetrics",
+                    "acceptanceCriteria",
+                    "risks",
+                    "assumptions",
+                    "taskGranularity"
+                ],
+                "properties": {
+                    "title": {
+                        "type": "string"
+                    },
+                    "overview": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "personas": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Persona"
+                        }
+                    },
+                    "objectives": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "inScope": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "outOfScope": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "deliverables": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "functionalRequirements": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/FR"
+                        }
+                    },
+                    "nonFunctionalRequirements": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/NFR"
+                        }
+                    },
+                    "successMetrics": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SuccessMetric"
+                        }
+                    },
+                    "acceptanceCriteria": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AC"
+                        }
+                    },
+                    "risks": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Risk"
+                        }
+                    },
+                    "dependencies": {
+                        "$ref": "#/components/schemas/PRDDependencies"
+                    },
+                    "assumptions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "taskGranularity": {
+                        "type": "string",
+                        "default": ""
+                    }
+                }
+            },
+            "PRDDependencies": {
+                "type": "object",
+                "properties": {
+                    "external": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "internal": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "PRDStep": {
+                "description": "=============================================================\nPRD step + payload\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "PRD"
+                        ]
+                    },
+                    "prd": {
+                        "$ref": "#/components/schemas/PRD"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "prd"
+                        ]
+                    }
+                ]
+            },
+            "Persona": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "description"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^P-[0-9]+$"
+                    },
+                    "description": {
+                        "type": "string"
+                    }
+                }
+            },
+            "PrePushAudit": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "source",
+                    "exitCode",
+                    "durationMs"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": [
+                            "lefthook",
+                            "husky",
+                            "operator"
+                        ]
+                    },
+                    "exitCode": {
+                        "type": "integer"
+                    },
+                    "durationMs": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "output": {
+                        "type": "string"
+                    }
+                }
+            },
+            "PushAttempt": {
+                "type": "object",
+                "required": [
+                    "sha",
+                    "attemptedAt",
+                    "lefthookBypassed",
+                    "noVerifyPassed",
+                    "amendUsed",
+                    "bypassedAudits",
+                    "bypassReason",
+                    "retryCount",
+                    "previousFailure"
+                ],
+                "properties": {
+                    "sha": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{7,40}$"
+                    },
+                    "attemptedAt": {
+                        "type": "string"
+                    },
+                    "lefthookBypassed": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "noVerifyPassed": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "amendUsed": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "bypassedAudits": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "bypassReason": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "retryCount": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "previousFailure": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    }
+                }
+            },
+            "ReceivingCodeReview": {
+                "type": "object",
+                "required": [
+                    "iteration",
+                    "summary",
+                    "dispatches",
+                    "unrecovered",
+                    "notes"
+                ],
+                "properties": {
+                    "iteration": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "summary": {
+                        "$ref": "#/components/schemas/ReceivingSummary"
+                    },
+                    "dispatches": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ReceivingDispatch"
+                        }
+                    },
+                    "unrecovered": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/UnrecoveredFinding"
+                        }
+                    },
+                    "notes": {
+                        "type": "string",
+                        "default": ""
+                    }
+                }
+            },
+            "ReceivingCodeReviewStep": {
+                "description": "=============================================================\nRECEIVING_CODE_REVIEW\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "RECEIVING_CODE_REVIEW"
+                        ]
+                    },
+                    "receivingCodeReview": {
+                        "$ref": "#/components/schemas/ReceivingCodeReview"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "receivingCodeReview"
+                        ]
+                    }
+                ]
+            },
+            "ReceivingDispatch": {
+                "type": "object",
+                "required": [
+                    "findingId",
+                    "iteration",
+                    "reason",
+                    "role",
+                    "skill",
+                    "model",
+                    "status",
+                    "filesChanged",
+                    "researchBundle",
+                    "failureTrace",
+                    "startedAt",
+                    "completedAt"
+                ],
+                "properties": {
+                    "findingId": {
+                        "type": "string",
+                        "pattern": "^F-[0-9]+$"
+                    },
+                    "iteration": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "reason": {
+                        "type": "string",
+                        "enum": [
+                            "initial",
+                            "retry",
+                            "research-then-sonnet",
+                            "research-then-opus",
+                            "staging-regression",
+                            "post-deploy",
+                            "operator-feedback"
+                        ]
+                    },
+                    "role": {
+                        "type": "string"
+                    },
+                    "skill": {
+                        "type": "string"
+                    },
+                    "model": {
+                        "type": "string",
+                        "enum": [
+                            "sonnet",
+                            "opus"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "fixed",
+                            "failed",
+                            "skipped"
+                        ]
+                    },
+                    "filesChanged": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "gatesPostFix": {
+                        "type": "object",
+                        "properties": {
+                            "lint": {
+                                "type": "string"
+                            },
+                            "typecheck": {
+                                "type": "string"
+                            },
+                            "tests": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "researchBundle": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "failureTrace": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "startedAt": {
+                        "type": "string"
+                    },
+                    "completedAt": {
+                        "type": "string"
+                    }
+                }
+            },
+            "ReceivingSummary": {
+                "type": "object",
+                "required": [
+                    "total",
+                    "fixed",
+                    "unrecovered"
+                ],
+                "properties": {
+                    "total": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "fixed": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "unrecovered": {
+                        "type": "integer",
+                        "minimum": 0
+                    }
+                }
+            },
+            "RegressionFailure": {
+                "type": "object",
+                "required": [
+                    "testFile",
+                    "testName",
+                    "error"
+                ],
+                "properties": {
+                    "testFile": {
+                        "type": "string"
+                    },
+                    "testName": {
+                        "type": "string"
+                    },
+                    "error": {
+                        "type": "string"
+                    }
+                }
+            },
+            "RegressionRow": {
+                "type": "object",
+                "required": [
+                    "file",
+                    "test",
+                    "result"
+                ],
+                "properties": {
+                    "file": {
+                        "type": "string"
+                    },
+                    "test": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "type": "string",
+                        "enum": [
+                            "pass",
+                            "fail",
+                            "skip"
+                        ]
+                    }
+                }
+            },
+            "RegressionRun": {
+                "type": "object",
+                "required": [
+                    "tool",
+                    "scope",
+                    "command",
+                    "commandSource",
+                    "executionDepth",
+                    "filesInRadius",
+                    "testFilesExecuted",
+                    "exitCode",
+                    "passed",
+                    "failed",
+                    "skippedTests",
+                    "skipped",
+                    "skipReason",
+                    "summary",
+                    "failures"
+                ],
+                "properties": {
+                    "tool": {
+                        "type": "string",
+                        "enum": [
+                            "vitest",
+                            "pytest",
+                            "go test",
+                            "cargo test",
+                            "jest",
+                            "skipped",
+                            "lefthook"
+                        ]
+                    },
+                    "scope": {
+                        "type": "string",
+                        "default": "blast-radius"
+                    },
+                    "command": {
+                        "type": "string"
+                    },
+                    "commandSource": {
+                        "type": "string",
+                        "enum": [
+                            "lefthook",
+                            "husky",
+                            "package-scripts",
+                            "stack-default",
+                            "operator"
+                        ]
+                    },
+                    "executionDepth": {
+                        "type": "string",
+                        "enum": [
+                            "static-only",
+                            "scoped-execute",
+                            "full-rehearse"
+                        ]
+                    },
+                    "filesInRadius": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "testFilesExecuted": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "exitCode": {
+                        "type": "integer"
+                    },
+                    "passed": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "failed": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "skippedTests": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "duration": {
+                        "type": "string"
+                    },
+                    "skipped": {
+                        "type": "boolean"
+                    },
+                    "skipReason": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "summary": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "failures": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/RegressionFailure"
+                        }
+                    }
+                }
+            },
+            "ResearchFinding": {
+                "type": "object",
+                "required": [
+                    "question",
+                    "answer",
+                    "confidence",
+                    "sources"
+                ],
+                "properties": {
+                    "question": {
+                        "type": "string"
+                    },
+                    "answer": {
+                        "type": "string"
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": [
+                            "high",
+                            "med",
+                            "low"
+                        ]
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "ReviewExchange": {
+                "type": "object",
+                "required": [
+                    "round",
+                    "proposal",
+                    "operatorAction",
+                    "operatorNote",
+                    "decidedAt"
+                ],
+                "properties": {
+                    "round": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "proposal": {
+                        "type": "string"
+                    },
+                    "operatorAction": {
+                        "type": "string",
+                        "enum": [
+                            "approve",
+                            "adjust",
+                            "skip",
+                            "stop"
+                        ]
+                    },
+                    "operatorNote": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "decidedAt": {
+                        "type": "string"
+                    }
+                }
+            },
+            "Risk": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "mitigation"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^R-[0-9]+$"
+                    },
+                    "text": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "mitigation": {
+                        "type": "string"
+                    }
+                }
+            },
+            "ScopeAdjustment": {
+                "type": "object",
+                "required": [
+                    "kind",
+                    "adjustment",
+                    "reason",
+                    "resolution",
+                    "owner"
+                ],
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "spec-relaxation",
+                            "scope-expansion",
+                            "scope-reduction",
+                            "no-op-refactor",
+                            "out-of-scope-fix",
+                            "deferred-to-followup"
+                        ]
+                    },
+                    "adjustment": {
+                        "type": "string"
+                    },
+                    "reason": {
+                        "type": "string"
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "pattern": "^(accepted|rejected|deferred)( — .+)?$"
+                    },
+                    "owner": {
+                        "type": "string",
+                        "enum": [
+                            "specialist",
+                            "orchestrator"
+                        ]
+                    },
+                    "loggedAsWarning": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "SeverityCounts": {
+                "type": "object",
+                "required": [
+                    "high",
+                    "medium",
+                    "low"
+                ],
+                "properties": {
+                    "high": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "medium": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "low": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    }
+                }
+            },
+            "SkillFound": {
+                "type": "object",
+                "required": [
+                    "domain",
+                    "skill",
+                    "relevance"
+                ],
+                "properties": {
+                    "domain": {
+                        "type": "string"
+                    },
+                    "skill": {
+                        "type": "string"
+                    },
+                    "relevance": {
+                        "type": "string",
+                        "enum": [
+                            "med",
+                            "high",
+                            "low"
+                        ],
+                        "default": "med"
+                    }
+                }
+            },
+            "Step": {
+                "description": "=============================================================\nStep base + step-type discriminator\n=============================================================\n#Step is a discriminated union: name selects which payload struct applies.\nClosed disjunction — any name not in the registry is rejected.",
+                "type": "object",
+                "oneOf": [
+                    {
+                        "$ref": "#/components/schemas/PRDStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/TasksManifestStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/TaskStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/BrainstormingStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/CodeReviewStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/ReceivingCodeReviewStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/WriteTestsStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/UpdateDocsStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/FeatureAcceptanceStep"
+                    },
+                    {
+                        "$ref": "#/components/schemas/CommitStep"
+                    }
+                ]
+            },
+            "StepApplicability": {
+                "type": "object",
+                "required": [
+                    "applicable",
+                    "reason"
+                ],
+                "properties": {
+                    "applicable": {
+                        "type": "boolean"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "default": ""
+                    }
+                }
+            },
+            "StepBase": {
+                "type": "object",
+                "required": [
+                    "stepId",
+                    "name",
+                    "status",
+                    "applicability",
+                    "startedAt",
+                    "completedAt",
+                    "elapsedMin",
+                    "retryCount",
+                    "itDependsOn",
+                    "nextStep",
+                    "skillsToInvoke",
+                    "skillsInvoked",
+                    "owner",
+                    "warnings",
+                    "reviewHistory",
+                    "dispatches"
+                ],
+                "properties": {
+                    "stepId": {
+                        "type": "string",
+                        "pattern": "^STEP_[0-9]{2}_[A-Z0-9_]+$"
+                    },
+                    "name": {
+                        "$ref": "#/components/schemas/StepName"
+                    },
+                    "taskId": {
+                        "type": "string",
+                        "pattern": "^TASK_[0-9]{2}$"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/StepStatus"
+                    },
+                    "applicability": {
+                        "$ref": "#/components/schemas/StepApplicability"
+                    },
+                    "startedAt": {
+                        "type": "string"
+                    },
+                    "completedAt": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "elapsedMin": {
+                        "type": "number",
+                        "default": 0,
+                        "oneOf": [
+                            {
+                                "minimum": 0
+                            },
+                            {
+                                "minimum": 0
+                            }
+                        ]
+                    },
+                    "retryCount": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "skipReason": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "itDependsOn": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "nextStep": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "skillsToInvoke": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "skillsInvoked": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "owner": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "worktrees": {
+                        "$ref": "#/components/schemas/StepWorktrees"
+                    },
+                    "warnings": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Warning"
+                        }
+                    },
+                    "reviewHistory": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ReviewExchange"
+                        }
+                    },
+                    "dispatches": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/DispatchRecord"
+                        }
+                    }
+                }
+            },
+            "StepDefinitions": {
+                "description": "=============================================================\nStep-type discriminator registry — used by codegen + describe-step-type.\n=============================================================",
+                "type": "object",
+                "required": [
+                    "PRD",
+                    "TASKS_MANIFEST",
+                    "TASK",
+                    "BRAINSTORMING",
+                    "CODE_REVIEW",
+                    "RECEIVING_CODE_REVIEW",
+                    "WRITE_TESTS",
+                    "UPDATE_DOCS",
+                    "FEATURE_ACCEPTANCE",
+                    "COMMIT"
+                ],
+                "properties": {
+                    "PRD": {
+                        "$ref": "#/components/schemas/PRDStep"
+                    },
+                    "TASKS_MANIFEST": {
+                        "$ref": "#/components/schemas/TasksManifestStep"
+                    },
+                    "TASK": {
+                        "$ref": "#/components/schemas/TaskStep"
+                    },
+                    "BRAINSTORMING": {
+                        "$ref": "#/components/schemas/BrainstormingStep"
+                    },
+                    "CODE_REVIEW": {
+                        "$ref": "#/components/schemas/CodeReviewStep"
+                    },
+                    "RECEIVING_CODE_REVIEW": {
+                        "$ref": "#/components/schemas/ReceivingCodeReviewStep"
+                    },
+                    "WRITE_TESTS": {
+                        "$ref": "#/components/schemas/WriteTestsStep"
+                    },
+                    "UPDATE_DOCS": {
+                        "$ref": "#/components/schemas/UpdateDocsStep"
+                    },
+                    "FEATURE_ACCEPTANCE": {
+                        "$ref": "#/components/schemas/FeatureAcceptanceStep"
+                    },
+                    "COMMIT": {
+                        "$ref": "#/components/schemas/CommitStep"
+                    }
+                }
+            },
+            "StepName": {
+                "type": "string",
+                "enum": [
+                    "PRD",
+                    "TASKS_MANIFEST",
+                    "TASK",
+                    "BRAINSTORMING",
+                    "CODE_REVIEW",
+                    "RECEIVING_CODE_REVIEW",
+                    "WRITE_TESTS",
+                    "UPDATE_DOCS",
+                    "FEATURE_ACCEPTANCE",
+                    "COMMIT"
+                ]
+            },
+            "StepStatus": {
+                "type": "string",
+                "enum": [
+                    "PENDING",
+                    "RUNNING",
+                    "AWAITING_REVIEW",
+                    "COMPLETED",
+                    "STOPPED",
+                    "PAUSED_PENDING_OPERATOR",
+                    "SKIPPED",
+                    "FAILED"
+                ]
+            },
+            "StepWorktrees": {
+                "type": "object",
+                "required": [
+                    "used",
+                    "worktrees"
+                ],
+                "properties": {
+                    "used": {
+                        "type": "boolean"
+                    },
+                    "worktrees": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/WorktreeEntry"
+                        }
+                    }
+                }
+            },
+            "SuccessMetric": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "metric",
+                    "target",
+                    "method"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^M-[0-9]+$"
+                    },
+                    "metric": {
+                        "type": "string"
+                    },
+                    "target": {
+                        "type": "string"
+                    },
+                    "method": {
+                        "type": "string"
+                    }
+                }
+            },
+            "TaskAC": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "bindsTo"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^T-AC-[0-9]+$"
+                    },
+                    "bindsTo": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^AC-[0-9]+$"
+                        }
+                    },
+                    "description": {
+                        "type": "string"
+                    }
+                }
+            },
+            "TaskAgent": {
+                "type": "object",
+                "required": [
+                    "role",
+                    "skill",
+                    "model",
+                    "status"
+                ],
+                "properties": {
+                    "role": {
+                        "type": "string"
+                    },
+                    "skill": {
+                        "type": "string"
+                    },
+                    "model": {
+                        "type": "string",
+                        "enum": [
+                            "haiku",
+                            "sonnet",
+                            "opus"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "running",
+                            "completed",
+                            "failed"
+                        ]
+                    },
+                    "startedAt": {
+                        "type": "string"
+                    },
+                    "completedAt": {
+                        "type": "string"
+                    },
+                    "skillsLoaded": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "notes": {
+                        "type": "string"
+                    }
+                }
+            },
+            "TaskBrief": {
+                "type": "object",
+                "required": [
+                    "taskId",
+                    "title",
+                    "suggestedModel",
+                    "trivial",
+                    "skillsFound",
+                    "scope"
+                ],
+                "properties": {
+                    "taskId": {
+                        "type": "string",
+                        "pattern": "^TASK_[0-9]{2}$"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "suggestedModel": {
+                        "type": "string",
+                        "enum": [
+                            "haiku",
+                            "sonnet",
+                            "opus"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "trivial": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "skillsFound": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "scope": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "dependsOn": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^TASK_[0-9]{2}$"
+                        }
+                    }
+                }
+            },
+            "TaskExecution": {
+                "type": "object",
+                "required": [
+                    "scope",
+                    "invariants",
+                    "suggestedModel",
+                    "trivial",
+                    "execution"
+                ],
+                "properties": {
+                    "title": {
+                        "type": "string"
+                    },
+                    "scope": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "dependsOn": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^TASK_[0-9]{2}$"
+                        }
+                    },
+                    "invariants": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Invariant"
+                        }
+                    },
+                    "acceptanceCriteria": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TaskAC"
+                        }
+                    },
+                    "suggestedModel": {
+                        "type": "string",
+                        "enum": [
+                            "haiku",
+                            "sonnet",
+                            "opus"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "trivial": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "explorer": {
+                        "$ref": "#/components/schemas/TaskExplorer"
+                    },
+                    "reviewer": {
+                        "$ref": "#/components/schemas/TaskReviewer"
+                    },
+                    "execution": {
+                        "$ref": "#/components/schemas/TaskExecutionResult"
+                    }
+                }
+            },
+            "TaskExecutionResult": {
+                "type": "object",
+                "required": [
+                    "gates",
+                    "scopeAdjustments",
+                    "agents",
+                    "invariantsChecked",
+                    "nextSteps"
+                ],
+                "properties": {
+                    "gates": {
+                        "$ref": "#/components/schemas/TaskGates"
+                    },
+                    "files": {
+                        "$ref": "#/components/schemas/TaskFiles"
+                    },
+                    "filesModified": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "filesCreated": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "filesDeleted": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "scopeAdjustments": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ScopeAdjustment"
+                        }
+                    },
+                    "agents": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TaskAgent"
+                        }
+                    },
+                    "invariantsChecked": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/InvariantCheck"
+                        }
+                    },
+                    "fileEditsSummary": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "edits": {
+                                    "type": "integer"
+                                },
+                                "details": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "testsRan": {
+                        "$ref": "#/components/schemas/TestsRan"
+                    },
+                    "nextSteps": {
+                        "type": "string",
+                        "default": ""
+                    }
+                }
+            },
+            "TaskExplorer": {
+                "type": "object",
+                "required": [
+                    "model",
+                    "filesModified",
+                    "filesToRead",
+                    "domains",
+                    "skillsFound"
+                ],
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "enum": [
+                            "haiku",
+                            "sonnet",
+                            "opus"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "completedAt": {
+                        "type": "string"
+                    },
+                    "filesModified": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "filesToRead": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "depsGraph": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "imports": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "importedBy": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "domains": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "skillsFound": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SkillFound"
+                        }
+                    }
+                }
+            },
+            "TaskFiles": {
+                "type": "object",
+                "required": [
+                    "created",
+                    "modified",
+                    "deleted"
+                ],
+                "properties": {
+                    "created": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "modified": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "deleted": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "TaskGates": {
+                "type": "object",
+                "required": [
+                    "baseline",
+                    "postChange",
+                    "regression"
+                ],
+                "properties": {
+                    "baseline": {
+                        "$ref": "#/components/schemas/GateRow"
+                    },
+                    "postChange": {
+                        "$ref": "#/components/schemas/GateRow"
+                    },
+                    "regression": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/RegressionRow"
+                        }
+                    }
+                }
+            },
+            "TaskReviewer": {
+                "type": "object",
+                "required": [
+                    "model",
+                    "additionalContext",
+                    "skipTestsReason",
+                    "testSpecs"
+                ],
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "enum": [
+                            "haiku",
+                            "sonnet",
+                            "opus"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "completedAt": {
+                        "type": "string"
+                    },
+                    "additionalContext": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "skipTestsReason": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "testSpecs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TestSpec"
+                        }
+                    }
+                }
+            },
+            "TaskStep": {
+                "description": "=============================================================\nTASK step + payload\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "TASK"
+                        ]
+                    },
+                    "taskId": {
+                        "type": "string",
+                        "pattern": "^TASK_[0-9]{2}$"
+                    },
+                    "task": {
+                        "$ref": "#/components/schemas/TaskExecution"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "taskId",
+                            "task"
+                        ]
+                    }
+                ]
+            },
+            "TasksManifest": {
+                "type": "object",
+                "required": [
+                    "totalTasks",
+                    "tasksOrder",
+                    "dependencyGraph",
+                    "parallelizable"
+                ],
+                "properties": {
+                    "totalTasks": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "tasksOrder": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^TASK_[0-9]{2}$"
+                        }
+                    },
+                    "dependencyGraph": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "pattern": "^TASK_[0-9]{2}$"
+                            }
+                        }
+                    },
+                    "parallelizable": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "pattern": "^TASK_[0-9]{2}$"
+                            }
+                        }
+                    },
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TaskBrief"
+                        }
+                    }
+                }
+            },
+            "TasksManifestStep": {
+                "description": "=============================================================\nTASKS_MANIFEST\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "TASKS_MANIFEST"
+                        ]
+                    },
+                    "tasksManifest": {
+                        "$ref": "#/components/schemas/TasksManifest"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "tasksManifest"
+                        ]
+                    }
+                ]
+            },
+            "TestSpec": {
+                "type": "object",
+                "required": [
+                    "testId",
+                    "file",
+                    "type",
+                    "description"
+                ],
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "pattern": "^T-[0-9]+$"
+                    },
+                    "file": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "green"
+                        ]
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "coverageTarget": {
+                        "type": "string"
+                    }
+                }
+            },
+            "TestsRan": {
+                "type": "object",
+                "properties": {
+                    "preChange": {
+                        "type": "object",
+                        "properties": {
+                            "testCount": {
+                                "type": "string"
+                            },
+                            "duration": {
+                                "type": "string"
+                            },
+                            "details": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "postChange": {
+                        "type": "object",
+                        "properties": {
+                            "testCount": {
+                                "type": "string"
+                            },
+                            "duration": {
+                                "type": "string"
+                            },
+                            "details": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "TwoPassRun": {
+                "type": "object",
+                "required": [
+                    "directRef",
+                    "conceptLevel",
+                    "mentionsPass",
+                    "mentionsFallbackUsed",
+                    "mentionsResultEmpty",
+                    "mentionsFallback"
+                ],
+                "properties": {
+                    "directRef": {
+                        "type": "boolean"
+                    },
+                    "conceptLevel": {
+                        "type": "boolean"
+                    },
+                    "mentionsPass": {
+                        "type": "boolean"
+                    },
+                    "mentionsFallbackUsed": {
+                        "type": "boolean"
+                    },
+                    "mentionsResultEmpty": {
+                        "type": "string",
+                        "enum": [
+                            "all-new-files",
+                            "no-edges",
+                            "uncommitted-edits",
+                            "index-lag"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "mentionsFallback": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    }
+                }
+            },
+            "UnrecoveredFinding": {
+                "type": "object",
+                "required": [
+                    "findingId",
+                    "severity",
+                    "lastTrace",
+                    "totalIterations",
+                    "modelsTried",
+                    "researchPassesRun",
+                    "loggedToTechDebt"
+                ],
+                "properties": {
+                    "findingId": {
+                        "type": "string",
+                        "pattern": "^F-[0-9]+$"
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": [
+                            "high",
+                            "medium",
+                            "low"
+                        ]
+                    },
+                    "lastTrace": {
+                        "type": "string"
+                    },
+                    "totalIterations": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "modelsTried": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "researchPassesRun": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "loggedToTechDebt": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    }
+                }
+            },
+            "UpdateDocs": {
+                "type": "object",
+                "required": [
+                    "docsMentioning",
+                    "anchorDocsAlwaysIncluded",
+                    "patches",
+                    "twoPassRun"
+                ],
+                "properties": {
+                    "docsMentioning": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/DocMention"
+                        }
+                    },
+                    "anchorDocsAlwaysIncluded": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AnchorDoc"
+                        }
+                    },
+                    "patches": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/DocPatch"
+                        }
+                    },
+                    "twoPassRun": {
+                        "$ref": "#/components/schemas/TwoPassRun"
+                    }
+                }
+            },
+            "UpdateDocsStep": {
+                "description": "=============================================================\nUPDATE_DOCS\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "UPDATE_DOCS"
+                        ]
+                    },
+                    "updateDocs": {
+                        "$ref": "#/components/schemas/UpdateDocs"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "updateDocs"
+                        ]
+                    }
+                ]
+            },
+            "Warning": {
+                "type": "object",
+                "required": [
+                    "kind",
+                    "message"
+                ],
+                "properties": {
+                    "kind": {
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "at": {
+                        "type": "string"
+                    }
+                }
+            },
+            "WorkflowConfig": {
+                "type": "object",
+                "required": [
+                    "mode",
+                    "setAt"
+                ],
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "autonomous",
+                            "review"
+                        ],
+                        "default": "autonomous"
+                    },
+                    "executionStrategy": {
+                        "type": "string",
+                        "enum": [
+                            "serial",
+                            "parallel-worktrees",
+                            "agent-teams",
+                            "parallel"
+                        ]
+                    },
+                    "testExecutionDepth": {
+                        "type": "string",
+                        "enum": [
+                            "static-only",
+                            "scoped-execute",
+                            "full-rehearse"
+                        ]
+                    },
+                    "testExecutionDepthAuto": {
+                        "type": "boolean"
+                    },
+                    "setAt": {
+                        "type": "string"
+                    },
+                    "switchedFrom": {
+                        "type": "string",
+                        "enum": [
+                            "autonomous",
+                            "review"
+                        ]
+                    },
+                    "switchedAt": {
+                        "type": "string"
+                    }
+                }
+            },
+            "WorkflowV1": {
+                "description": "=============================================================\nTop-level workflow\n=============================================================",
+                "type": "object",
+                "required": [
+                    "schemaVersion",
+                    "pluginVersion",
+                    "featureId",
+                    "featureName",
+                    "featDir",
+                    "originalRequest",
+                    "operator",
+                    "config",
+                    "startedAt",
+                    "updatedAt",
+                    "completedAt",
+                    "totalElapsedMin",
+                    "currentStepId",
+                    "nextStepId",
+                    "totalSteps",
+                    "completedSteps",
+                    "notes",
+                    "globalWarnings",
+                    "steps"
+                ],
+                "properties": {
+                    "schemaVersion": {
+                        "type": "integer",
+                        "enum": [
+                            2
+                        ]
+                    },
+                    "pluginVersion": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "featureId": {
+                        "type": "string",
+                        "pattern": "^feat-[0-9]{8}-[a-z0-9-]+$"
+                    },
+                    "featureName": {
+                        "type": "string"
+                    },
+                    "featDir": {
+                        "type": "string"
+                    },
+                    "originalRequest": {
+                        "type": "string",
+                        "default": ""
+                    },
+                    "operator": {
+                        "$ref": "#/components/schemas/OperatorInfo"
+                    },
+                    "config": {
+                        "$ref": "#/components/schemas/WorkflowConfig"
+                    },
+                    "startedAt": {
+                        "type": "string"
+                    },
+                    "updatedAt": {
+                        "type": "string"
+                    },
+                    "completedAt": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "totalElapsedMin": {
+                        "type": "number",
+                        "default": 0,
+                        "oneOf": [
+                            {
+                                "minimum": 0
+                            },
+                            {
+                                "minimum": 0
+                            }
+                        ]
+                    },
+                    "currentStepId": {
+                        "type": "string",
+                        "default": "",
+                        "oneOf": [
+                            {
+                                "enum": [
+                                    ""
+                                ]
+                            },
+                            {
+                                "pattern": "^STEP_[0-9]{2}_[A-Z0-9_]+$"
+                            }
+                        ]
+                    },
+                    "nextStepId": {
+                        "type": "string",
+                        "default": "",
+                        "oneOf": [
+                            {
+                                "enum": [
+                                    ""
+                                ]
+                            },
+                            {
+                                "pattern": "^STEP_[0-9]{2}_[A-Z0-9_]+$"
+                            }
+                        ]
+                    },
+                    "totalSteps": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "completedSteps": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0
+                    },
+                    "notes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Note"
+                        }
+                    },
+                    "globalWarnings": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/GlobalWarning"
+                        }
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Step"
+                        }
+                    }
+                }
+            },
+            "WorktreeEntry": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "status"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "ACTIVE",
+                            "MERGED",
+                            "PR_OPENED",
+                            "ABANDONED",
+                            "CREATED"
+                        ]
+                    }
+                }
+            },
+            "WriteTests": {
+                "type": "object",
+                "required": [
+                    "skipped",
+                    "skipReason",
+                    "runner",
+                    "filesAuthored",
+                    "notes"
+                ],
+                "properties": {
+                    "skipped": {
+                        "type": "boolean"
+                    },
+                    "skipReason": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true,
+                        "oneOf": [
+                            {
+                                "enum": [
+                                    "no-test-setup"
+                                ]
+                            },
+                            {}
+                        ]
+                    },
+                    "runner": {
+                        "type": "string",
+                        "enum": [
+                            "vitest",
+                            "jest",
+                            "pytest",
+                            "go test",
+                            "cargo test"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "filesAuthored": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "greenTests": {
+                        "$ref": "#/components/schemas/GreenTests"
+                    },
+                    "mutationTesting": {
+                        "$ref": "#/components/schemas/MutationTesting"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "default": ""
+                    }
+                }
+            },
+            "WriteTestsStep": {
+                "description": "=============================================================\nWRITE_TESTS\n=============================================================",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "WRITE_TESTS"
+                        ]
+                    },
+                    "writeTests": {
+                        "$ref": "#/components/schemas/WriteTests"
+                    }
+                },
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/StepBase"
+                    },
+                    {
+                        "required": [
+                            "name",
+                            "writeTests"
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+}

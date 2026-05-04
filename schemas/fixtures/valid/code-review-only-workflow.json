@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": "1.6.0",
+  "featureId": "feat-20260504-code-review-fixture",
+  "featureName": "Code review fixture",
+  "featDir": "docs/browzer/feat-20260504-code-review-fixture",
+  "originalRequest": "fixture",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-04T00:00:00Z" },
+  "startedAt": "2026-05-04T00:00:00Z",
+  "updatedAt": "2026-05-04T00:15:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 15.0,
+  "currentStepId": "STEP_01_CODE_REVIEW",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_CODE_REVIEW",
+      "name": "CODE_REVIEW",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:00:00Z",
+      "completedAt": "2026-05-04T00:15:00Z",
+      "elapsedMin": 15.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["code-review"],
+      "skillsInvoked": ["code-review"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [
+        {
+          "agentId": "regression-tester",
+          "dispatchPromptDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "promptByteCount": 2048,
+          "promptPath": ".browzer/dispatch-spool/feat-20260504-code-review-fixture/STEP_01_CODE_REVIEW/regression-tester.txt",
+          "renderTemplateUsed": "code-review",
+          "dispatchedAt": "2026-05-04T00:01:00Z",
+          "model": "sonnet",
+          "status": "completed",
+          "findingsAddressed": [],
+          "filesModified": [],
+          "filesCreated": [],
+          "filesDeleted": []
+        }
+      ],
+      "codeReview": {
+        "dispatchMode": "parallel-with-consolidator",
+        "reviewTier": "recommended",
+        "tokenCostEstimate": 32000,
+        "mandatoryMembers": [
+          "senior-engineer",
+          "software-architect",
+          "qa",
+          "regression-tester"
+        ],
+        "recommendedMembers": [],
+        "customMembers": [],
+        "severityCounts": { "high": 0, "medium": 0, "low": 0 },
+        "duplicationFindings": [],
+        "regressionRun": {
+          "tool": "vitest",
+          "scope": "blast-radius",
+          "command": "pnpm turbo lint typecheck test --filter='...[origin/main]'",
+          "commandSource": "lefthook",
+          "executionDepth": "scoped-execute",
+          "filesInRadius": 4,
+          "testFilesExecuted": 6,
+          "exitCode": 0,
+          "passed": 12,
+          "failed": 0,
+          "skippedTests": 0,
+          "duration": "2.4s",
+          "skipped": false,
+          "skipReason": null,
+          "summary": "all good",
+          "failures": []
+        },
+        "findings": []
+      }
+    }
+  ]
+}

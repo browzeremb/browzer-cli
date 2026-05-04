@@ -77,6 +77,7 @@ func NewServer(opts Options) *Server {
 		"Health":           s.handleHealth,
 		"Shutdown":         s.handleShutdown,
 		"TokensEconomized": s.handleTokensEconomized,
+		"Daemon.Version":   s.handleDaemonVersion,
 		// Read, Track, SessionRegister wired by methods.go (Task 3).
 	}
 	s.workflowDispatcher = newWorkflowDispatcher(opts.WorkflowKeepalive)
@@ -124,8 +125,26 @@ func (s *Server) TokensEconomized() int64 {
 
 // RegisterHandler attaches a handler to a method name. Used by methods.go
 // to wire Read/Track/SessionRegister without circular references.
+//
+// Concurrency (F-01, 2026-05-04): the write is guarded by s.mu so a
+// late RegisterHandler call (e.g. an integration test that wires a stub
+// handler after Serve has started) cannot race with the concurrent read
+// in handleConn. The matching read in handleConn also takes s.mu via
+// lookupHandler.
 func (s *Server) RegisterHandler(method string, h Handler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.handlers[method] = h
+}
+
+// lookupHandler returns the registered handler for method, holding s.mu
+// for the duration of the read. Mirrors RegisterHandler's lock so the
+// map read in handleConn never races with a concurrent write (F-01).
+func (s *Server) lookupHandler(method string) (Handler, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, ok := s.handlers[method]
+	return h, ok
 }
 
 // Serve listens on the configured socket until ctx is canceled. Blocks.
@@ -222,6 +241,24 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// codedError is the handler-side error carrier that lets a method return a
+// JSON-RPC error with a non-default code. The default `-32000` (server error)
+// is fine for transient/internal failures; method-specific contracts (e.g.
+// `Daemon.Version`/`WorkflowMutate` returning `-32602` "invalid params" on
+// protocol-version mismatch) need control over the code so callers can
+// branch on it without string-matching.
+type codedError struct {
+	code    int
+	message string
+}
+
+func (c *codedError) Error() string { return c.message }
+
+// newCodedError returns an error carrying a specific JSON-RPC error code.
+// The connection-level dispatch loop unwraps it and emits the matching
+// `{code, message}` pair to the wire.
+func newCodedError(code int, msg string) error { return &codedError{code: code, message: msg} }
+
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	rdr := bufio.NewReader(conn)
@@ -239,7 +276,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 			s.queueLen.Add(-1)
 			continue
 		}
-		h, ok := s.handlers[req.Method]
+		h, ok := s.lookupHandler(req.Method)
 		if !ok {
 			s.writeErr(conn, req.ID, -32601, "method_not_found: "+req.Method)
 			s.queueLen.Add(-1)
@@ -247,7 +284,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		}
 		result, err := h(ctx, req.Params)
 		if err != nil {
-			s.writeErr(conn, req.ID, -32000, err.Error())
+			code := -32000
+			var ce *codedError
+			if errors.As(err, &ce) {
+				code = ce.code
+			}
+			s.writeErr(conn, req.ID, code, err.Error())
 			s.queueLen.Add(-1)
 			continue
 		}

@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": "1.6.0",
+  "featureId": "feat-20260504-single-task-fixture",
+  "featureName": "Single task fixture",
+  "featDir": "docs/browzer/feat-20260504-single-task-fixture",
+  "originalRequest": "fixture",
+  "operator": { "locale": "pt-BR" },
+  "config": {
+    "mode": "autonomous",
+    "executionStrategy": "serial",
+    "setAt": "2026-05-04T00:00:00Z"
+  },
+  "startedAt": "2026-05-04T00:00:00Z",
+  "updatedAt": "2026-05-04T00:05:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 5.0,
+  "currentStepId": "STEP_03_TASK_01",
+  "nextStepId": "",
+  "totalSteps": 3,
+  "completedSteps": 2,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_PRD",
+      "name": "PRD",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "default" },
+      "startedAt": "2026-05-04T00:00:00Z",
+      "completedAt": "2026-05-04T00:01:00Z",
+      "elapsedMin": 1.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "STEP_02_TASKS_MANIFEST",
+      "skillsToInvoke": ["generate-prd"],
+      "skillsInvoked": ["generate-prd"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "prd": {
+        "title": "Tiny",
+        "overview": "f",
+        "personas": [],
+        "objectives": [],
+        "inScope": [],
+        "outOfScope": [],
+        "deliverables": [],
+        "functionalRequirements": [{ "id": "FR-1", "text": "x" }],
+        "nonFunctionalRequirements": [],
+        "successMetrics": [],
+        "acceptanceCriteria": [{ "id": "AC-1", "text": "x" }],
+        "risks": [],
+        "assumptions": [],
+        "taskGranularity": "one-task-one-commit"
+      }
+    },
+    {
+      "stepId": "STEP_02_TASKS_MANIFEST",
+      "name": "TASKS_MANIFEST",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:01:00Z",
+      "completedAt": "2026-05-04T00:02:00Z",
+      "elapsedMin": 1.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_01_PRD"],
+      "nextStep": "STEP_03_TASK_01",
+      "skillsToInvoke": ["generate-task"],
+      "skillsInvoked": ["generate-task"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "tasksManifest": {
+        "totalTasks": 1,
+        "tasksOrder": ["TASK_01"],
+        "dependencyGraph": { "TASK_01": [] },
+        "parallelizable": []
+      }
+    },
+    {
+      "stepId": "STEP_03_TASK_01",
+      "name": "TASK",
+      "taskId": "TASK_01",
+      "status": "RUNNING",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:02:00Z",
+      "completedAt": null,
+      "elapsedMin": 0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_02_TASKS_MANIFEST"],
+      "nextStep": "",
+      "skillsToInvoke": ["execute-task"],
+      "skillsInvoked": [],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "task": {
+        "scope": ["packages/cli/schemas/workflow-v1.cue"],
+        "invariants": [],
+        "suggestedModel": "opus",
+        "trivial": false,
+        "execution": {
+          "gates": {
+            "baseline": {
+              "lint": "pass",
+              "typecheck": "pass",
+              "tests": "skip"
+            },
+            "postChange": {
+              "lint": "pass",
+              "typecheck": "pass",
+              "tests": "skip"
+            },
+            "regression": []
+          },
+          "scopeAdjustments": [],
+          "agents": [],
+          "invariantsChecked": [],
+          "nextSteps": ""
+        }
+      }
+    }
+  ]
+}

@@ -53,10 +53,15 @@ var legalConfigModes = map[string]bool{
 func Validate(wf Workflow) []ValidationError {
 	var errs []ValidationError
 
-	if wf.SchemaVersion != 1 {
+	// Schema cutover (WF-SYNC-1, 2026-05-04): schemaVersion=2 is the new
+	// canonical version. v1 documents stay readable for backwards-compat
+	// (the judge rubric ignores violations newer than the workflow's
+	// startedAt) but new mutations must produce v2-shaped output.
+	// Tolerate both values during the migration window.
+	if wf.SchemaVersion != 1 && wf.SchemaVersion != 2 {
 		errs = append(errs, ValidationError{
 			Path:    "schemaVersion",
-			Message: fmt.Sprintf("must be 1, got %d", wf.SchemaVersion),
+			Message: fmt.Sprintf("must be 1 or 2, got %d", wf.SchemaVersion),
 		})
 	}
 

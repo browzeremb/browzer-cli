@@ -35,6 +35,20 @@ fi
 echo "==> go mod download"
 go mod download
 
+# ── 1b. CUE codegen drift gate (SA-03, 2026-05-04) ───────────────────────────
+# packages/cli/schemas/Makefile is the SSOT for `workflow-v1.cue`. The
+# `ci-check` target asserts the checked-in JSON Schema, Go types, and
+# skills reference MD all match a fresh codegen — failing this gate
+# means a developer edited `workflow-v1.cue` without regenerating the
+# downstream artifacts, which silently desyncs the validator + skill
+# rubric + external tooling. Auto-installs `cue` if missing.
+if ! command -v cue >/dev/null 2>&1; then
+  echo "==> installing cue v0.15.0 (not on PATH)"
+  go install cuelang.org/go/cmd/cue@v0.15.0
+fi
+echo "==> make -C schemas ci-check"
+make -C schemas ci-check
+
 # ── 2. Vet (mirrors 'Vet' step in ci.yml) ─────────────────────────────────────
 echo "==> go vet ./..."
 go vet ./...

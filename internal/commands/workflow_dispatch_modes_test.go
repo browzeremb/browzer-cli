@@ -71,6 +71,12 @@ func startInProcessDaemon(t *testing.T) string {
 // has flushed everything before it, so on completion all 8 prior writes
 // are guaranteed durable.
 func TestAppendStep_ConcurrencyN8AcrossModes(t *testing.T) {
+	// TASK_02 / WF-SYNC-1 bypass: this test fixture predates the CUE
+	// schema cutover (featureId=`feat-test`, schemaVersion=1, missing
+	// required step fields). The test exercises dispatch concurrency,
+	// not schema enforcement, so set the bypass at the parent level
+	// (subtest goroutines forbid t.Setenv but inherit the parent env).
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
 	type mode struct {
 		name string
 		flag string // "" for standalone (default sync via env), "--await", "--async"
@@ -92,7 +98,7 @@ func TestAppendStep_ConcurrencyN8AcrossModes(t *testing.T) {
 			var wg sync.WaitGroup
 			errs := make([]error, N)
 
-			for i := 0; i < N; i++ {
+			for i := range N {
 				wg.Add(1)
 				go func(n int) {
 					defer wg.Done()

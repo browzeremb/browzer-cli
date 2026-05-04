@@ -267,3 +267,41 @@ verb=set-status path=/abs/.../workflow.json mode=daemon-async writeId=01HXXX \
 
 - The `Health` result includes the daemon's binary version once it ships (post-Phase 0 — added in the Daemon plan).
 - Methods are append-only. Removing a method or a required field is a breaking change. Adding optional fields is safe.
+
+## Handshake protocol (v2, since 2026-05-04)
+
+A new method `Daemon.Version` answers the protocol-negotiation handshake. The
+CLI calls it once per `daemon.Client` lifetime (cached for subsequent calls)
+BEFORE sending the first `WorkflowMutate` of the run.
+
+**`Daemon.Version` params:** `{}`.
+
+**`Daemon.Version` result:**
+
+```json
+{
+  "daemonVersion": "1.7.0",
+  "schemaVersion": 2,
+  "protocolFeatures": ["jqVars", "save", "schemaV2"],
+  "protocolVersion": 2
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `daemonVersion` | string | CLI binary version, ldflag-injected from `internal/version.Version`. Empty in dev/test builds; populated in goreleaser builds. |
+| `schemaVersion` | int | The workflow.json schema version this binary validates against. v2 since 2026-05-04 (CUE-based validator). |
+| `protocolFeatures` | string[] | Sorted lexicographically. Capability flags the CLI may consult to gate optional surfaces (e.g. `jqVars` for `--arg/--argjson` bindings). Stable across calls — the response is byte-deterministic. |
+| `protocolVersion` | int | This is the gate. The CLI compares against its own `daemon.CurrentProtocolVersion` constant; a mismatch routes the call to the standalone fallback. |
+
+**Mismatch handling:**
+
+- **CLI side**: when the preflight returns a `protocolVersion` different from the CLI's compile-time constant, the CLI emits a single stderr warning (`warn: daemon protocol mismatch (expected v2, got v1) — falling back to standalone`) and runs the mutation in-process via `wf.ApplyAndPersist`. The audit line carries `mode=fallback-sync reason=daemon_protocol_mismatch`.
+- **Daemon side**: `WorkflowMutate` validates `params.protocolVersion == CurrentProtocolVersion` BEFORE the verb whitelist, the path validator, and the queue handoff. On mismatch the daemon returns JSON-RPC `-32602` (invalid params) with message `protocol version mismatch: client=<n>, daemon=<n>`. The CLI's high-level Client surfaces this as a regular error, the dispatch helper maps it to `reason=daemon_error`, and the standalone fallback runs.
+
+**Backward compatibility:**
+
+- A v1 daemon predating this method returns JSON-RPC `-32601` (`method_not_found: Daemon.Version`). The CLI treats any error from `Daemon.Version` as "no handshake possible → fall back" (`reason=daemon_version_unavailable`). Operationally, this is the same outcome as a stale v2 daemon — the CLI reaches the standalone path with one warning emitted.
+- A v1 CLI sending `WorkflowMutate` to a v2 daemon: the daemon-side guard catches the missing `protocolVersion` field (default 0 ≠ 2) and rejects with `-32602`. The v1 CLI surfaces the error and exits non-zero — it predates the fallback wiring, so it cannot recover. This is acceptable: the CLI binary in question is the older one, and the operator-visible failure points at the upgrade requirement. Document forces the operator to update.
+
+**`WorkflowMutate` change (v2, 2026-05-04):** the request gains a required `protocolVersion: int` field. Older daemons that have not been recompiled silently dropped the field via JSON unknown-field tolerance, so OLD-CLI ↔ OLD-DAEMON pairings keep working — but a NEW CLI ↔ OLD DAEMON sees a `method_not_found: Daemon.Version` from the preflight and falls back to standalone before any `WorkflowMutate` is sent.

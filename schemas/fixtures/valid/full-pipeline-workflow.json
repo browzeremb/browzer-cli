@@ -1,0 +1,536 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": "1.6.0",
+  "featureId": "feat-20260504-full-pipeline",
+  "featureName": "Full pipeline fixture",
+  "featDir": "docs/browzer/feat-20260504-full-pipeline",
+  "originalRequest": "ship the redesign",
+  "operator": { "locale": "pt-BR" },
+  "config": {
+    "mode": "review",
+    "executionStrategy": "serial",
+    "testExecutionDepth": "scoped-execute",
+    "testExecutionDepthAuto": true,
+    "setAt": "2026-05-04T00:00:00Z"
+  },
+  "startedAt": "2026-05-04T00:00:00Z",
+  "updatedAt": "2026-05-04T01:12:00Z",
+  "completedAt": "2026-05-04T01:12:00Z",
+  "totalElapsedMin": 72.0,
+  "currentStepId": "STEP_10_COMMIT",
+  "nextStepId": "",
+  "totalSteps": 10,
+  "completedSteps": 10,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_BRAINSTORMING",
+      "name": "BRAINSTORMING",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "vague" },
+      "startedAt": "2026-05-04T00:00:00Z",
+      "completedAt": "2026-05-04T00:05:00Z",
+      "elapsedMin": 5.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "STEP_02_PRD",
+      "skillsToInvoke": ["brainstorming"],
+      "skillsInvoked": ["brainstorming"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "brainstorming": {
+        "questionsAsked": 6,
+        "researchRoundRun": false,
+        "researchAgents": 0,
+        "dimensions": {
+          "primaryUser": "operator",
+          "jobToBeDone": "ship redesign",
+          "successSignal": "judge passes",
+          "inScope": ["cue"],
+          "outOfScope": ["rag"],
+          "repoSurface": ["packages/cli"],
+          "techConstraints": [],
+          "failureModes": [],
+          "acceptanceCriteria": [],
+          "dependencies": [],
+          "openQuestions": []
+        },
+        "researchFindings": [],
+        "assumptions": [],
+        "openRisks": []
+      }
+    },
+    {
+      "stepId": "STEP_02_PRD",
+      "name": "PRD",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:05:00Z",
+      "completedAt": "2026-05-04T00:10:00Z",
+      "elapsedMin": 5.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_01_BRAINSTORMING"],
+      "nextStep": "STEP_03_TASKS_MANIFEST",
+      "skillsToInvoke": ["generate-prd"],
+      "skillsInvoked": ["generate-prd"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "prd": {
+        "title": "Workflow redesign",
+        "overview": "ship the cue ssot",
+        "personas": [{ "id": "P-1", "description": "operator" }],
+        "objectives": ["ssot for workflow"],
+        "inScope": ["cue"],
+        "outOfScope": ["rag"],
+        "deliverables": ["workflow-v1.cue"],
+        "functionalRequirements": [
+          { "id": "FR-1", "text": "schema is ssot", "priority": "must" }
+        ],
+        "nonFunctionalRequirements": [
+          { "id": "NFR-1", "text": "vet ≤ 200ms", "target": "200ms" }
+        ],
+        "successMetrics": [
+          {
+            "id": "M-1",
+            "metric": "judge rubric size",
+            "target": "≤80 lines",
+            "method": "wc -l"
+          }
+        ],
+        "acceptanceCriteria": [
+          { "id": "AC-1", "text": "make ci-check passes", "bindsTo": ["FR-1"] }
+        ],
+        "risks": [
+          { "id": "R-1", "text": "cue install", "mitigation": "go install" }
+        ],
+        "dependencies": { "external": ["cue"], "internal": [] },
+        "assumptions": ["cue available"],
+        "taskGranularity": "one-task-one-commit"
+      }
+    },
+    {
+      "stepId": "STEP_03_TASKS_MANIFEST",
+      "name": "TASKS_MANIFEST",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:10:00Z",
+      "completedAt": "2026-05-04T00:12:00Z",
+      "elapsedMin": 2.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_02_PRD"],
+      "nextStep": "STEP_04_TASK_01",
+      "skillsToInvoke": ["generate-task"],
+      "skillsInvoked": ["generate-task"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "tasksManifest": {
+        "totalTasks": 1,
+        "tasksOrder": ["TASK_01"],
+        "dependencyGraph": { "TASK_01": [] },
+        "parallelizable": [],
+        "tasks": [
+          {
+            "taskId": "TASK_01",
+            "title": "author cue schema",
+            "suggestedModel": "opus",
+            "trivial": false,
+            "skillsFound": ["spec-authoring"],
+            "scope": ["packages/cli/schemas/workflow-v1.cue"]
+          }
+        ]
+      }
+    },
+    {
+      "stepId": "STEP_04_TASK_01",
+      "name": "TASK",
+      "taskId": "TASK_01",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:12:00Z",
+      "completedAt": "2026-05-04T00:42:00Z",
+      "elapsedMin": 30.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_03_TASKS_MANIFEST"],
+      "nextStep": "STEP_05_CODE_REVIEW",
+      "skillsToInvoke": ["execute-task"],
+      "skillsInvoked": ["execute-task"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [
+        {
+          "agentId": "cue-schema-specialist",
+          "dispatchPromptDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "promptByteCount": 4823,
+          "promptPath": ".browzer/dispatch-spool/feat-20260504-full-pipeline/STEP_04_TASK_01/cue-schema-specialist.txt",
+          "renderTemplateUsed": "execute-task",
+          "dispatchedAt": "2026-05-04T00:13:00Z",
+          "model": "opus",
+          "status": "completed",
+          "findingsAddressed": [],
+          "filesModified": [],
+          "filesCreated": ["packages/cli/schemas/workflow-v1.cue"],
+          "filesDeleted": []
+        }
+      ],
+      "task": {
+        "title": "author cue schema",
+        "scope": ["packages/cli/schemas/workflow-v1.cue"],
+        "invariants": [{ "rule": "cue vet ≤ 200ms", "source": "PRD§NFR-1" }],
+        "suggestedModel": "opus",
+        "trivial": false,
+        "execution": {
+          "gates": {
+            "baseline": {
+              "lint": "pass",
+              "typecheck": "pass",
+              "tests": "skip"
+            },
+            "postChange": {
+              "lint": "pass",
+              "typecheck": "pass",
+              "tests": "skip"
+            },
+            "regression": []
+          },
+          "scopeAdjustments": [
+            {
+              "kind": "spec-relaxation",
+              "adjustment": "use cue exp gengotypes instead of cue exp gocode (renamed in 0.15)",
+              "reason": "cue 0.15 ships gengotypes, not gocode",
+              "resolution": "accepted",
+              "owner": "specialist"
+            }
+          ],
+          "agents": [
+            {
+              "role": "cue-schema-specialist",
+              "skill": "spec-authoring",
+              "model": "opus",
+              "status": "completed",
+              "startedAt": "2026-05-04T00:13:00Z",
+              "completedAt": "2026-05-04T00:42:00Z",
+              "skillsLoaded": ["skill-craft"]
+            }
+          ],
+          "invariantsChecked": [
+            {
+              "rule": "cue vet ≤ 200ms",
+              "source": "PRD§NFR-1",
+              "status": "passed",
+              "note": "actual 56ms"
+            }
+          ],
+          "nextSteps": "TASK_02 consumes the generated artifacts"
+        }
+      }
+    },
+    {
+      "stepId": "STEP_05_CODE_REVIEW",
+      "name": "CODE_REVIEW",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:42:00Z",
+      "completedAt": "2026-05-04T00:55:00Z",
+      "elapsedMin": 13.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_04_TASK_01"],
+      "nextStep": "STEP_06_RECEIVING_CODE_REVIEW",
+      "skillsToInvoke": ["code-review"],
+      "skillsInvoked": ["code-review"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [
+        {
+          "agentId": "regression-tester",
+          "dispatchPromptDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "promptByteCount": 1500,
+          "promptPath": ".browzer/dispatch-spool/feat-20260504-full-pipeline/STEP_05_CODE_REVIEW/regression-tester.txt",
+          "renderTemplateUsed": "code-review",
+          "dispatchedAt": "2026-05-04T00:43:00Z",
+          "model": "sonnet",
+          "status": "completed",
+          "findingsAddressed": [],
+          "filesModified": [],
+          "filesCreated": [],
+          "filesDeleted": []
+        }
+      ],
+      "codeReview": {
+        "dispatchMode": "parallel-with-consolidator",
+        "reviewTier": "recommended",
+        "tokenCostEstimate": 32000,
+        "mandatoryMembers": [
+          "senior-engineer",
+          "software-architect",
+          "qa",
+          "regression-tester"
+        ],
+        "recommendedMembers": [],
+        "customMembers": [],
+        "severityCounts": { "high": 0, "medium": 1, "low": 0 },
+        "duplicationFindings": [],
+        "regressionRun": {
+          "tool": "vitest",
+          "scope": "blast-radius",
+          "command": "pnpm turbo lint typecheck test --filter='...[origin/main]'",
+          "commandSource": "lefthook",
+          "executionDepth": "scoped-execute",
+          "filesInRadius": 5,
+          "testFilesExecuted": 8,
+          "exitCode": 0,
+          "passed": 24,
+          "failed": 0,
+          "skippedTests": 0,
+          "duration": "3.1s",
+          "skipped": false,
+          "skipReason": null,
+          "summary": "all good",
+          "failures": []
+        },
+        "findings": [
+          {
+            "id": "F-1",
+            "domain": "cli",
+            "severity": "medium",
+            "category": "style",
+            "file": "packages/cli/schemas/workflow-v1.cue",
+            "line": 42,
+            "description": "trailing whitespace",
+            "suggestedFix": "trim",
+            "assignedSkill": ".claude/skills/skill-craft",
+            "status": "fixed"
+          }
+        ]
+      }
+    },
+    {
+      "stepId": "STEP_06_RECEIVING_CODE_REVIEW",
+      "name": "RECEIVING_CODE_REVIEW",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:55:00Z",
+      "completedAt": "2026-05-04T01:00:00Z",
+      "elapsedMin": 5.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_05_CODE_REVIEW"],
+      "nextStep": "STEP_07_WRITE_TESTS",
+      "skillsToInvoke": ["receiving-code-review"],
+      "skillsInvoked": ["receiving-code-review"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "receivingCodeReview": {
+        "iteration": 1,
+        "summary": { "total": 1, "fixed": 1, "unrecovered": 0 },
+        "dispatches": [
+          {
+            "findingId": "F-1",
+            "iteration": 1,
+            "reason": "initial",
+            "role": "cli-fix-agent",
+            "skill": ".claude/skills/skill-craft",
+            "model": "sonnet",
+            "status": "fixed",
+            "filesChanged": ["packages/cli/schemas/workflow-v1.cue"],
+            "researchBundle": null,
+            "failureTrace": null,
+            "startedAt": "2026-05-04T00:56:00Z",
+            "completedAt": "2026-05-04T00:59:00Z"
+          }
+        ],
+        "unrecovered": [],
+        "notes": ""
+      }
+    },
+    {
+      "stepId": "STEP_07_WRITE_TESTS",
+      "name": "WRITE_TESTS",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T01:00:00Z",
+      "completedAt": "2026-05-04T01:03:00Z",
+      "elapsedMin": 3.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_06_RECEIVING_CODE_REVIEW"],
+      "nextStep": "STEP_08_UPDATE_DOCS",
+      "skillsToInvoke": ["write-tests"],
+      "skillsInvoked": ["write-tests"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "writeTests": {
+        "skipped": false,
+        "skipReason": null,
+        "runner": "go test",
+        "filesAuthored": ["packages/cli/internal/schema/validator_test.go"],
+        "greenTests": { "added": 14, "augmented": 0, "duration": "2.4s" },
+        "mutationTesting": {
+          "ran": false,
+          "tool": null,
+          "score": 0,
+          "target": 0,
+          "survivors": [],
+          "coverageGap": null
+        },
+        "notes": ""
+      }
+    },
+    {
+      "stepId": "STEP_08_UPDATE_DOCS",
+      "name": "UPDATE_DOCS",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T01:03:00Z",
+      "completedAt": "2026-05-04T01:05:00Z",
+      "elapsedMin": 2.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_07_WRITE_TESTS"],
+      "nextStep": "STEP_09_FEATURE_ACCEPTANCE",
+      "skillsToInvoke": ["update-docs"],
+      "skillsInvoked": ["update-docs"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "updateDocs": {
+        "docsMentioning": [],
+        "anchorDocsAlwaysIncluded": [
+          {
+            "doc": "docs/CHANGELOG.md",
+            "source": "repo-root-changelog",
+            "disposition": "auto-included-fresh"
+          }
+        ],
+        "patches": [
+          {
+            "doc": "docs/CHANGELOG.md",
+            "reason": "add WF-SYNC-1 entry",
+            "linesChanged": 8,
+            "verdict": "applied"
+          }
+        ],
+        "twoPassRun": {
+          "directRef": true,
+          "conceptLevel": true,
+          "mentionsPass": true,
+          "mentionsFallbackUsed": false,
+          "mentionsResultEmpty": null,
+          "mentionsFallback": null
+        }
+      }
+    },
+    {
+      "stepId": "STEP_09_FEATURE_ACCEPTANCE",
+      "name": "FEATURE_ACCEPTANCE",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T01:05:00Z",
+      "completedAt": "2026-05-04T01:08:00Z",
+      "elapsedMin": 3.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_08_UPDATE_DOCS"],
+      "nextStep": "STEP_10_COMMIT",
+      "skillsToInvoke": ["feature-acceptance"],
+      "skillsInvoked": ["feature-acceptance"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "featureAcceptance": {
+        "mode": "autonomous",
+        "modeNote": "",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-1",
+            "status": "verified",
+            "evidence": "make ci-check exit 0",
+            "method": "test"
+          }
+        ],
+        "nfrVerifications": [
+          {
+            "id": "NFR-1",
+            "status": "verified",
+            "coversAcceptanceSignal": "pass",
+            "evidence": "cue vet 56ms",
+            "measured": "56ms",
+            "target": "200ms"
+          }
+        ],
+        "successMetrics": [
+          { "id": "M-1", "measured": 78, "target": 80, "status": "met" }
+        ],
+        "acRelaxations": [],
+        "operatorActionsRequested": [],
+        "verdict": "completed"
+      }
+    },
+    {
+      "stepId": "STEP_10_COMMIT",
+      "name": "COMMIT",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T01:08:00Z",
+      "completedAt": "2026-05-04T01:12:00Z",
+      "elapsedMin": 4.0,
+      "retryCount": 0,
+      "itDependsOn": ["STEP_09_FEATURE_ACCEPTANCE"],
+      "nextStep": "",
+      "skillsToInvoke": ["commit"],
+      "skillsInvoked": ["commit"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "commit": {
+        "sha": "deadbee",
+        "conventionalType": "feat",
+        "scope": "cli/schemas",
+        "subject": "introduce CUE workflow-v1 schema",
+        "body": "single source of truth",
+        "trailers": [
+          "Co-authored-by: browzeremb <274369678+browzeremb@users.noreply.github.com>"
+        ],
+        "prePushAuditsRun": ["lefthook:unit-tests", "lefthook:audit-ci-gates"],
+        "pushAttempts": [
+          {
+            "sha": "deadbee",
+            "attemptedAt": "2026-05-04T01:11:30Z",
+            "lefthookBypassed": false,
+            "noVerifyPassed": false,
+            "amendUsed": false,
+            "bypassedAudits": [],
+            "bypassReason": null,
+            "retryCount": 0,
+            "previousFailure": null
+          }
+        ],
+        "prePushAudits": [
+          {
+            "name": "lefthook:unit-tests",
+            "source": "lefthook",
+            "exitCode": 0,
+            "durationMs": 2400
+          },
+          {
+            "name": "lefthook:audit-ci-gates",
+            "source": "lefthook",
+            "exitCode": 0,
+            "durationMs": 1100
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -15,7 +15,7 @@ func registerWorkflowSetConfig(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:          "set-config <key> <value>",
-		Short:        "Set a config field in workflow.json (auto-bootstraps an empty schema v1 file when path does not exist)",
+		Short:        "Set a config field in workflow.json (auto-bootstraps an empty schema v2 file when path does not exist)",
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

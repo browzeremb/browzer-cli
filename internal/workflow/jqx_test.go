@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -329,6 +330,261 @@ func TestGetField_MissingPathReturnsError(t *testing.T) {
 	_, err := GetField(doc, "nonexistent.deep.path", false)
 	if err == nil {
 		t.Error("expected error for missing path, got nil")
+	}
+}
+
+// ---- rewriteMultiStatementJQ tests ----------------------------------------
+
+// TestRewriteMultiStatement_BasicSplit verifies that a two-statement program
+// separated by a top-level `;` is rewritten to a `(stmt1) | (stmt2)` pipeline
+// and that running it through ApplyJQ applies both mutations.
+func TestRewriteMultiStatement_BasicSplit(t *testing.T) {
+	// Pure rewrite check.
+	got := rewriteMultiStatementJQ(`.a = 1 ; .b = 2`)
+	want := "(.a = 1\n) | (.b = 2\n)"
+	if got != want {
+		t.Errorf("rewrite: got %q, want %q", got, want)
+	}
+
+	// End-to-end via ApplyJQ: both mutations must land.
+	var doc any
+	if err := json.Unmarshal([]byte(`{}`), &doc); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ApplyJQ(doc, `.a = 1 ; .b = 2`)
+	if err != nil {
+		t.Fatalf("ApplyJQ multi-stmt: %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T", result)
+	}
+	// gojq returns numbers as float64 or int; accept both.
+	aVal := fmt.Sprintf("%v", m["a"])
+	bVal := fmt.Sprintf("%v", m["b"])
+	if aVal != "1" {
+		t.Errorf("expected .a=1, got %v", m["a"])
+	}
+	if bVal != "2" {
+		t.Errorf("expected .b=2, got %v", m["b"])
+	}
+}
+
+// TestRewriteMultiStatement_NestedSemicolonsPreserved verifies that `;` inside
+// strings, parentheses, or brackets is NOT treated as a statement separator.
+func TestRewriteMultiStatement_NestedSemicolonsPreserved(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		// String literal: the `;` is inside `"a;b"` — must not split.
+		{name: "string-literal", input: `.x = "a;b"`},
+		// Inside parens: gojq's optional-output `(.x; .y)` — must not split at top level.
+		{name: "inside-parens", input: `(.x; .y) | .z`},
+		// Inside brackets: gojq array constructor `[.a; .b]` — must not split.
+		{name: "inside-brackets", input: `[.a; .b]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rewriteMultiStatementJQ(tc.input)
+			if got != tc.input {
+				t.Errorf("expected verbatim %q, got %q", tc.input, got)
+			}
+		})
+	}
+
+	// Mix: only the top-level `;` between `"x;y"` and `.bar` splits.
+	mix := `.foo = "x;y" ; .bar = 1`
+	gotMix := rewriteMultiStatementJQ(mix)
+	wantMix := "(.foo = \"x;y\"\n) | (.bar = 1\n)"
+	if gotMix != wantMix {
+		t.Errorf("mix rewrite: got %q, want %q", gotMix, wantMix)
+	}
+}
+
+// TestRewriteMultiStatement_SingleStatementUnchanged verifies that a program
+// with no top-level `;` is returned byte-equal to input (no parens added).
+func TestRewriteMultiStatement_SingleStatementUnchanged(t *testing.T) {
+	cases := []string{
+		`.foo = 1`,
+		`(.steps[] | select(.stepId == "S1")) |= (. + {hit: true}) | .`,
+		`{a: 1, b: 2}`,
+		``,
+	}
+	for _, c := range cases {
+		got := rewriteMultiStatementJQ(c)
+		if got != c {
+			t.Errorf("input %q: expected verbatim, got %q", c, got)
+		}
+	}
+}
+
+// TestRewriteMultiStatement_DefStatementsRespected verifies that programs
+// containing a top-level `def ` keyword are returned verbatim. Splitting
+// across a def body's `;` would produce two fragments gojq cannot compile.
+// Decision: bail out on any top-level `def ` and let gojq handle natively.
+func TestRewriteMultiStatement_DefStatementsRespected(t *testing.T) {
+	prog := `def square: . * .; .x | square`
+	got := rewriteMultiStatementJQ(prog)
+	if got != prog {
+		t.Errorf("def program: expected verbatim, got %q", got)
+	}
+
+	// Verify it actually executes correctly through ApplyJQ (gojq handles def fine).
+	var doc any
+	if err := json.Unmarshal([]byte(`{"x": 3}`), &doc); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ApplyJQ(doc, prog)
+	if err != nil {
+		t.Fatalf("ApplyJQ def: %v", err)
+	}
+	val := fmt.Sprintf("%v", result)
+	if val != "9" {
+		t.Errorf("expected 9, got %v", result)
+	}
+}
+
+// TestRewriteMultiStatement_TrailingSemicolon verifies that a trailing `;`
+// is treated as an empty last statement (skipped), leaving a single-statement
+// result that is returned verbatim.
+func TestRewriteMultiStatement_TrailingSemicolon(t *testing.T) {
+	got := rewriteMultiStatementJQ(`.a = 1 ;`)
+	// Only one non-empty statement → single-statement path → verbatim.
+	if got != `.a = 1 ;` {
+		t.Errorf("trailing semicolon: got %q, want verbatim", got)
+	}
+}
+
+// TestRewriteMultiStatement_EmptyStatement verifies defensive handling of
+// empty/blank statements (e.g. `;;` or `; .a = 1`). Empty tokens are skipped;
+// the remaining non-empty statement(s) drive the outcome.
+func TestRewriteMultiStatement_EmptyStatement(t *testing.T) {
+	cases := []struct {
+		input string
+		// expectMulti is true when we expect a pipeline rewrite (≥2 non-empty stmts).
+		expectMulti bool
+	}{
+		// Two consecutive semicolons → only one empty token + one empty token → zero stmts → verbatim.
+		{input: `;;`, expectMulti: false},
+		// Leading semicolon + one real statement → single non-empty stmt → verbatim.
+		{input: `; .a = 1`, expectMulti: false},
+		// Two real statements separated by `;` even with whitespace → rewrite.
+		{input: `.a = 1 ; .b = 2`, expectMulti: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			got := rewriteMultiStatementJQ(tc.input)
+			isPipeline := strings.Contains(got, " | ")
+			if isPipeline != tc.expectMulti {
+				t.Errorf("input %q: expectMulti=%v but got %q", tc.input, tc.expectMulti, got)
+			}
+		})
+	}
+}
+
+// TestApplyJQ_MultiStatementEndToEnd invokes ApplyJQ and ApplyJQWithVars
+// directly with a multi-statement program and asserts all mutations applied.
+func TestApplyJQ_MultiStatementEndToEnd(t *testing.T) {
+	var doc any
+	if err := json.Unmarshal([]byte(`{"featureName":"old","totalElapsedMin":0}`), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Three-statement program mimicking a real skill invocation.
+	expr := `.featureName = "x" ; .totalElapsedMin = 1`
+	result, err := ApplyJQ(doc, expr)
+	if err != nil {
+		t.Fatalf("ApplyJQ multi-stmt: %v", err)
+	}
+	b, _ := json.Marshal(result)
+	s := string(b)
+	if !strings.Contains(s, `"featureName":"x"`) {
+		t.Errorf("expected featureName=x, got %s", s)
+	}
+	if !strings.Contains(s, `"totalElapsedMin":1`) {
+		t.Errorf("expected totalElapsedMin=1, got %s", s)
+	}
+
+	// Also test with ApplyJQWithVars + bind variable.
+	var doc2 any
+	if err := json.Unmarshal([]byte(`{"name":"","count":0}`), &doc2); err != nil {
+		t.Fatal(err)
+	}
+	result2, err := ApplyJQWithVars(doc2, `.name = $n ; .count = 42`, map[string]any{"n": "hello"})
+	if err != nil {
+		t.Fatalf("ApplyJQWithVars multi-stmt: %v", err)
+	}
+	b2, _ := json.Marshal(result2)
+	s2 := string(b2)
+	if !strings.Contains(s2, `"name":"hello"`) {
+		t.Errorf("expected name=hello, got %s", s2)
+	}
+	if !strings.Contains(s2, `"count":42`) {
+		t.Errorf("expected count=42, got %s", s2)
+	}
+}
+
+// TestRewriteMultiStatement_CommentSemicolonsPreserved verifies that a `;`
+// inside a line comment is NOT treated as a statement separator. Only the
+// real top-level `;` after the comment ends drives the split. (F-23)
+func TestRewriteMultiStatement_CommentSemicolonsPreserved(t *testing.T) {
+	input := ".x = 1 # comment with ; here\n; .y = 2"
+
+	// End-to-end: run through ApplyJQ to verify both keys are mutated.
+	// Asserting on execution outcome is more robust than string-shape checks
+	// since the rewriter may produce different whitespace arrangements.
+	var doc any
+	if err := json.Unmarshal([]byte(`{"x": 0, "y": 0}`), &doc); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ApplyJQ(doc, input)
+	if err != nil {
+		t.Fatalf("ApplyJQ with comment semicolon: %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T", result)
+	}
+	xVal := fmt.Sprintf("%v", m["x"])
+	yVal := fmt.Sprintf("%v", m["y"])
+	if xVal != "1" {
+		t.Errorf("expected .x=1 after split, got %v", m["x"])
+	}
+	if yVal != "2" {
+		t.Errorf("expected .y=2 after split, got %v", m["y"])
+	}
+}
+
+// TestRewriteMultiStatement_ThreeStatements verifies that a three-statement
+// program applies all three mutations. This catches mutations like
+// `len(stmts) > 1` → `len(stmts) > 2` that survive 2-statement tests. (F-29)
+func TestRewriteMultiStatement_ThreeStatements(t *testing.T) {
+	input := `.a = 1 ; .b = 2 ; .c = 3`
+
+	var doc any
+	if err := json.Unmarshal([]byte(`{"a": 0, "b": 0, "c": 0}`), &doc); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ApplyJQ(doc, input)
+	if err != nil {
+		t.Fatalf("ApplyJQ three-statement: %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T", result)
+	}
+	aVal := fmt.Sprintf("%v", m["a"])
+	bVal := fmt.Sprintf("%v", m["b"])
+	cVal := fmt.Sprintf("%v", m["c"])
+	if aVal != "1" {
+		t.Errorf("expected .a=1, got %v", m["a"])
+	}
+	if bVal != "2" {
+		t.Errorf("expected .b=2, got %v", m["b"])
+	}
+	if cVal != "3" {
+		t.Errorf("expected .c=3, got %v", m["c"])
 	}
 }
 

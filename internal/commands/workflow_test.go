@@ -60,6 +60,14 @@ func buildWorkflowCommand(stdout, stderr *bytes.Buffer) *cobra.Command {
 func buildWorkflowCommandT(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 	t.Helper()
 	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+	// TASK_02 / WF-SYNC-1 bypass: existing command tests use minimal
+	// fixtures (`feat-test`, schemaVersion=1, missing required fields)
+	// that pre-date the CUE schema cutover. They exercise CLI dispatch
+	// + audit-line emission, NOT schema enforcement, so the env-var
+	// bypass keeps them green without hand-rewriting every fixture.
+	// New tests that DO want schema enforcement should clear the var
+	// inside the test body via `t.Setenv("BROWZER_NO_SCHEMA_CHECK", "")`.
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
 	return buildWorkflowCommand(stdout, stderr)
 }
 

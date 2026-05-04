@@ -1,10 +1,15 @@
 // Package workflow — bootstrap.go
 //
-// Seeds an empty schema v1 workflow.json. Used by the `browzer workflow init`
+// Seeds an empty schema v2 workflow.json. Used by the `browzer workflow init`
 // subcommand AND by `set-config` when invoked against a non-existent path
 // (the canonical first call from orchestrate-task-delivery's Step 0 mode
 // resolution). Without auto-bootstrap, operators have no sanctioned way to
 // create the initial file — every other CLI verb requires it to exist.
+//
+// Schema v2 (2026-05-04): seeds schemaVersion=2 with the new required fields
+// (pluginVersion=null, completedAt=null) so the skeleton is CUE-valid out of
+// the box. Without this bump every first mutation (e.g. `append-step` after
+// `init`) would be rejected by the CUE gate (SA-01).
 //
 // Idempotency: if the path already exists, BootstrapSkeleton is a no-op and
 // returns ErrAlreadyExists. Callers that want create-or-leave-alone semantics
@@ -41,7 +46,7 @@ type BootstrapOptions struct {
 	OperatorLocale string
 }
 
-// BootstrapSkeleton creates a minimal valid schema v1 workflow.json at path.
+// BootstrapSkeleton creates a minimal valid schema v2 workflow.json at path.
 // Returns ErrAlreadyExists if the file is present (no overwrite). Creates
 // missing parent directories as a courtesy — operators routinely run init
 // from inside a fresh feat dir that has no .gitkeep.
@@ -84,15 +89,23 @@ func BootstrapSkeleton(path string, opts BootstrapOptions) error {
 	}
 
 	skeleton := map[string]any{
-		"schemaVersion":   1,
+		"schemaVersion":   2,
+		"pluginVersion":   nil,
 		"featureId":       featureID,
 		"featureName":     opts.FeatureName,
 		"featDir":         featDir,
 		"originalRequest": opts.OriginalRequest,
 		"operator":        map[string]any{"locale": locale},
-		"config":          map[string]any{},
+		// config must include `mode` and `setAt` to satisfy the CUE
+		// #WorkflowConfig definition (mode defaults to "autonomous" but the
+		// payload-extractor still expects a concrete object on the wire).
+		"config": map[string]any{
+			"mode":  "autonomous",
+			"setAt": now,
+		},
 		"startedAt":       now,
 		"updatedAt":       now,
+		"completedAt":     nil,
 		"totalElapsedMin": 0,
 		"currentStepId":   "",
 		"nextStepId":      "",

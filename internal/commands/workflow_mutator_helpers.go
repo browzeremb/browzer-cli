@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,6 +171,33 @@ func resolveWriteMode(cmd *cobra.Command) (writeMode, error) {
 // Reset on process boundaries (which is fine — agents re-fork per command).
 var daemonFallbackWarnOnce sync.Once
 
+// daemonVersionMismatchWarnOnce suppresses repeat protocol-mismatch warnings
+// across multiple WorkflowMutate calls in the same process — the operator
+// only needs to see "your daemon is stale, restart it" once per CLI run.
+var daemonVersionMismatchWarnOnce sync.Once
+
+// daemonVersionPreflight runs the one-shot `Daemon.Version` handshake. The
+// `daemon.Client` already caches the response across calls (per Client
+// lifetime), so subsequent invocations are zero-RPC — but we still wrap the
+// call so the dispatch helper can read a single boolean ("speak v2?") plus
+// the daemon-reported version for diagnostic logging.
+//
+// Returns:
+//   - resp: the daemon's full Version response on success.
+//   - err: any RPC error (dial / decode / `method_not_found` from a v1
+//     daemon predating the handshake). Caller falls back to standalone on
+//     ANY error.
+//
+// F-SE-6 (2026-05-04): the wrapper looks like a zero-logic pass-through
+// today and a future contributor may be tempted to inline it. KEEP THE
+// WRAPPER. It is the seam that lets us add diagnostic logging,
+// telemetry, or a stricter context-deadline policy in one place without
+// editing every call-site of dispatch. The 2026-05-04 review explicitly
+// considered inlining and chose not to.
+func daemonVersionPreflight(ctx context.Context, cli *daemon.Client) (daemon.DaemonVersionResponse, error) {
+	return cli.DaemonVersion(ctx)
+}
+
 // flagBoolEither returns true if the named boolean flag is set to true on
 // either the command's local FlagSet or its InheritedFlags.
 //
@@ -288,6 +316,18 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	stderr := cmd.ErrOrStderr()
 	startedAt := time.Now()
 
+	// --no-schema-check propagates from the workflow command group into
+	// MutatorArgs.NoSchemaCheck. Daemon path does NOT yet plumb this
+	// (TASK_06); when the flag is set AND mode != standalone, we silently
+	// downgrade to standalone so the bypass actually takes effect AND the
+	// audit line lands.
+	if flagBoolEither(cmd, "no-schema-check") {
+		args.NoSchemaCheck = true
+		if mode != writeModeStandalone {
+			mode = writeModeStandalone
+		}
+	}
+
 	if noLock && mode != writeModeStandalone {
 		// User explicitly asked to bypass the lock — the daemon path can't
 		// honor it (would defeat the per-path FIFO). Silently downgrade so
@@ -303,11 +343,40 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
+	// F-SE-4 (2026-05-04): the HasCapability + DaemonVersion sequence
+	// looks like a double round-trip but it is intentional and CHEAP:
+	//   1. HasCapability is the legacy gate (caches Health for 60s); it
+	//      tells us the daemon at all advertises `workflow.v1`. A daemon
+	//      that fails Health entirely is detected here and we save the
+	//      DaemonVersion RPC.
+	//   2. DaemonVersion is the WF-SYNC-1 strict gate (per-Client cache,
+	//      one RPC per CLI invocation in the success path).
+	// Collapsing them into one call would conflate "daemon reachable" with
+	// "daemon supports protocol v2" and obscure the fallback reason for
+	// audit logs. Keep both checks.
 	if !cli.HasCapability(ctx, "workflow.v1") {
 		daemonFallbackWarnOnce.Do(func() {
 			_, _ = fmt.Fprintln(stderr, "warn: daemon path unavailable (no workflow.v1) — falling back to standalone for this run")
 		})
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_unreachable", startedAt)
+	}
+
+	// Protocol-version handshake (WF-SYNC-1, 2026-05-04). Run before the
+	// first WorkflowMutate of this Client's lifetime; subsequent calls hit
+	// the cache and skip the RPC. On ANY error (RPC failure, v1 daemon that
+	// returns method_not_found, decode error) we fall back to standalone —
+	// the Daemon.Version method is the contract gate, not a soft hint.
+	if vresp, vErr := daemonVersionPreflight(ctx, cli); vErr != nil {
+		daemonFallbackWarnOnce.Do(func() {
+			_, _ = fmt.Fprintf(stderr, "warn: daemon version preflight failed (%v) — falling back to standalone for this run\n", vErr)
+		})
+		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_version_unavailable", startedAt)
+	} else if vresp.ProtocolVersion != daemon.CurrentProtocolVersion {
+		daemonVersionMismatchWarnOnce.Do(func() {
+			_, _ = fmt.Fprintln(stderr,
+				"warn: daemon protocol mismatch (expected v"+strconv.Itoa(daemon.CurrentProtocolVersion)+", got v"+strconv.Itoa(vresp.ProtocolVersion)+") — falling back to standalone")
+		})
+		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_protocol_mismatch", startedAt)
 	}
 
 	awaitDurability := mode == writeModeDaemonSync
@@ -317,6 +386,8 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 		Payload:         json.RawMessage(args.Payload),
 		Args:            args.Args,
 		JQExpr:          args.JQExpr,
+		JQVars:          args.JQVars,
+		ProtocolVersion: daemon.CurrentProtocolVersion,
 		AwaitDurability: awaitDurability,
 		LockTimeoutMs:   lockTimeout.Milliseconds(),
 		WriteID:         newWriteID(),

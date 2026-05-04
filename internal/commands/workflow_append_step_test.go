@@ -250,6 +250,10 @@ func TestAppendStep_ConcurrencyN8NoLostWrites(t *testing.T) {
 	// cobra root inherits it and resolves to writeModeStandalone via
 	// resolveWriteMode's BROWZER_WORKFLOW_MODE branch.
 	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+	// TASK_02 / WF-SYNC-1 bypass: this fixture pre-dates the schema
+	// cutover. The test exercises N=8 lock contention, not schema
+	// enforcement.
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
 
 	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
 

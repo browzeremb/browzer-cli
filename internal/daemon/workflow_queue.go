@@ -165,8 +165,8 @@ func (d *workflowDispatcher) enqueue(job *mutateJob) (depthAhead int, err error)
 // under a fresh advisory lock, and self-collects on idle.
 //
 // Lifecycle:
-//   - Block on either ch (job ready) or time.After(queueIdleTimeout)
-//     (idle deadline).
+//   - Block on either ch (job ready) or the idle timer (queueIdleTimeout
+//     elapsed without traffic).
 //   - On job: acquire lock → ApplyAndPersist → release lock → close
 //     job.done. lastUsed is bumped both on enqueue and drain.
 //   - On idle: take dispatcher.mu, double-check len(ch)==0 && refcount==0,
@@ -175,24 +175,43 @@ func (d *workflowDispatcher) enqueue(job *mutateJob) (depthAhead int, err error)
 //     wins → exit; new enqueue races with delete → would lose job). With
 //     the double-check, if an enqueue races in we observe len(ch)>0 (or
 //     refcount>0 for sync waiters that already incremented) and stay alive.
+//
+// F-07 (2026-05-04): the idle timer uses time.NewTimer + Reset rather
+// than time.After. Earlier code allocated a fresh Timer per loop
+// iteration via time.After; under sustained traffic each abandoned
+// timer kept a goroutine + channel alive for queueIdleTimeout (default
+// 30 min), leaking ~one timer per job. The NewTimer pattern reuses a
+// single timer across iterations.
 func (d *workflowDispatcher) drain(path string, q *pathQueue) {
 	defer func() {
 		d.activeDrainers.Add(-1)
 		close(q.drainerExited)
 	}()
+	idle := time.NewTimer(d.queueIdleTimeout)
+	defer idle.Stop()
 	for {
 		select {
 		case job := <-q.ch:
+			// Stop+drain before Reset so a fired-but-unread timer doesn't
+			// leave a stale tick on the channel after the next Reset.
+			if !idle.Stop() {
+				select {
+				case <-idle.C:
+				default:
+				}
+			}
 			d.processJob(job)
 			q.lastUsed.Store(time.Now().UnixNano())
 			if job.awaitDurability {
 				q.refcount.Add(-1)
 			}
-		case <-time.After(d.queueIdleTimeout):
+			idle.Reset(d.queueIdleTimeout)
+		case <-idle.C:
 			// Idle deadline. Double-check under mu before dropping the queue.
 			d.mu.Lock()
 			if len(q.ch) > 0 || q.refcount.Load() > 0 {
 				d.mu.Unlock()
+				idle.Reset(d.queueIdleTimeout)
 				continue
 			}
 			delete(d.queues, path)

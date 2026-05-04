@@ -19,8 +19,8 @@ func registerWorkflowInit(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:          "init",
-		Short:        "Seed an empty schema v1 workflow.json at --workflow <path>",
-		Long: `Seed an empty schema v1 workflow.json at the path resolved via --workflow,
+		Short:        "Seed an empty schema v2 workflow.json at --workflow <path>",
+		Long: `Seed an empty schema v2 workflow.json at the path resolved via --workflow,
 BROWZER_WORKFLOW, or walk-up. Idempotent by default: exits non-zero with
 "already_exists" if the file is present. Pass --force to overwrite.
 

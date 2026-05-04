@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260504-minimal-fixture",
+  "featureName": "Minimal fixture",
+  "featDir": "docs/browzer/feat-20260504-minimal-fixture",
+  "originalRequest": "fixture",
+  "operator": { "locale": "pt-BR" },
+  "config": {
+    "mode": "autonomous",
+    "setAt": "2026-05-04T00:00:00Z"
+  },
+  "startedAt": "2026-05-04T00:00:00Z",
+  "updatedAt": "2026-05-04T00:00:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_PRD",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 0,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_PRD",
+      "name": "PRD",
+      "status": "PENDING",
+      "applicability": { "applicable": true, "reason": "default path" },
+      "startedAt": "2026-05-04T00:00:00Z",
+      "completedAt": null,
+      "elapsedMin": 0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["generate-prd"],
+      "skillsInvoked": [],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "prd": {
+        "title": "Minimal PRD",
+        "overview": "fixture",
+        "personas": [],
+        "objectives": [],
+        "inScope": [],
+        "outOfScope": [],
+        "deliverables": [],
+        "functionalRequirements": [{ "id": "FR-1", "text": "minimal" }],
+        "nonFunctionalRequirements": [],
+        "successMetrics": [],
+        "acceptanceCriteria": [{ "id": "AC-1", "text": "minimal" }],
+        "risks": [],
+        "assumptions": [],
+        "taskGranularity": ""
+      }
+    }
+  ]
+}

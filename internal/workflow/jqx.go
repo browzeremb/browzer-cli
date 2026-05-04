@@ -71,6 +71,160 @@ func ApplyJQ(data any, expr string) (any, error) {
 	return ApplyJQWithVars(data, expr, nil)
 }
 
+// jqTokenizer tracks lexical state while walking a jq program rune-by-rune.
+// It handles string literals, line comments, and bracket/brace/paren nesting
+// so callers can detect top-level positions without duplicating the state machine.
+//
+// Usage: call Feed(ch) for each rune (in order); the tokenizer updates its
+// internal state. After each call, AtTopLevel() reports whether the rune that
+// was just fed sits at depth 0 outside strings and comments.
+//
+// Design note: this struct is shared by rewriteMultiStatementJQ to keep the
+// single-pass state machine in one place (Option A, F-5). The public API of
+// ApplyJQ / ApplyJQWithVars is unchanged.
+type jqTokenizer struct {
+	parenDepth   int
+	bracketDepth int
+	braceDepth   int
+	inString     bool
+	inComment    bool
+}
+
+// AtTopLevel reports whether the tokenizer's current position is at nesting
+// depth 0, outside any string literal or line comment.
+func (t *jqTokenizer) AtTopLevel() bool {
+	return !t.inString && !t.inComment &&
+		t.parenDepth == 0 && t.bracketDepth == 0 && t.braceDepth == 0
+}
+
+// Feed processes one rune and updates internal state.
+// Returns true if the rune is "visible" (not skipped by escape handling)
+// and false when the caller should skip it (never — escape skipping is done
+// by the caller via ConsumeEscape; Feed itself always processes exactly one rune).
+func (t *jqTokenizer) Feed(ch rune) {
+	if !t.inString && ch == '#' {
+		t.inComment = true
+	}
+	if t.inComment {
+		if ch == '\n' {
+			t.inComment = false
+		}
+		return
+	}
+	if t.inString {
+		if ch == '"' {
+			t.inString = false
+		}
+		return
+	}
+	if ch == '"' {
+		t.inString = true
+		return
+	}
+	t.updateDepth(ch)
+}
+
+// updateDepth adjusts bracket/brace/paren depths for a single rune.
+// Called only when not inside a string or comment.
+func (t *jqTokenizer) updateDepth(ch rune) {
+	switch ch {
+	case '(':
+		t.parenDepth++
+	case ')':
+		if t.parenDepth > 0 {
+			t.parenDepth--
+		}
+	case '[':
+		t.bracketDepth++
+	case ']':
+		if t.bracketDepth > 0 {
+			t.bracketDepth--
+		}
+	case '{':
+		t.braceDepth++
+	case '}':
+		if t.braceDepth > 0 {
+			t.braceDepth--
+		}
+	}
+}
+
+// rewriteMultiStatementJQ converts standalone-jq-style multi-statement
+// programs (`expr1 ; expr2`) to single-pipeline form
+// (`(expr1\n) | (expr2\n)`) for gojq compatibility. Single-statement
+// programs pass through unchanged (byte-equal to input; no parens added).
+//
+// Design choice (Option A): a jqTokenizer struct holds the shared state
+// machine (paren/bracket/brace depth, string, comment) used by both the
+// `def ` bail-out check and the `;` collector in a single pass. This
+// replaces the previous two-pass approach (separate containsTopLevelDef
+// pre-scan) and distributes the complexity across jqTokenizer methods so
+// each function stays ≤15 cyclomatic complexity.
+//
+// The newline before each closing paren (`s + "\n)"`) ensures that statements
+// ending in a line comment (e.g. `.x = 1 # note`) do not swallow the `)` into
+// the comment when gojq parses the combined pipeline.
+//
+// Special case: a top-level `def ` keyword causes verbatim return — gojq
+// handles def's internal `;` natively; splitting across a def boundary
+// corrupts it into fragments gojq cannot compile.
+//
+// Edge cases:
+//   - Trailing `;` → single-element split → returned verbatim.
+//   - Consecutive `;;` or leading `;` → empty tokens skipped.
+//   - Single-statement (no top-level `;`) → returned verbatim.
+func rewriteMultiStatementJQ(program string) string {
+	var tok jqTokenizer
+	runes := []rune(program)
+	var stmts []string
+	var cur strings.Builder
+
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		tok.Feed(ch)
+
+		// Inside a string: handle escape sequences. The escaped rune is written
+		// verbatim and skipped by the tokenizer — in particular, a `\"` must NOT
+		// be fed to tok.Feed because Feed would interpret the `"` as closing the
+		// string. The `\\` already left inString=true; the next rune is opaque.
+		if tok.inString && ch == '\\' && i+1 < len(runes) {
+			cur.WriteRune(ch)
+			i++
+			cur.WriteRune(runes[i])
+			continue
+		}
+
+		if tok.AtTopLevel() {
+			// Bail out verbatim on top-level `def ` — let gojq parse natively.
+			if ch == 'd' && i+4 <= len(runes) && string(runes[i:i+4]) == "def " {
+				return program
+			}
+			// Top-level `;` splits statements.
+			if ch == ';' {
+				if stmt := strings.TrimSpace(cur.String()); stmt != "" {
+					stmts = append(stmts, stmt)
+				}
+				cur.Reset()
+				continue
+			}
+		}
+
+		cur.WriteRune(ch)
+	}
+	if tail := strings.TrimSpace(cur.String()); tail != "" {
+		stmts = append(stmts, tail)
+	}
+
+	if len(stmts) <= 1 {
+		return program // Zero or one statement: preserve original whitespace.
+	}
+	parts := make([]string, len(stmts))
+	for i, s := range stmts {
+		parts[i] = "(" + s + "\n)"
+	}
+	return strings.Join(parts, " | ")
+}
+
 // ApplyJQWithVars is ApplyJQ extended with bind variables — the gojq
 // equivalent of `jq --arg KEY VALUE` / `jq --argjson KEY <json>`. Each
 // entry in vars binds `$KEY` inside the expression to the value (which
@@ -84,6 +238,7 @@ func ApplyJQ(data any, expr string) (any, error) {
 // deterministic across calls — gojq pairs WithVariables names with the
 // values supplied to Run() positionally.
 func ApplyJQWithVars(data any, expr string, vars map[string]any) (any, error) {
+	expr = rewriteMultiStatementJQ(expr)
 	q, err := gojq.Parse(expr)
 	if err != nil {
 		return nil, fmt.Errorf("jq parse: %w", err)

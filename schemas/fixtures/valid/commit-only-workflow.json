@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": "1.6.0",
+  "featureId": "feat-20260504-commit-fixture",
+  "featureName": "Commit fixture",
+  "featDir": "docs/browzer/feat-20260504-commit-fixture",
+  "originalRequest": "fixture",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-04T00:00:00Z" },
+  "startedAt": "2026-05-04T00:00:00Z",
+  "updatedAt": "2026-05-04T00:05:00Z",
+  "completedAt": "2026-05-04T00:05:00Z",
+  "totalElapsedMin": 5.0,
+  "currentStepId": "STEP_01_COMMIT",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_COMMIT",
+      "name": "COMMIT",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:00:00Z",
+      "completedAt": "2026-05-04T00:05:00Z",
+      "elapsedMin": 5.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["commit"],
+      "skillsInvoked": ["commit"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "commit": {
+        "sha": "abc1234",
+        "conventionalType": "feat",
+        "scope": "cli/schemas",
+        "subject": "introduce CUE workflow-v1 schema + codegen pipeline",
+        "body": "Why: …",
+        "trailers": [
+          "Co-authored-by: browzeremb <274369678+browzeremb@users.noreply.github.com>"
+        ],
+        "prePushAuditsRun": ["lefthook:unit-tests"],
+        "pushAttempts": [
+          {
+            "sha": "abc1234",
+            "attemptedAt": "2026-05-04T00:04:30Z",
+            "lefthookBypassed": false,
+            "noVerifyPassed": false,
+            "amendUsed": false,
+            "bypassedAudits": [],
+            "bypassReason": null,
+            "retryCount": 0,
+            "previousFailure": null
+          }
+        ],
+        "prePushAudits": [
+          {
+            "name": "lefthook:unit-tests",
+            "source": "lefthook",
+            "exitCode": 0,
+            "durationMs": 2400
+          }
+        ]
+      }
+    }
+  ]
+}

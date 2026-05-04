@@ -42,10 +42,19 @@ func registerWorkflow(parent *cobra.Command) {
 	// --quiet only silences the post-save confirmation line emitted under
 	// --save; the data payload itself is never silenced.
 	cmd.PersistentFlags().Bool("quiet", false, "suppress the audit telemetry line on success (errors still print)")
+	// --no-schema-check (TASK_02 / WF-SYNC-1) bypasses the CUE-based
+	// schema validator on the standalone write path. Bypass writes one
+	// line (timestamp + sha256 + verb + path) to
+	// `<repo-root>/.browzer/audit/no-schema-check.log`. Daemon path
+	// always validates today; TASK_06 plumbs the bypass through the JSON-RPC
+	// surface.
+	cmd.PersistentFlags().Bool("no-schema-check", false, "bypass CUE schema validation (writes audit line to .browzer/audit/no-schema-check.log)")
+	registerWorkflowAppendDispatch(cmd)
 	registerWorkflowAppendReviewHistory(cmd)
 	registerWorkflowAppendStep(cmd)
 	registerWorkflowAuditModelOverride(cmd)
 	registerWorkflowCompleteStep(cmd)
+	registerWorkflowDescribeStepType(cmd)
 	registerWorkflowGetConfig(cmd)
 	registerWorkflowGetStep(cmd)
 	registerWorkflowInit(cmd)

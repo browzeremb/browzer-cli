@@ -19,11 +19,16 @@ import (
 // minimalWorkflowJSON is the smallest schema-v1 workflow.json the validator
 // accepts. Tests in this file write copies of this to disk and let the
 // daemon mutate them.
+// Updated 2026-05-04 (TASK_02 / WF-SYNC-1): schemaVersion bumped to 2 +
+// featureId regex-conformant (`^feat-[0-9]{8}-[a-z0-9-]+$`) so the new
+// CUE-based validator accepts the fixture. The previous shape pre-dated
+// the schema cutover and would fail every mutation post-validator.
 const minimalWorkflowJSON = `{
-  "schemaVersion": 1,
-  "featureId": "feat-mutate-test",
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260429-mutate-test",
   "featureName": "WorkflowMutate Test",
-  "featDir": "docs/browzer/feat-mutate-test",
+  "featDir": "docs/browzer/feat-20260429-mutate-test",
   "originalRequest": "test",
   "operator": {"locale": "pt-BR"},
   "config": {"mode": "autonomous", "setAt": "2026-04-29T00:00:00Z"},
@@ -49,6 +54,14 @@ const minimalWorkflowJSON = `{
 // "never collect during test".
 func startTestDaemon(t *testing.T, keepalive time.Duration) (*Client, *Server, func()) {
 	t.Helper()
+	// TASK_02 / WF-SYNC-1: these daemon tests use minimal step/payload
+	// fixtures that intentionally omit fields the new CUE schema
+	// requires (startedAt, owner.role, taskId regex, etc.) — the tests
+	// exercise daemon mechanics (queue ordering, crash recovery, idle
+	// drainer collection), NOT schema enforcement. Set the bypass env
+	// var so ApplyAndPersist skips CUE validation; the existing
+	// `Validate(typed)` structural check still runs as defence-in-depth.
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
 	sockDir, err := os.MkdirTemp("/tmp", "brz-wfm-*")
 	if err != nil {
 		t.Fatal(err)
@@ -108,8 +121,10 @@ func TestWorkflowMutate_QueueOrdering(t *testing.T) {
 	wfPath := writeMinimalWorkflow(t)
 
 	const N = 20
-	for i := 0; i < N; i++ {
-		stepID := fmt.Sprintf("STEP_%02d", i)
+	for i := range N {
+		// stepId regex: ^STEP_[0-9]{2}_[A-Z0-9_]+$ (zero-padded 2-digit
+		// prefix + suffix). Suffix `S<i>` keeps fixtures unique across N.
+		stepID := fmt.Sprintf("STEP_%02d_S%d", i, i)
 		payload := fmt.Sprintf(`{
 		  "stepId": %q,
 		  "name": "TASK",
@@ -127,6 +142,7 @@ func TestWorkflowMutate_QueueOrdering(t *testing.T) {
 			Verb:            "append-step",
 			Path:            wfPath,
 			Payload:         json.RawMessage(payload),
+			ProtocolVersion: CurrentProtocolVersion,
 			AwaitDurability: true,
 			LockTimeoutMs:   5000,
 			WriteID:         stepID,
@@ -158,7 +174,7 @@ func TestWorkflowMutate_QueueOrdering(t *testing.T) {
 		t.Fatalf("expected %d steps, got %d", N, len(doc.Steps))
 	}
 	for i, s := range doc.Steps {
-		want := fmt.Sprintf("STEP_%02d", i)
+		want := fmt.Sprintf("STEP_%02d_S%d", i, i)
 		if s.StepID != want {
 			t.Errorf("steps[%d].stepId = %q, want %q (FIFO violated)", i, s.StepID, want)
 		}
@@ -183,7 +199,7 @@ func TestWorkflowMutate_DaemonCrashMidWrite(t *testing.T) {
 
 	// Step 1: one sync write to anchor the file.
 	payload := `{
-	  "stepId": "STEP_ANCHOR",
+	  "stepId": "STEP_00_ANCHOR",
 	  "name": "TASK",
 	  "taskId": "TASK_ANCHOR",
 	  "status": "PENDING",
@@ -198,6 +214,7 @@ func TestWorkflowMutate_DaemonCrashMidWrite(t *testing.T) {
 		Verb:            "append-step",
 		Path:            wfPath,
 		Payload:         json.RawMessage(payload),
+		ProtocolVersion: CurrentProtocolVersion,
 		AwaitDurability: true,
 		LockTimeoutMs:   5000,
 	}); err != nil {
@@ -207,7 +224,7 @@ func TestWorkflowMutate_DaemonCrashMidWrite(t *testing.T) {
 	cancel()
 
 	// Step 2: fire 5 async mutations, then kill the daemon.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		stepID := fmt.Sprintf("STEP_PEND_%02d", i)
 		p := fmt.Sprintf(`{
 		  "stepId": %q,
@@ -225,6 +242,7 @@ func TestWorkflowMutate_DaemonCrashMidWrite(t *testing.T) {
 			Verb:            "append-step",
 			Path:            wfPath,
 			Payload:         json.RawMessage(p),
+			ProtocolVersion: CurrentProtocolVersion,
 			AwaitDurability: false,
 			LockTimeoutMs:   5000,
 		}); err != nil {
@@ -399,7 +417,7 @@ func TestWorkflowMutate_QueueIdleDrainerExit(t *testing.T) {
 
 	wfPath := writeMinimalWorkflow(t)
 	payload := `{
-	  "stepId": "STEP_ONLY",
+	  "stepId": "STEP_00_ONLY",
 	  "name": "TASK",
 	  "taskId": "TASK_01",
 	  "status": "PENDING",
@@ -414,6 +432,7 @@ func TestWorkflowMutate_QueueIdleDrainerExit(t *testing.T) {
 		Verb:            "append-step",
 		Path:            wfPath,
 		Payload:         json.RawMessage(payload),
+		ProtocolVersion: CurrentProtocolVersion,
 		AwaitDurability: true,
 		LockTimeoutMs:   5000,
 	}); err != nil {
@@ -449,10 +468,11 @@ func TestWorkflowMutate_NoLockRejectedInDaemonPath(t *testing.T) {
 
 	wfPath := writeMinimalWorkflow(t)
 	_, err := cli.WorkflowMutate(t.Context(), WorkflowMutateParams{
-		Verb:   "set-current-step",
-		Path:   wfPath,
-		Args:   []string{"step-1"},
-		NoLock: true,
+		Verb:            "set-current-step",
+		Path:            wfPath,
+		Args:            []string{"step-1"},
+		ProtocolVersion: CurrentProtocolVersion,
+		NoLock:          true,
 	})
 	if err == nil {
 		t.Fatal("expected error for noLock=true, got nil")
@@ -490,12 +510,13 @@ func TestWorkflowMutate_QueueFullBackpressure(t *testing.T) {
 	// the drainer (now stuck on Acquire), next 64 fill the buffered channel.
 	// The 66th call must return queue_full.
 	for i := 0; i <= pathQueueCap; i++ { // 0..64 inclusive = 65 calls
-		p := fmt.Sprintf(`{"stepId":"STEP_%03d","name":"TASK","taskId":"T_%d","status":"PENDING","applicability":{"applicable":true},"completedAt":null,"owner":null,"worktrees":{"used":false},"task":{}}`, i, i)
+		p := fmt.Sprintf(`{"stepId":"STEP_00_QF%d","name":"TASK","taskId":"T_%d","status":"PENDING","applicability":{"applicable":true},"completedAt":null,"owner":null,"worktrees":{"used":false},"task":{}}`, i, i)
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		if _, err := cli.WorkflowMutate(ctx, WorkflowMutateParams{
 			Verb:            "append-step",
 			Path:            wfPath,
 			Payload:         json.RawMessage(p),
+			ProtocolVersion: CurrentProtocolVersion,
 			AwaitDurability: false,
 			LockTimeoutMs:   500, // small so the drainer's eventual Acquire fails fast
 		}); err != nil {
@@ -508,13 +529,14 @@ func TestWorkflowMutate_QueueFullBackpressure(t *testing.T) {
 	// 66th call — channel is at capacity AND the drainer is parked on
 	// Acquire (not selecting on q.ch), so neither buffer nor handoff can
 	// accept the send. enqueue's `select default` fires queue_full.
-	p := `{"stepId":"STEP_FULL","name":"TASK","taskId":"T_FULL","status":"PENDING","applicability":{"applicable":true},"completedAt":null,"owner":null,"worktrees":{"used":false},"task":{}}`
+	p := `{"stepId":"STEP_00_FULL","name":"TASK","taskId":"T_FULL","status":"PENDING","applicability":{"applicable":true},"completedAt":null,"owner":null,"worktrees":{"used":false},"task":{}}`
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	_, err = cli.WorkflowMutate(ctx, WorkflowMutateParams{
 		Verb:            "append-step",
 		Path:            wfPath,
 		Payload:         json.RawMessage(p),
+		ProtocolVersion: CurrentProtocolVersion,
 		AwaitDurability: false,
 		LockTimeoutMs:   500,
 	})

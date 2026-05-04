@@ -32,6 +32,13 @@ type Client struct {
 	caps         map[string]bool
 	capsAt       time.Time
 	capsWarnOnce sync.Once
+
+	// versionMu guards versionResp + versionDone. Held during the one-shot
+	// `Daemon.Version` preflight RPC and during cache reads.
+	versionMu   sync.Mutex
+	versionDone bool
+	versionResp DaemonVersionResponse
+	versionErr  error
 }
 
 // NewClient returns a daemon client. Default timeout = 2s.
@@ -116,6 +123,45 @@ func (c *Client) HasCapability(ctx context.Context, name string) bool {
 	}
 	c.capsMu.Unlock()
 	return fresh[name]
+}
+
+// DaemonVersion calls the daemon's `Daemon.Version` method. Successful
+// responses are cached per Client lifetime — the second and subsequent
+// successful calls return the first response without an extra RPC
+// round-trip.
+//
+// Errors are NOT cached (F-04 / SA-04, 2026-05-04). A transient dial /
+// RPC failure (e.g. the daemon briefly restarting between two calls on
+// the same Client) used to permanently route the CLI to standalone for
+// the entire Client lifetime; now the next call retries. This mirrors
+// `HasCapability`'s "don't cache on error" policy.
+//
+// On a daemon that predates the method, the underlying call returns
+// "method_not_found" via the JSON-RPC `-32601` envelope. The caller
+// (`dispatchToDaemonOrFallback` / preflight helper) treats any error as a
+// signal to fall back to the standalone path; the method itself does not
+// translate the error. Because errors aren't cached, a fresh CLI
+// invocation against a freshly-restarted-with-v2 daemon won't be
+// permanently stuck on the v1 verdict from the first probe.
+func (c *Client) DaemonVersion(ctx context.Context) (DaemonVersionResponse, error) {
+	c.versionMu.Lock()
+	defer c.versionMu.Unlock()
+	if c.versionDone {
+		return c.versionResp, c.versionErr
+	}
+	var out DaemonVersionResponse
+	err := c.call(ctx, "Daemon.Version", struct{}{}, &out)
+	if err != nil {
+		// Don't cache: transient failures (daemon restart, socket
+		// flake) shouldn't permanently disable the daemon path for
+		// the rest of this Client's lifetime. Return the error
+		// without flipping versionDone so the next call retries.
+		return DaemonVersionResponse{}, err
+	}
+	c.versionDone = true
+	c.versionResp = out
+	c.versionErr = nil
+	return out, nil
 }
 
 // WorkflowMutate calls the daemon's WorkflowMutate method.
