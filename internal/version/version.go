@@ -5,17 +5,20 @@
 //
 // Production builds inject the value via:
 //
-//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.11.0'" ./cmd/browzer
+//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.12.0'" ./cmd/browzer
 //
-// Latest released tag: cli-v1.11.0 (skills+cli autoresearch sweep —
-// 3 new named workflow queries closing every raw `jq … "$WORKFLOW"` pattern
-// in skill bodies: `tasks-manifest`, `steps-by-name`, `steps-by-owner`.
-// Query catalog grew from 10 → 13. Eight SKILL.md / reference files
-// migrated to consume the new queries (or existing `next-step-id` /
-// `get-config` / `get-step` surfaces). `scripts/audit/skill-no-raw-jq-workflow.mjs`
-// is the metric (lower = better; baseline 33 → final 0). Tag with
-// `git tag cli-v1.11.0 && git push origin cli-v1.11.0` once the
-// release commit is pushed.
+// Latest released tag: cli-v1.12.0 (RETRO §9 follow-up sweep —
+// surfaces three new mutator-helper APIs in `internal/commands/workflow_mutator_helpers.go`:
+// `enrichSetCurrentStepError` wraps `set-current-step` "step not found" errors
+// with a "step not appended yet" hint + the last 5 known stepIds; `isParseError`
+// + `emitParseErrorAudit` skip the daemon→standalone fallback on deterministic
+// JSON parse failures (audit reason `parse_error_terminal`); `quietByDefaultUnderLLM`
+// centralises the `--llm` / `BROWZER_LLM=1` predicate, first consumer being
+// `acquireMutatorLock` which now silences the `--no-lock bypass active` warning
+// under LLM mode. `scripts/audit/skill-cli-sync-drift.mjs` is the metric
+// (lower = better; baseline 30 → final 0 across 16 iterations). Tag with
+// `git tag cli-v1.12.0 && git push origin cli-v1.12.0` once the release
+// commit is pushed.
 //
 // Empty default is acceptable in tests and dev (`go run`/`go test`); callers
 // that need a non-empty fallback (e.g. user-facing `--version` output) should

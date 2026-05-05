@@ -30,12 +30,41 @@ var errLockTimeoutExitCode = &cliErrors.CliError{
 	ExitCode: 16,
 }
 
+// quietByDefaultUnderLLM returns true when --llm / BROWZER_LLM=1 is in
+// effect, indicating the caller is an LLM tool-result consumer that wants
+// success-path mutation chatter silenced by default. Errors and structured
+// hints are NEVER silenced — only soft warnings and audit-success lines.
+// Operator overrides remain authoritative: explicit --quiet=0 / -v turns
+// chatter back on regardless of LLM mode.
+//
+// RETRO §C1: orchestrators that set BROWZER_LLM=1 once at session entry
+// pollute their context window with per-mutation "warning: --no-lock"
+// notices, audit-success telemetry, and daemon-fallback warn-once lines.
+// Routing every soft-warning emit through this helper centralises the
+// LLM-quiet semantics so `--quiet` defaulting is consistent across every
+// mutator entrypoint.
+func quietByDefaultUnderLLM(cmd *cobra.Command) bool {
+	if envBoolish(os.Getenv("BROWZER_LLM")) {
+		return true
+	}
+	if cmd != nil {
+		if flagBoolEither(cmd, "llm") {
+			return true
+		}
+	}
+	return false
+}
+
 // acquireMutatorLock acquires the advisory lock for a workflow mutation command.
 // If noLock is true, it emits a warning and returns nil (no lock held, lockHeld=0).
 // On ErrLockTimeout it prints a message and returns errLockTimeoutExitCode.
 func acquireMutatorLock(cmd *cobra.Command, wfPath string, noLock bool, timeout time.Duration) (*wf.Lock, time.Duration, error) {
 	if noLock {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: --no-lock bypass active\n")
+		// Suppress the bypass notice under LLM mode — it's a known-cost
+		// reminder the orchestrator already accounted for.
+		if !quietByDefaultUnderLLM(cmd) {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: --no-lock bypass active\n")
+		}
 		return nil, 0, nil
 	}
 	if timeout <= 0 {
@@ -412,6 +441,17 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 		// queue_full / unknown_verb / timeout / etc. Surface the reason in
 		// the audit line and fall back to standalone (which re-applies
 		// idempotently on retried verbs).
+		//
+		// Exception (RETRO §C6): JSON parse errors are deterministic — the
+		// standalone path will reject the same payload identically. Running
+		// the fallback in that case produces a duplicate stderr error and
+		// an audit line that misleadingly says "fallback-sync" when the
+		// real failure is a malformed --argjson / payload. Surface the
+		// daemon error directly without re-running standalone.
+		if isParseError(err) {
+			emitParseErrorAudit(cmd, stderr, wfPath, verb, err, startedAt)
+			return err
+		}
 		if !quiet {
 			daemonFallbackWarnOnce.Do(func() {
 				_, _ = fmt.Fprintf(stderr, "warn: daemon WorkflowMutate failed (%v) — falling back to standalone for this run\n", err)
@@ -440,6 +480,95 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	return nil
 }
 
+// isParseError detects deterministic JSON / payload parse failures that the
+// standalone path would reject identically. Returning true short-circuits the
+// daemon-fallback chain so the operator sees the real error once instead of
+// twice. RETRO §C6.
+func isParseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	markers := []string{
+		"invalid character",
+		"json: cannot unmarshal",
+		"argjson",
+		"unexpected end of json",
+		"invalid_payload",
+		"parse error",
+		"invalid json",
+	}
+	for _, m := range markers {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// emitParseErrorAudit writes a single audit line tagged
+// `mode=daemon-sync reason=parse_error_terminal` so observability still
+// records that the daemon round-tripped the payload, while the operator
+// sees only the original parse error on stderr.
+func emitParseErrorAudit(cmd *cobra.Command, stderr io.Writer, wfPath, verb string, err error, startedAt time.Time) {
+	_, _ = fmt.Fprintf(stderr, "validation or write error: %v\n", err)
+	emitAuditLine(cmd, stderr, wf.AuditLine{
+		Verb:        verb,
+		Path:        wfPath,
+		Mode:        wf.AuditModeDaemonSync,
+		ValidatedOk: false,
+		ElapsedMs:   time.Since(startedAt).Milliseconds(),
+		Reason:      "parse_error_terminal",
+	})
+}
+
+// enrichSetCurrentStepError wraps a "step ... not found" error from the
+// `set-current-step` mutator with a hint that the upstream `append-step`
+// likely silently failed schema validation. Closes RETRO §C5: when the
+// operator seeds a step with an invalid payload, append-step rejects it and
+// the subsequent set-current-step gives an opaque "step X not found",
+// hiding the real upstream error.
+//
+// Read-only best-effort: scans the workflow for stepIds adjacent to the
+// targeted one and surfaces them so the operator can spot the missing
+// append-step. On any IO error returns the original err untouched.
+func enrichSetCurrentStepError(verb string, err error, wfPath string) error {
+	if verb != "set-current-step" || err == nil {
+		return err
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not found") || !strings.Contains(msg, "step") {
+		return err
+	}
+	data, ioErr := os.ReadFile(wfPath)
+	if ioErr != nil {
+		return err
+	}
+	var doc struct {
+		Steps []struct {
+			StepID string `json:"stepId"`
+		} `json:"steps"`
+	}
+	if jsonErr := json.Unmarshal(data, &doc); jsonErr != nil {
+		return err
+	}
+	known := make([]string, 0, len(doc.Steps))
+	for _, s := range doc.Steps {
+		if s.StepID != "" {
+			known = append(known, s.StepID)
+		}
+	}
+	hint := "hint: step not appended yet — verify the previous append-step succeeded (silent schema validation failures upstream produce this exact error). last append-step error often surfaces as a CUE 'field not allowed' line in the same shell history."
+	if len(known) > 0 {
+		tail := known
+		if len(tail) > 5 {
+			tail = tail[len(tail)-5:]
+		}
+		hint += fmt.Sprintf(" Existing stepIds (last %d): %s.", len(tail), strings.Join(tail, ", "))
+	}
+	return fmt.Errorf("%w\n%s", err, hint)
+}
+
 // runStandaloneAndAudit is the unified standalone path used by
 // `--sync` and by the daemon-failure fallback. It acquires the lock, runs
 // `wf.ApplyAndPersist`, releases the lock, and emits one audit line.
@@ -465,6 +594,7 @@ func runStandaloneAndAudit(cmd *cobra.Command, wfPath, verb string, args wf.Muta
 	// daemon path.
 	res, err := wf.ApplyAndPersist(wfPath, verb, args, false /* awaitDurability */)
 	if err != nil {
+		err = enrichSetCurrentStepError(verb, err, wfPath)
 		_, _ = fmt.Fprintf(stderr, "validation or write error: %v\n", err)
 		return err
 	}
