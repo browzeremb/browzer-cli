@@ -300,9 +300,20 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 		// surface in `describe-step-type` output. Without this
 		// the array is rendered as a single `array` row and the
 		// element constraints are lost.
+		//
+		// WF-CUE-NOISE-03 (2026-05-05): the SSOT also uses the
+		// pattern `*[] | [...#NamedDef]` for fields that default
+		// to an empty list (e.g. `personas: *[] | [...#Persona]`).
+		// CUE's LookupPath(AnyIndex) on such a disjunction
+		// returns the default-marked branch's element type
+		// (i.e. nothing — `*[]` has no element shape), so the
+		// element fields of `#NamedDef` were silently dropped.
+		// resolveListElement walks past the default branch and
+		// returns the non-default list's element so the recursion
+		// surfaces `personas[].id`, `risks[].mitigation`, …
 		if e.child.IncompleteKind() == cue.ListKind {
-			elem := e.child.LookupPath(cue.MakePath(cue.AnyIndex))
-			if elem.Exists() {
+			elem := resolveListElement(e.child)
+			if elem != nil {
 				elemFields, elemErr := elem.Fields(cue.All())
 				if elemErr == nil {
 					hasElemFields := false
@@ -311,11 +322,11 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 						break
 					}
 					if hasElemFields {
-						walkCUEFields(elem, path+"[]", addedInMap, out)
+						walkCUEFields(*elem, path+"[]", addedInMap, out)
 						continue
 					}
 				}
-				if resolved := resolveStructFromDisjunction(elem); resolved != nil {
+				if resolved := resolveStructFromDisjunction(*elem); resolved != nil {
 					walkCUEFields(*resolved, path+"[]", addedInMap, out)
 					continue
 				}
@@ -323,8 +334,8 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 				// (e.g. `[...=~"^…$"]`). Emit it as a leaf
 				// under the `[]` path so the regex/enum is
 				// rendered.
-				if matchOperandRegex(elem) != "" || len(extractStringEnum(elem)) > 0 {
-					*out = append(*out, makeFieldInfo(path+"[]", elem, addedInMap))
+				if matchOperandRegex(*elem) != "" || len(extractStringEnum(*elem)) > 0 {
+					*out = append(*out, makeFieldInfo(path+"[]", *elem, addedInMap))
 					continue
 				}
 			}
@@ -332,6 +343,55 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 		// Treat as leaf.
 		*out = append(*out, makeFieldInfo(path, e.child, addedInMap))
 	}
+}
+
+// resolveListElement returns the element value of a list-typed CUE
+// value, transparently looking past the default-marked empty-list
+// branch of a `*[] | [...#NamedDef]` disjunction.
+//
+// Direct LookupPath(AnyIndex) on `*[] | [...#Persona]` returns no
+// element because CUE evaluates against the default branch (`*[]`),
+// which has no element shape. The walker therefore could not
+// surface the `#Persona` field constraints, leaving `personas[]`
+// as a single `array` leaf row in `describe-step-type` output.
+//
+// Strategy:
+//
+//  1. Try LookupPath(AnyIndex) directly — covers the simple
+//     `[...#X]` form already exercised by WF-CLI-UX-4.
+//  2. Inspect the Expr() arms. CUE may surface the disjunction
+//     as either:
+//       - OrOp with multiple args (when no default is marked)
+//       - NoOp with a single arg pointing at the non-default
+//         branch (after the engine resolves `*[] | [...#X]`
+//         against the default-marked `[]`).
+//     Either way, iterate the args and return the first arm
+//     whose own AnyIndex resolves to a non-bottom value.
+//
+// Returns nil when no operand of v carries an element shape (e.g.
+// `*[] | []`, both branches empty).
+//
+// WF-CUE-NOISE-03 (2026-05-05).
+func resolveListElement(v cue.Value) *cue.Value {
+	if v.IncompleteKind() != cue.ListKind {
+		return nil
+	}
+	if elem := v.LookupPath(cue.MakePath(cue.AnyIndex)); elem.Exists() {
+		return &elem
+	}
+	_, args := v.Expr()
+	for _, a := range args {
+		if a.IncompleteKind() != cue.ListKind {
+			continue
+		}
+		if elem := a.LookupPath(cue.MakePath(cue.AnyIndex)); elem.Exists() {
+			return &elem
+		}
+		if nested := resolveListElement(a); nested != nil {
+			return nested
+		}
+	}
+	return nil
 }
 
 // resolveStructFromDisjunction checks whether v is a disjunction whose

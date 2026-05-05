@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -529,5 +530,308 @@ func TestEnrichViolations_AllowedFields_ForUnknownField(t *testing.T) {
 		// don't expose the parent context cleanly.
 		t.Logf("AllowedFields empty for path=%q msg=%q (acceptable but suboptimal)",
 			hit.Path, hit.Message)
+	}
+}
+
+// TestLookupArrayElementFieldsForPath_PRDSuccessMetrics asserts the
+// helper resolves the element struct fields for a `[...#X]` style
+// schema array. The PRD step's successMetrics field is declared as
+// `*[] | [...#SuccessMetric]` with #SuccessMetric: {id, metric,
+// target, method} — closing retro 2026-05-05 §2.3 / §3.3 where the
+// raw CUE error ("incompatible list lengths (0 and 7)") gave the
+// operator nothing to act on.
+func TestLookupArrayElementFieldsForPath_PRDSuccessMetrics(t *testing.T) {
+	_, schemaRoot, _, err := loadSchema()
+	if err != nil {
+		t.Fatalf("loadSchema: %v", err)
+	}
+
+	got := lookupArrayElementFieldsForPath(schemaRoot, "steps[0].prd.successMetrics")
+	want := []string{"id", "method", "metric", "target"}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d fields %v, got %d %v", len(want), want, len(got), got)
+	}
+	for i, f := range want {
+		if got[i] != f {
+			t.Errorf("field[%d] = %q, want %q (full=%v)", i, got[i], f, got)
+		}
+	}
+}
+
+// TestLookupArrayElementFieldsForPath_NonArrayPath asserts the helper
+// returns nil when the path resolves to a non-array (struct) field. We
+// use `config` (a plain `#WorkflowConfig` struct, not an array) for the
+// negative case so a future schema change converting `config` to an
+// array would catch the regression.
+func TestLookupArrayElementFieldsForPath_NonArrayPath(t *testing.T) {
+	_, schemaRoot, _, err := loadSchema()
+	if err != nil {
+		t.Fatalf("loadSchema: %v", err)
+	}
+
+	got := lookupArrayElementFieldsForPath(schemaRoot, "config")
+	if got != nil {
+		t.Errorf("expected nil for non-array path 'config', got %v", got)
+	}
+}
+
+// TestRenderArrayShapeMismatchMessage pins the diagnostic format. The
+// message is consumed by FormatViolations + downstream skill rubrics so
+// changing the shape would break operator-facing greps.
+func TestRenderArrayShapeMismatchMessage(t *testing.T) {
+	cases := []struct {
+		field    string
+		fields   []string
+		gotCount string
+		want     string
+	}{
+		{
+			"successMetrics",
+			[]string{"id", "metric", "target", "method"},
+			"7",
+			"successMetrics: expected array of objects with fields {id, metric, target, method} (got incompatible array shape; received 7 element(s))",
+		},
+		{
+			"",
+			[]string{"a", "b"},
+			"0",
+			"value: expected array of objects with fields {a, b} (got incompatible array shape; received 0 element(s))",
+		},
+		{
+			"x",
+			[]string{"a"},
+			"",
+			"x: expected array of objects with fields {a} (got incompatible array shape)",
+		},
+	}
+	for _, c := range cases {
+		got := renderArrayShapeMismatchMessage(c.field, c.fields, c.gotCount)
+		if got != c.want {
+			t.Errorf("renderArrayShapeMismatchMessage(%q, %v, %q):\n  got:  %q\n  want: %q",
+				c.field, c.fields, c.gotCount, got, c.want)
+		}
+	}
+}
+
+// TestEnrichViolations_ArrayShapeMismatch_PRDSuccessMetrics is the
+// integration arm. It mutates the valid full-pipeline fixture to swap
+// the PRD step's successMetrics array of objects for an array of
+// strings, then asserts that the resulting violation set contains an
+// `array-shape-mismatch` row with the expected struct fields hint.
+//
+// Tolerant assertions: the CUE engine may surface the
+// "incompatible list lengths" message OR per-element type-mismatch
+// rows depending on disjunction expansion; we only fail when NEITHER
+// a structured array-shape-mismatch nor any successMetrics-pointing
+// violation appears.
+func TestEnrichViolations_ArrayShapeMismatch_PRDSuccessMetrics(t *testing.T) {
+	root := findFixturesDir(t)
+	payload := readFixture(t, root, "valid", "full-pipeline-workflow.json")
+	var doc map[string]any
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+
+	// Locate the PRD step and corrupt its successMetrics to array of strings.
+	steps, ok := doc["steps"].([]any)
+	if !ok {
+		t.Fatal("fixture has no steps[] array")
+	}
+	mutated := false
+	for _, raw := range steps {
+		s, ok := raw.(map[string]any)
+		if !ok || s["name"] != "PRD" {
+			continue
+		}
+		prd, ok := s["prd"].(map[string]any)
+		if !ok {
+			continue
+		}
+		prd["successMetrics"] = []any{"m1", "m2", "m3", "m4", "m5", "m6", "m7"}
+		mutated = true
+		break
+	}
+	if !mutated {
+		t.Fatal("could not find PRD step in fixture to mutate")
+	}
+
+	mutatedJSON, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal mutated: %v", err)
+	}
+	res := ValidateWorkflow(mutatedJSON)
+	if res.Valid {
+		t.Fatal("expected mutated workflow to be invalid")
+	}
+
+	var arrayShape *Violation
+	var anySuccessMetrics *Violation
+	for i := range res.Violations {
+		v := &res.Violations[i]
+		if !strings.Contains(v.Path, "successMetrics") {
+			continue
+		}
+		if anySuccessMetrics == nil {
+			anySuccessMetrics = v
+		}
+		if v.Code == "array-shape-mismatch" {
+			arrayShape = v
+			break
+		}
+	}
+
+	if anySuccessMetrics == nil {
+		for _, v := range res.Violations {
+			t.Logf("violation: path=%q code=%s msg=%s", v.Path, v.Code, v.Message)
+		}
+		t.Fatal("expected at least one violation pointing at successMetrics")
+	}
+
+	// When the engine surfaced the "incompatible list lengths" message
+	// (the bug class this commit closes), the enricher must reclassify
+	// it AND attach the struct-field hint.
+	if arrayShape != nil {
+		expectedSet := []string{"id", "method", "metric", "target"}
+		if len(arrayShape.AllowedFields) != len(expectedSet) {
+			t.Errorf("expected AllowedFields=%v, got %v (msg=%q)",
+				expectedSet, arrayShape.AllowedFields, arrayShape.Message)
+		}
+		for _, want := range expectedSet {
+			if !slices.Contains(arrayShape.AllowedFields, want) {
+				t.Errorf("AllowedFields missing %q (got %v)", want, arrayShape.AllowedFields)
+			}
+		}
+		if !strings.Contains(arrayShape.Message, "expected array of objects with fields") {
+			t.Errorf("array-shape-mismatch message should advertise expected fields, got: %q",
+				arrayShape.Message)
+		}
+	} else {
+		t.Logf("CUE did not emit 'incompatible list lengths' for this payload — "+
+			"falling back on raw type-mismatch rows: path=%q code=%s msg=%s",
+			anySuccessMetrics.Path, anySuccessMetrics.Code, anySuccessMetrics.Message)
+	}
+}
+
+// TestSuppressDisjunctionNoise_DropsNameEnumNoise asserts WF-CUE-NOISE-03
+// (2026-05-05): a `…name` row coded `invalid-enum-value` whose bad
+// value IS itself a valid step name (`PRD`, `TASK`, …) is sibling-
+// narrowing noise — CUE only emitted it because OTHER fields on the
+// same step subtree failed and the engine narrowed against
+// non-matching branches. The filter drops it when the parent step
+// subtree has a real constraint failure, and keeps it when the bad
+// value is genuinely outside the allowlist.
+func TestSuppressDisjunctionNoise_DropsNameEnumNoise(t *testing.T) {
+	in := []Violation{
+		// Real failure two levels below the disjunction root.
+		{
+			Path:    "#WorkflowV1.steps[0].prd.personas[0]",
+			Code:    "type-mismatch",
+			Message: `conflicting values "bad-string-not-object" and {id:=~"^P-[0-9]+$",description:string} (mismatched types string and struct)`,
+		},
+		// Misleading name-enum row from sibling narrowing.
+		{
+			Path:    "#WorkflowV1.steps[0].name",
+			Code:    "invalid-enum-value",
+			Message: `name = "PRD" — must be one of [BRAINSTORMING, CODE_REVIEW, COMMIT, FEATURE_ACCEPTANCE, RECEIVING_CODE_REVIEW, TASK, TASKS_MANIFEST, UPDATE_DOCS, WRITE_TESTS]`,
+		},
+		// Empty-disjunction placeholder noise.
+		{
+			Path:    "#WorkflowV1.steps[0].name",
+			Code:    "unknown-error",
+			Message: "4 errors in empty disjunction:",
+		},
+		{
+			Path:    "#WorkflowV1.steps[0]",
+			Code:    "unknown-error",
+			Message: "14 errors in empty disjunction:",
+		},
+	}
+	got := SuppressDisjunctionNoise(in)
+	if len(got) != 1 {
+		t.Fatalf("expected only the real personas[0] violation to remain; got %d:\n%+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Path, "personas[0]") {
+		t.Errorf("expected surviving row at personas[0]; got path=%q", got[0].Path)
+	}
+}
+
+// TestSuppressDisjunctionNoise_KeepsGenuineNameTypo asserts the
+// inverse: when the operator types a step name OUTSIDE the
+// allowlist (typo, refactor mid-flight), the `invalid-enum-value`
+// row is the actionable error and MUST surface even when other
+// failures share the step subtree.
+func TestSuppressDisjunctionNoise_KeepsGenuineNameTypo(t *testing.T) {
+	in := []Violation{
+		{
+			Path:    "#WorkflowV1.steps[0].prd.personas[0]",
+			Code:    "type-mismatch",
+			Message: `conflicting values "x" and {id:string,description:string}`,
+		},
+		// Operator wrote a non-allowlisted name (e.g. lowercase typo).
+		{
+			Path:    "#WorkflowV1.steps[0].name",
+			Code:    "invalid-enum-value",
+			Message: `name = "prd" — must be one of [BRAINSTORMING, CODE_REVIEW, COMMIT, FEATURE_ACCEPTANCE, PRD, RECEIVING_CODE_REVIEW, TASK, TASKS_MANIFEST, UPDATE_DOCS, WRITE_TESTS]`,
+		},
+	}
+	got := SuppressDisjunctionNoise(in)
+	if len(got) != 2 {
+		t.Fatalf("expected both rows kept (genuine typo, not noise); got %d", len(got))
+	}
+	foundEnum := false
+	for _, v := range got {
+		if v.Code == "invalid-enum-value" && strings.Contains(v.Message, `"prd"`) {
+			foundEnum = true
+		}
+	}
+	if !foundEnum {
+		t.Error("genuine name typo (\"prd\") was dropped — filter is over-eager")
+	}
+}
+
+// TestSuppressDisjunctionNoise_DropsEmptyDisjunctionPlaceholders
+// asserts that the `N errors in empty disjunction:` wrapper rows
+// are always filtered (they carry no leaf content; the leaves were
+// already extracted by flattenCueErrors upstream).
+func TestSuppressDisjunctionNoise_DropsEmptyDisjunctionPlaceholders(t *testing.T) {
+	in := []Violation{
+		{Path: "x", Code: "unknown-error", Message: "3 errors in empty disjunction:"},
+		{Path: "y", Code: "unknown-error", Message: "12 errors in empty disjunction"},
+		{Path: "z", Code: "constraint-violation", Message: "real error"},
+	}
+	got := SuppressDisjunctionNoise(in)
+	if len(got) != 1 || got[0].Path != "z" {
+		t.Errorf("expected only the real-error row to survive; got: %+v", got)
+	}
+}
+
+// TestStepNameAllowlist_MirrorsValidStepNames pins the in-package
+// allowlist mirror (validator.go) against the canonical list in
+// describe.go. If the SSOT gains a new step name, both sides must
+// be updated in lockstep — this test fails fast otherwise.
+func TestStepNameAllowlist_MirrorsValidStepNames(t *testing.T) {
+	for _, name := range ValidStepNames {
+		if name == "workflow" {
+			// `workflow` is the alias for #WorkflowV1 in describe.go;
+			// it is NOT a step name in the allowlist semantics
+			// (cannot appear as `step.name`).
+			continue
+		}
+		if !stepNameAllowlist[name] {
+			t.Errorf("ValidStepNames includes %q but stepNameAllowlist does not — drift between describe.go and validator.go", name)
+		}
+	}
+	for k := range stepNameAllowlist {
+		found := false
+		for _, name := range ValidStepNames {
+			if name == k {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("stepNameAllowlist has %q but ValidStepNames does not — drift", k)
+		}
 	}
 }

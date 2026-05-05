@@ -621,3 +621,44 @@ func TestGetField_JSONModeScalarWrapped(t *testing.T) {
 		}
 	})
 }
+
+// TestGetField_DoesNotHTMLEscape verifies that object/array values returned
+// from GetField emit `<`, `>`, `&` literally instead of as the stdlib's
+// default `<` / `>` / `&` escapes. The escapes are valid JSON
+// but trip downstream `jq` consumers and operator instinct alike. PRD
+// acceptance criteria like `WHEN x > y` pass through GetField when callers
+// use `--field prd.acceptanceCriteria`; the encoded form polluted operator
+// sessions in the 2026-05-05 token-economy retro.
+func TestGetField_DoesNotHTMLEscape(t *testing.T) {
+	doc := map[string]any{
+		"prd": map[string]any{
+			"acceptanceCriteria": []any{
+				map[string]any{
+					"id":   "AC-1",
+					"text": "WHEN count > 0 AND status < ready THEN emit",
+				},
+			},
+		},
+	}
+
+	got, err := GetField(doc, "prd", false)
+	if err != nil {
+		t.Fatalf("GetField prd: %v", err)
+	}
+
+	for _, escape := range []string{"\\u003c", "\\u003e", "\\u0026"} {
+		if strings.Contains(got, escape) {
+			t.Errorf("GetField output should NOT contain %s; got: %s", escape, got)
+		}
+	}
+	for _, want := range []string{">", "<"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("GetField output should contain literal %q; got: %s", want, got)
+		}
+	}
+	// Round-trip JSON must remain valid.
+	var roundTrip map[string]any
+	if err := json.Unmarshal([]byte(got), &roundTrip); err != nil {
+		t.Errorf("GetField output should be valid JSON: %v\nraw: %s", err, got)
+	}
+}

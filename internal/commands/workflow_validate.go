@@ -86,34 +86,52 @@ func registerWorkflowValidate(parent *cobra.Command) {
 						filtered = append(filtered, v)
 					}
 				}
-				result = schema.ValidationResult{
-					Valid:      len(filtered) == 0,
-					Violations: filtered,
-				}
+				// renderResult below recomputes Valid from the filtered
+				// list; no need to mirror it on `result` itself.
+				result.Violations = filtered
+			}
+
+			// WF-CUE-NOISE-03 (2026-05-05): filter the noise before
+			// either rendering path. The empty-disjunction placeholder
+			// rows and the misleading "name = X — must be one of [...]"
+			// rows that fire from sibling-disjunction narrowing carry
+			// no actionable signal for the operator. The write-path
+			// (apply.go) already passed through FormatViolations which
+			// applies the same filter; the read-path (this CLI) was
+			// the last surface emitting raw noise. Fallback rule
+			// preserves history: if the filter empties the list, render
+			// the raw violations so we never claim "valid" silently.
+			rendered := schema.SuppressDisjunctionNoise(result.Violations)
+			if len(rendered) == 0 && len(result.Violations) > 0 {
+				rendered = result.Violations
+			}
+			renderResult := schema.ValidationResult{
+				Valid:      len(rendered) == 0,
+				Violations: rendered,
 			}
 
 			// --json: marshal ValidationResult to stdout.
 			if jsonMode {
-				out, marshalErr := json.MarshalIndent(result, "", "  ")
+				out, marshalErr := json.MarshalIndent(renderResult, "", "  ")
 				if marshalErr != nil {
 					return fmt.Errorf("marshal result: %w", marshalErr)
 				}
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
-				if !result.Valid {
-					return fmt.Errorf("%d violation(s)", len(result.Violations))
+				if !renderResult.Valid {
+					return fmt.Errorf("%d violation(s)", len(renderResult.Violations))
 				}
 				return nil
 			}
 
 			// Human-readable output (default path, preserved verbatim).
-			if result.Valid {
+			if renderResult.Valid {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}
-			for _, v := range result.Violations {
+			for _, v := range renderResult.Violations {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s\n", v.Path, v.Message)
 			}
-			return fmt.Errorf("%d validation error(s)", len(result.Violations))
+			return fmt.Errorf("%d validation error(s)", len(renderResult.Violations))
 		},
 	}
 

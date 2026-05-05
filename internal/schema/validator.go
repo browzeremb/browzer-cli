@@ -652,6 +652,56 @@ var emptyDisjunctionRe = regexp.MustCompile(`^[0-9]+ errors in empty disjunction
 // are upper-snake-case (the canonical step-name shape).
 var siblingNarrowingRe = regexp.MustCompile(`^conflicting values "[A-Z_]+" and "[A-Z_]+"$`)
 
+// nameEnumNoiseRe extracts the literal step name from the
+// `invalid-enum-value` message that CUE emits at `…name` when one
+// step branch already accepts the value but ANOTHER field on that
+// branch fails. Shape:
+//
+//   name = "PRD" — must be one of [BRAINSTORMING, CODE_REVIEW, …]
+//
+// When the captured value (`PRD`) IS itself a valid step name from
+// the SSOT allowlist, the row is sibling-narrowing noise — the
+// operator typed a legal step type and the deeper failure is the
+// actionable one. We drop these rows in pass 2.
+var nameEnumNoiseRe = regexp.MustCompile(`^name = "([A-Z_]+)" — must be one of \[`)
+
+// stepNameAllowlist is the in-package mirror of describe.go's
+// ValidStepNames, kept here so the validator package doesn't need
+// to import the cobra-attached describe-step-type surface. The
+// `TestStepNameAllowlist_MirrorsDescribeAllowlist` test in
+// describe_test.go fails if the two drift.
+var stepNameAllowlist = map[string]bool{
+	"BRAINSTORMING":         true,
+	"PRD":                   true,
+	"TASKS_MANIFEST":        true,
+	"TASK":                  true,
+	"CODE_REVIEW":           true,
+	"RECEIVING_CODE_REVIEW": true,
+	"WRITE_TESTS":           true,
+	"UPDATE_DOCS":           true,
+	"FEATURE_ACCEPTANCE":    true,
+	"COMMIT":                true,
+}
+
+// isNameEnumNoise reports whether v is the misleading
+// `invalid-enum-value` row at `…name` whose bad value IS itself a
+// valid step name. These rows are emitted whenever CUE narrows the
+// step-disjunction past a branch that already accepted the name —
+// they are never actionable.
+func isNameEnumNoise(v Violation) bool {
+	if v.Code != "invalid-enum-value" {
+		return false
+	}
+	if !strings.HasSuffix(v.Path, ".name") && v.Path != "name" {
+		return false
+	}
+	m := nameEnumNoiseRe.FindStringSubmatch(v.Message)
+	if m == nil {
+		return false
+	}
+	return stepNameAllowlist[m[1]]
+}
+
 // constraintCodes is the set of violation codes that represent a
 // real constraint failure (not narrowing noise, not a wrapper
 // placeholder). When any of these appears in a (path)-group, the
@@ -663,10 +713,10 @@ var constraintCodes = map[string]bool{
 	"missing-required-field": true,
 }
 
-// suppressDisjunctionNoise applies the rules documented on
+// SuppressDisjunctionNoise applies the rules documented on
 // FormatViolations. It returns a new slice and never mutates vs.
 //
-// Two passes:
+// Three passes:
 //
 //  1. Drop empty-disjunction placeholders (always — the leaves are
 //     already extracted by flattenCueErrors).
@@ -674,11 +724,22 @@ var constraintCodes = map[string]bool{
 //     least one sibling-narrowing type-mismatch, drop every
 //     sibling-narrowing entry from that group. Real type-mismatch
 //     errors (e.g. "expected string, got int") are preserved.
+//  3. Drop misleading `invalid-enum-value` rows on `…name` whose
+//     bad value is itself a valid step name (WF-CUE-NOISE-03,
+//     2026-05-05) — covers the "PRD must be one of [...]" red
+//     herring noted in the orchestrate-task-delivery retro 2026-05-05.
+//     Only suppress when the parent step subtree carries a real
+//     constraint failure, so a genuinely malformed `name` typo
+//     still surfaces.
+//
+// Exported (capital S) since 2026-05-05 so the `validate` CLI render
+// path can apply the same filter previously available only to the
+// write-path's FormatViolations renderer.
 //
 // When the resulting slice is empty (e.g. the only violations were
 // placeholders + sibling narrowing), the caller falls back to the
 // raw input so we never silently render an empty error string.
-func suppressDisjunctionNoise(vs []Violation) []Violation {
+func SuppressDisjunctionNoise(vs []Violation) []Violation {
 	if len(vs) == 0 {
 		return vs
 	}
@@ -693,17 +754,23 @@ func suppressDisjunctionNoise(vs []Violation) []Violation {
 	if len(stage1) == 0 {
 		return stage1
 	}
-	// Pass 2: group by Path; suppress sibling narrowing when a real
-	// constraint failure shares the parent path. We compare against
-	// the Path's parent (strip trailing `.field`) — sibling narrowing
-	// happens at `…name`, the real failure typically lives at a
-	// deeper subtree (`…prd.acceptanceCriteria[1].bindsTo[0]`).
+	// Pass 2 + 3: group by Path; suppress sibling narrowing AND
+	// misleading name-enum noise when a real constraint failure
+	// shares the parent step subtree. We compare against the Path's
+	// step root (steps[N]) — the sibling narrowing happens at
+	// `…name`, the real failure typically lives at a deeper subtree
+	// (`…prd.acceptanceCriteria[1].bindsTo[0]`).
 	hasConstraintByParent := map[string]bool{}
 	for _, v := range stage1 {
 		// A "real" constraint failure is either an explicit constraint
 		// code OR a type-mismatch whose message is NOT the
 		// sibling-narrowing pattern (so a genuine `conflicting values
-		// "pass" and "pending"` enum failure still counts).
+		// "pass" and "pending"` enum failure still counts). The
+		// name-enum noise itself is NOT a real failure for this
+		// purpose — its presence does not unlock its own suppression.
+		if isNameEnumNoise(v) {
+			continue
+		}
 		isReal := constraintCodes[v.Code] ||
 			(v.Code == "type-mismatch" && !siblingNarrowingRe.MatchString(v.Message))
 		if !isReal {
@@ -723,9 +790,23 @@ func suppressDisjunctionNoise(vs []Violation) []Violation {
 				continue
 			}
 		}
+		if isNameEnumNoise(v) {
+			parent := stepRootPath(v.Path)
+			if parent != "" && hasConstraintByParent[parent] {
+				continue
+			}
+		}
 		stage2 = append(stage2, v)
 	}
 	return stage2
+}
+
+// suppressDisjunctionNoise is kept as a private alias to
+// SuppressDisjunctionNoise so existing in-package call sites and
+// tests don't need to be touched. New callers should use the
+// exported name.
+func suppressDisjunctionNoise(vs []Violation) []Violation {
+	return SuppressDisjunctionNoise(vs)
 }
 
 // stepRootPath returns the closest enclosing step subtree path for a
@@ -838,6 +919,19 @@ var conflictingValuesRe = regexp.MustCompile(`^conflicting values\s+"[^"]*"\s+an
 // legal-enum candidate and `Y` as the operator-supplied bad value.
 var conflictingValueExtractRe = regexp.MustCompile(`^conflicting values\s+"([^"]*)"\s+and\s+"([^"]*)"$`)
 
+// incompatibleListLengthsRe matches CUE's "incompatible list lengths
+// (M and N)" message — emitted when a payload submits an array of the
+// wrong shape against a `*[] | [...#X]` disjunction. The empty-default
+// branch (`*[]`) trips on length mismatch and the open branch trips on
+// element shape; the user typically sees BOTH messages stacked. The
+// list-lengths variant by itself is cryptic ("incompatible list
+// lengths (0 and 7)" tells the operator nothing about the expected
+// element shape) so we reclassify and rewrite when the schema can
+// resolve the array's element struct fields.
+var incompatibleListLengthsRe = regexp.MustCompile(
+	`^incompatible list lengths\s+\((\d+)\s+and\s+(\d+)\)$`,
+)
+
 // enrichViolations walks each Violation and attaches `AllowedFields` /
 // `AllowedValues` derived from the schema and from sibling-violation
 // inference. Designed so a future change to the CUE engine's message
@@ -905,7 +999,197 @@ func enrichViolations(vs []Violation, schemaRoot cue.Value) {
 				v.AllowedValues = values
 			}
 		}
+		// Pass 4: array-shape-mismatch — promote CUE's "incompatible list
+		// lengths" to a structured diagnostic that names the expected
+		// element struct fields. Retro 2026-05-05 §2.3: the raw CUE
+		// message ("incompatible list lengths (0 and 7)") tells the
+		// operator nothing about WHY the array shape is wrong; resolving
+		// the schema's element type lets us render
+		// `successMetrics: expected array of objects with fields {id,
+		// metric, target, method}` instead. When the schema can't be
+		// resolved (path missing, element isn't a struct, no labelled
+		// fields) we still reclassify but leave the message verbatim so
+		// the operator at least sees a stable Code.
+		if match := incompatibleListLengthsRe.FindStringSubmatch(v.Message); len(match) == 3 {
+			v.Code = "array-shape-mismatch"
+			if schemaRoot.Exists() {
+				if fields := lookupArrayElementFieldsForPath(schemaRoot, v.Path); len(fields) > 0 {
+					v.AllowedFields = fields
+					v.Message = renderArrayShapeMismatchMessage(v.Field, fields, match[2])
+				}
+			}
+			continue
+		}
 	}
+}
+
+// lookupArrayElementFieldsForPath walks schemaRoot to the array value at
+// `path` and returns the alpha-sorted list of declared field labels for
+// the array's element type.
+//
+// Resolves `*[] | [...#X]` style disjunctions by walking through to the
+// open-list branch via cue.AnyIndex, then through any
+// `*null | <struct>` style element disjunctions before listing fields.
+//
+// Walks through the per-step definition map when the path starts with
+// `steps[N].` and the direct walk through #WorkflowV1 returns nothing —
+// CUE cannot resolve a `prd.…` lookup through the discriminated step
+// union without knowing WHICH step type is targeted, so we try each
+// declared step definition (#PRDStep, #TaskStep, …) in turn and return
+// the first one whose subpath resolves to a non-empty struct array.
+// This is the read-only mirror of `repairStepLeafViolations`'s walk.
+//
+// Returns nil when:
+//   - the path doesn't resolve through any of the candidate roots,
+//   - the value isn't an array (cue.AnyIndex lookup misses),
+//   - the element type isn't a struct,
+//   - the struct has no labeled fields (open `{...}`).
+func lookupArrayElementFieldsForPath(schemaRoot cue.Value, path string) []string {
+	if labels := lookupArrayElementFieldsAt(schemaRoot, path); len(labels) > 0 {
+		return labels
+	}
+	// Fallback: try each per-step definition when the path crosses the
+	// steps[N] discriminated union.
+	subpath := stripStepsIndexPrefix(path)
+	if subpath == "" {
+		return nil
+	}
+	for _, defName := range stepNameToDefinition {
+		defVal, ok := lookupDefinition(defName)
+		if !ok {
+			continue
+		}
+		if labels := lookupArrayElementFieldsAt(defVal, subpath); len(labels) > 0 {
+			return labels
+		}
+	}
+	return nil
+}
+
+// lookupArrayElementFieldsAt is the schema-walk-then-extract core used by
+// lookupArrayElementFieldsForPath against a chosen schema root.
+//
+// The walker explicitly iterates list-disjunction branches because the
+// SSOT pattern `*[] | [...#X]` puts the empty-default first; a plain
+// `LookupPath(cue.AnyIndex)` on the disjunction falls through to the
+// default branch (an empty list with no element type) and returns
+// bottom. Iterating the disjunction lets the open-list branch surface
+// its #X element.
+func lookupArrayElementFieldsAt(root cue.Value, path string) []string {
+	v, ok := walkSchemaPath(root, path)
+	if !ok {
+		return nil
+	}
+	for _, branch := range listDisjunctionBranches(v) {
+		elem := branch.LookupPath(cue.MakePath(cue.AnyIndex))
+		if !elem.Exists() {
+			continue
+		}
+		if resolved := resolveStructFromDisjunction(elem); resolved != nil {
+			elem = *resolved
+		}
+		fields, err := elem.Fields(cue.All())
+		if err != nil {
+			continue
+		}
+		var labels []string
+		for fields.Next() {
+			labels = append(labels, fields.Selector().Unquoted())
+		}
+		if len(labels) == 0 {
+			continue
+		}
+		sort.Strings(labels)
+		return labels
+	}
+	return nil
+}
+
+// listDisjunctionBranches returns the operand list of a list value's
+// underlying expression: both branches when v is a disjunction
+// (`*[] | [...#X]` → 2 branches), the single concrete-list arg when
+// CUE pre-collapsed the disjunction during compilation (NoOp + 1 arg
+// — the common case for our SSOT pattern, where v.Kind() reads as
+// `_|_` because the default `*[]` made v non-concrete but the open
+// branch `[...#X]` carries the element type), or a singleton {v} for
+// values that don't decompose at all.
+//
+// CUE's `cue.Value.Expr()` returns the AST shape after schema-side
+// evaluation: a `*[] | [...#X]` field reads back as `op=NoOp args=[<the
+// open list>]` rather than `op=OrOp args=[*[], [...#X]]` because the
+// default branch is folded into the `*` marker on the value itself.
+// The walker treats both shapes uniformly: anything with at least one
+// expression arg is iterated; falls back to the bare value for the
+// no-arg case.
+func listDisjunctionBranches(v cue.Value) []cue.Value {
+	op, args := v.Expr()
+	if len(args) == 0 {
+		return []cue.Value{v}
+	}
+	switch op {
+	case cue.OrOp, cue.NoOp:
+		return args
+	default:
+		return []cue.Value{v}
+	}
+}
+
+// stripStepsIndexPrefix returns the substring of `path` AFTER the
+// leading `steps[N].` segment. Returns "" when the path doesn't start
+// with `steps[`. Used to translate workflow-rooted paths (e.g.
+// `steps[0].prd.successMetrics`) into per-step-definition subpaths
+// (`prd.successMetrics`) so the array-element walker can fall back
+// through the step-type definitions.
+//
+// Also strips leading CUE definition prefixes like `#WorkflowV1.` so
+// paths emitted by `repairStepLeafViolations`
+// (`#WorkflowV1.steps[1].prd.successMetrics`) resolve identically to
+// the canonical `steps[1].prd.successMetrics` form. The strip mirrors
+// `walkSchemaPath`'s `if strings.HasPrefix(p, "#") { continue }` rule.
+func stripStepsIndexPrefix(path string) string {
+	// Strip any leading `#Definition.` segment(s) to normalize
+	// workflow-rooted paths emitted by repairStepLeafViolations.
+	for strings.HasPrefix(path, "#") {
+		dot := strings.Index(path, ".")
+		if dot < 0 {
+			return ""
+		}
+		path = path[dot+1:]
+	}
+	if !strings.HasPrefix(path, "steps[") {
+		return ""
+	}
+	closing := strings.Index(path, "]")
+	if closing < 0 {
+		return ""
+	}
+	rest := path[closing+1:]
+	return strings.TrimPrefix(rest, ".")
+}
+
+// renderArrayShapeMismatchMessage emits a stable diagnostic that names
+// the expected struct field set so the operator can fix the payload
+// shape on the first retry. The `gotCount` argument is the second
+// operand of the original CUE "incompatible list lengths (M and N)"
+// message — preserving it in the output keeps the line greppable for
+// existing stderr-watchers.
+//
+// Example output for `successMetrics`:
+//
+//	`successMetrics: expected array of objects with fields {id, metric,
+//	target, method} (got incompatible array shape; received 7 element(s))`
+func renderArrayShapeMismatchMessage(field string, fields []string, gotCount string) string {
+	if field == "" {
+		field = "value"
+	}
+	suffix := "got incompatible array shape"
+	if gotCount != "" {
+		suffix = fmt.Sprintf("got incompatible array shape; received %s element(s)", gotCount)
+	}
+	return fmt.Sprintf(
+		"%s: expected array of objects with fields {%s} (%s)",
+		field, strings.Join(fields, ", "), suffix,
+	)
 }
 
 // collectSiblingEnumCandidates groups violations by Path and, for each

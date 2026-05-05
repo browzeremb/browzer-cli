@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -75,7 +74,7 @@ func registerWorkflowQuery(parent *cobra.Command) {
 			// symmetry with get-step / get-config so callers can pass it
 			// uniformly. The output is JSON whether or not --json is set.
 			_ = asJSON
-			b, err := json.MarshalIndent(result, "", "  ")
+			b, err := marshalReadJSON(result)
 			if err != nil {
 				return fmt.Errorf("marshal query result: %w", err)
 			}

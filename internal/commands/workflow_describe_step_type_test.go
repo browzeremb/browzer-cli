@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -50,16 +51,23 @@ func TestDescribeStepType_TaskRequiredOnly_KindEnum(t *testing.T) {
 	}
 
 	// execution.scopeAdjustments must be present (it's an array field from
-	// #TaskExecutionResult, added at 2026-04-24T00:00:00Z).
+	// #TaskExecutionResult, added at 2026-04-24T00:00:00Z). After
+	// WF-CUE-NOISE-03 (2026-05-05) the walker descends past the
+	// `*[] | [...#ScopeAdjustment]` default-empty disjunction into
+	// element fields, so the bare `execution.scopeAdjustments` row
+	// is replaced by `execution.scopeAdjustments[].<sub>` rows. Either
+	// representation satisfies the "field is present" contract; we
+	// match by prefix to stay invariant to the descent depth.
 	found := false
 	for _, f := range allFields {
-		if path, _ := f["path"].(string); path == "execution.scopeAdjustments" {
+		if path, _ := f["path"].(string); path == "execution.scopeAdjustments" ||
+			strings.HasPrefix(path, "execution.scopeAdjustments[].") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("execution.scopeAdjustments not found in TASK describe output")
+		t.Errorf("execution.scopeAdjustments not found in TASK describe output (neither bare nor element-level)")
 	}
 
 	// --required-only should reduce the field count.
@@ -389,5 +397,153 @@ func TestDescribeStepType_InlineEnums_OnlyEnumOrRegex(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected regressionRun.tool entry in inline-enums output")
+	}
+}
+
+// TestDescribeStepType_SaveWritesFile verifies that `--save <path>` routes
+// the schema description to disk and emits a single confirmation line on
+// stdout instead of dumping the table or JSON inline. Mirrors the same
+// pattern used by get-step / get-config / query so callers can pipe
+// describe-step-type output into the same tooling. Closes RETRO 3.2 from
+// the 2026-05-05 token-economy session: the missing flag forced operators
+// to manual `> /tmp/file` redirects, breaking parity with sibling read
+// verbs.
+func TestDescribeStepType_SaveWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	savePath := dir + "/prd-schema.json"
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "describe-step-type", "PRD",
+		"--json",
+		"--save", savePath,
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("describe-step-type --save should succeed: %v\nstderr: %s", err, stderr.String())
+	}
+
+	// Stdout should NOT contain the JSON array; only a confirmation line.
+	out := stdout.String()
+	if strings.Contains(out, `"path"`) || strings.Contains(out, `"required"`) {
+		t.Errorf("--save should NOT dump JSON to stdout, got: %q", out)
+	}
+	if !strings.Contains(out, "wrote ") || !strings.Contains(out, savePath) {
+		t.Errorf("expected stdout confirmation line referencing %s, got: %q", savePath, out)
+	}
+
+	// File must exist + be parseable JSON.
+	data, err := os.ReadFile(savePath)
+	if err != nil {
+		t.Fatalf("read save file: %v", err)
+	}
+	var fields []map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("save file content should be valid JSON array: %v\nraw: %s", err, string(data[:minLen(len(data), 200)]))
+	}
+	if len(fields) == 0 {
+		t.Error("save file should contain at least one field entry")
+	}
+}
+
+// TestDescribeStepType_SaveQuietSilencesConfirmation verifies that
+// combining --save with --quiet suppresses the confirmation line, leaving
+// stdout completely empty (zero output, payload on disk, exit 0). Pairs
+// with TestDescribeStepType_SaveWritesFile.
+func TestDescribeStepType_SaveQuietSilencesConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	savePath := dir + "/prd-schema.json"
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "describe-step-type", "PRD",
+		"--json",
+		"--save", savePath,
+		"--quiet",
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("describe-step-type --save --quiet should succeed: %v\nstderr: %s", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("--save --quiet should produce empty stdout, got: %q", stdout.String())
+	}
+}
+
+// TestDescribeStepType_PRD_DescendsDefaultEmptyListDisjunctions asserts
+// WF-CUE-NOISE-03 (2026-05-05): the SSOT uses the pattern
+// `*[] | [...#NamedDef]` for fields that default to an empty list
+// (`personas`, `risks`, `successMetrics`, `nonFunctionalRequirements`).
+// Before this fix, `describe-step-type PRD --json` reported each as a
+// single `{path: "personas", type: "array"}` leaf, hiding the element
+// shape and forcing operators to `sed` the CUE source — the friction
+// case from the orchestrate-task-delivery retro 2026-05-05 §2.1/2.2.
+//
+// After the fix, the walker descends past the default-marked empty
+// branch into `[...#NamedDef]` and surfaces every element field with
+// its CUE constraints (regex / enum / required).
+func TestDescribeStepType_PRD_DescendsDefaultEmptyListDisjunctions(t *testing.T) {
+	out, err := schema.DescribeStepType("PRD", schema.DescribeOpts{JSON: true})
+	if err != nil {
+		t.Fatalf("DescribeStepType PRD --json: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("JSON unmarshal: %v\nraw: %s", err, out)
+	}
+
+	// Each entry asserts: (a) the leaf path is reached at all, and
+	// (b) its CUE-derived metadata (pattern / required) lands on the
+	// row. The previous walker emitted exactly one `array` leaf per
+	// field and never reached these paths.
+	want := []struct {
+		path        string
+		wantPattern string
+		wantType    string
+	}{
+		{"personas[].id", "^P-[0-9]+$", "string"},
+		{"personas[].description", "", "string"},
+		{"risks[].id", "^R-[0-9]+$", "string"},
+		{"risks[].mitigation", "", "string"},
+		{"successMetrics[].id", "^M-[0-9]+$", "string"},
+		{"successMetrics[].metric", "", "string"},
+		{"successMetrics[].method", "", "string"},
+		{"successMetrics[].target", "", "string"},
+		{"nonFunctionalRequirements[].id", "^NFR-[0-9]+$", "string"},
+		{"nonFunctionalRequirements[].target", "", "string"},
+	}
+	byPath := map[string]map[string]any{}
+	for _, r := range rows {
+		if p, ok := r["path"].(string); ok {
+			byPath[p] = r
+		}
+	}
+	for _, w := range want {
+		row, ok := byPath[w.path]
+		if !ok {
+			t.Errorf("expected describe-step-type PRD to surface path %q (default-empty disjunction descent missing)", w.path)
+			continue
+		}
+		if got, _ := row["type"].(string); got != w.wantType {
+			t.Errorf("path %q: type = %q, want %q", w.path, got, w.wantType)
+		}
+		if w.wantPattern != "" {
+			if got, _ := row["pattern"].(string); got != w.wantPattern {
+				t.Errorf("path %q: pattern = %q, want %q", w.path, got, w.wantPattern)
+			}
+		}
+	}
+
+	// Negative assertion: ensure the OLD leaf rows (just `personas`
+	// with type=array, no children) are gone. The walker must
+	// either descend into the element OR emit nothing — never emit
+	// the bare `personas` placeholder when the element type is
+	// recursable.
+	for _, leafPath := range []string{"personas", "risks", "successMetrics", "nonFunctionalRequirements"} {
+		if row, ok := byPath[leafPath]; ok {
+			if got, _ := row["type"].(string); got == "array" {
+				t.Errorf("regression: bare leaf row %q (type=array) still emitted; walker should descend", leafPath)
+			}
+		}
 	}
 }

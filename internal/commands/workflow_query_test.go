@@ -266,3 +266,70 @@ func TestWorkflowQuery_CacheWarmDeps(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkflowQuery_AuditLineGoesToStderrNotStdout regression-pins the
+// stdout/stderr stream split: the `verb=...` audit line MUST land on
+// stderr, never stdout, so callers using $(cmd) or `cmd | jq` see only
+// the JSON payload. RETRO 3.1 from the 2026-05-05 token-economy session:
+// when the audit line slipped onto stdout, downstream jq parsed it and
+// reported "Invalid escape" — pausing the entire workflow.
+func TestWorkflowQuery_AuditLineGoesToStderrNotStdout(t *testing.T) {
+	wfPath := writeWorkflowFile(t, queryWorkflowJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "query", "reused-gates", "--workflow", wfPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	stdoutStr := stdout.String()
+	if strings.Contains(stdoutStr, "verb=") {
+		t.Errorf("audit line `verb=...` leaked to stdout (breaks $(cmd | jq) callers); stdout: %q", stdoutStr)
+	}
+	if !strings.Contains(stderr.String(), "verb=query") {
+		t.Errorf("audit line should land on stderr; stderr: %q", stderr.String())
+	}
+	// Stdout must remain valid JSON (the contract callers rely on).
+	var parsed any
+	if err := json.Unmarshal(stdout.Bytes(), &parsed); err != nil {
+		t.Errorf("stdout should be valid JSON, got: %v\nraw: %s", err, stdoutStr)
+	}
+}
+
+// TestWorkflowQuery_OutputDoesNotEscapeHTMLChars regression-pins the
+// HTML-escape disable: query output for steps containing `<`, `>`, `&` in
+// step payload values (e.g. PRD acceptance criteria text) must emit
+// literal characters, not the stdlib's default `<` / `>` /
+// `&` escapes. RETRO 3.1 root cause from the 2026-05-05
+// token-economy session: encoded `>` in AC-1 text triggered jq parse
+// noise.
+func TestWorkflowQuery_OutputDoesNotEscapeHTMLChars(t *testing.T) {
+	wfWithGT := strings.ReplaceAll(queryWorkflowJSON,
+		`"reason": "default"`,
+		`"reason": "WHEN x > 0 AND y < 10 THEN ok && done"`,
+	)
+	wfPath := writeWorkflowFile(t, wfWithGT)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	// steps-by-name returns the full step payload grouped by step type, so
+	// the embedded reason text round-trips through marshalReadJSON.
+	root.SetArgs([]string{"workflow", "query", "steps-by-name", "--workflow", wfPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+
+	got := stdout.String()
+	for _, escape := range []string{"\\u003c", "\\u003e", "\\u0026"} {
+		if strings.Contains(got, escape) {
+			t.Errorf("query stdout should NOT contain HTML escape %s (breaks operator-readable jq output); got: %s", escape, got)
+		}
+	}
+	// Verify the literal characters did pass through.
+	for _, want := range []string{">", "<", "&&"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("query stdout should contain literal %q in echoed reason text; got: %s", want, got)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -9,6 +10,27 @@ import (
 
 	"github.com/itchyny/gojq"
 )
+
+// marshalNoHTMLEscape returns a compact JSON encoding of v without escaping
+// `<`, `>`, or `&`. Mirrors `json.Marshal` semantics (no indent, no trailing
+// newline) but disables the HTML-safety pass that the stdlib applies by
+// default. Used by `GetField` so `--field` output matches what `jq -c` would
+// produce — operators reading PRD acceptance criteria like `WHEN x > y` don't
+// see the surprising `>` form.
+func marshalNoHTMLEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	// Encoder always appends '\n'; trim to match json.Marshal semantics.
+	out := buf.Bytes()
+	if n := len(out); n > 0 && out[n-1] == '\n' {
+		out = out[:n-1]
+	}
+	return out, nil
+}
 
 // GetField extracts a value from a parsed JSON document (any) using a
 // dot-separated path expression (e.g. "config.mode", "steps").
@@ -41,7 +63,7 @@ func GetField(data any, path string, asJSON bool) (string, error) {
 	switch v := cur.(type) {
 	case map[string]any, []any:
 		// Always JSON-encode objects and arrays.
-		b, err := json.Marshal(v)
+		b, err := marshalNoHTMLEscape(v)
 		if err != nil {
 			return "", fmt.Errorf("marshal field %q: %w", path, err)
 		}
@@ -53,7 +75,7 @@ func GetField(data any, path string, asJSON bool) (string, error) {
 		return "null", nil
 	default:
 		if asJSON {
-			b, err := json.Marshal(v)
+			b, err := marshalNoHTMLEscape(v)
 			if err != nil {
 				return "", fmt.Errorf("marshal scalar %q: %w", path, err)
 			}

@@ -10,6 +10,41 @@ import (
 	"testing"
 )
 
+// TestMarshalReadJSON_DoesNotEscapeHTMLChars verifies that the read-path JSON
+// encoder emits `<`, `>`, and `&` literally instead of as the stdlib's default
+// `<` / `>` / `&` HTML-safety escapes. The escapes are valid JSON
+// but they trip operator instinct (PRD acceptance criteria like
+// `WHEN x > y THEN z` arriving as `WHEN x > y THEN z` is the exact
+// surprise that surfaced as "Invalid escape" jq attribution in the
+// 2026-05-05 token-economy session retro).
+func TestMarshalReadJSON_DoesNotEscapeHTMLChars(t *testing.T) {
+	payload := map[string]any{
+		"text":     "WHEN count > 0 AND status < ready THEN report",
+		"operator": "x && y",
+	}
+	out, err := marshalReadJSON(payload)
+	if err != nil {
+		t.Fatalf("marshalReadJSON: %v", err)
+	}
+	got := string(out)
+
+	for _, escape := range []string{"\\u003c", "\\u003e", "\\u0026"} {
+		if strings.Contains(got, escape) {
+			t.Errorf("marshalReadJSON output should NOT contain %s; got: %s", escape, got)
+		}
+	}
+	for _, want := range []string{">", "<", "&&"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("marshalReadJSON output should contain literal %q; got: %s", want, got)
+		}
+	}
+	// Output must remain valid JSON.
+	var roundTrip map[string]any
+	if err := json.Unmarshal(out, &roundTrip); err != nil {
+		t.Errorf("marshalReadJSON output should be valid JSON: %v\nraw: %s", err, got)
+	}
+}
+
 // TestHumanizeBytes covers the GO-3 boundary table: <4KiB stays raw bytes;
 // 4KiB..1MiB renders as KiB with one decimal; >=1MiB renders as MiB with two.
 func TestHumanizeBytes(t *testing.T) {

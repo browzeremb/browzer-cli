@@ -163,7 +163,7 @@ func registerWorkflowGetStep(parent *cobra.Command) {
 			}
 
 			// Print full step JSON.
-			b, err := json.MarshalIndent(stepMap, "", "  ")
+			b, err := marshalReadJSON(stepMap)
 			if err != nil {
 				return fmt.Errorf("marshal step: %w", err)
 			}

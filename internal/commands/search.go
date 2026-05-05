@@ -21,11 +21,12 @@ const searchSchemaJSON = `{
   "type": "array",
   "items": {
     "type": "object",
-    "required": ["text", "score"],
+    "required": ["text", "score", "path"],
     "properties": {
       "text":         {"type": "string"},
       "position":     {"type": "integer"},
       "score":        {"type": "number"},
+      "path":         {"type": "string"},
       "documentName": {"type": "string"}
     }
   }

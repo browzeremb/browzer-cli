@@ -104,14 +104,15 @@ Examples:
 				return err
 			}
 
-			// Write the output — never silenced regardless of --quiet / --llm.
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), result)
-			// Ensure the output ends with a newline when it doesn't already
-			// (e.g. --json returns a compact array without a trailing newline).
-			if len(result) > 0 && result[len(result)-1] != '\n' {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout())
+			// Ensure a trailing newline so file consumers (and stdout
+			// readers) can pipe the output without surprise. emitReadOutput
+			// routes to --save when set; otherwise stdout. Audit/quiet
+			// semantics stay owned by emitReadOutput.
+			payload := result
+			if len(payload) > 0 && payload[len(payload)-1] != '\n' {
+				payload += "\n"
 			}
-			return nil
+			return emitReadOutput(cmd, []byte(payload))
 		},
 	}
 
@@ -119,6 +120,7 @@ Examples:
 	cmd.Flags().BoolVar(&requiredOnly, "required-only", false, "show only fields with no CUE default (required fields)")
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit a JSON array of field objects instead of a Markdown table")
 	cmd.Flags().BoolVar(&inlineEnums, "inline-enums", false, "emit only enumerable fields as {path,type,values}/{path,type,regex} JSON")
+	cmd.Flags().String("save", "", "write the output to <path> instead of stdout (parity with get-step / get-config / query)")
 
 	parent.AddCommand(cmd)
 }

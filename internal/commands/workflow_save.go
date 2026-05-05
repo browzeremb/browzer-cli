@@ -1,12 +1,41 @@
 package commands
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
+
+// marshalReadJSON marshals v as 2-space-indented JSON with HTML escaping
+// disabled.
+//
+// Go's stdlib `json.Marshal` / `MarshalIndent` default to escaping `<`, `>`,
+// and `&` as `<`, `>`, `&` so the output is safe to embed in
+// HTML attributes without an extra escape pass. CLI read verbs feed their
+// output to `jq`/`cat`/file pipelines where that escaping is pure noise: PRD
+// acceptance criteria like `WHEN x > y THEN z` arrive as `WHEN x > y
+// THEN z`, which is valid JSON but trips operator instinct (and obscures the
+// underlying bug surface — operators were attributing `Invalid escape` jq
+// errors to the encoded `>` even though jq parses it fine).
+//
+// Encoder emits a single trailing `\n`; emitReadJSON tolerates this (it only
+// appends a newline when one is missing). Indent matches the prior
+// `json.MarshalIndent("", "  ")` so byte diffs against existing snapshot
+// fixtures stay limited to the un-escaped chars.
+func marshalReadJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 // emitReadOutput is the shared writer for `workflow get-step` / `get-config` /
 // `query` payloads. When --save <path> is set, the payload lands at that path

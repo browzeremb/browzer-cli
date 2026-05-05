@@ -47,11 +47,17 @@ type ParseWorkspaceRequest struct {
 }
 
 // SearchResult is one entry from GET /api/workspaces/:id/search.
+//
+// Path mirrors DocumentName so agents can use the same `path` field across
+// explore / deps / search outputs. The wire format only carries
+// `documentName`; the SearchWorkspace and SearchCrossWorkspace client
+// methods populate Path post-decode.
 type SearchResult struct {
 	Text         string  `json:"text"`
 	Position     int     `json:"position"`
 	Score        float64 `json:"score"`
 	DocumentName string  `json:"documentName"`
+	Path         string  `json:"path"`
 	WorkspaceID  string  `json:"workspaceId,omitempty"`
 }
 
