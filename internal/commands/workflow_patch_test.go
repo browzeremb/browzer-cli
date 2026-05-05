@@ -532,3 +532,265 @@ func TestPatch_LlmFlagSuppressesAuditLine(t *testing.T) {
 		t.Errorf("--llm must suppress audit line, got stderr: %q", stderr.String())
 	}
 }
+
+// --- Bulk-mode coverage -----------------------------------------------------
+//
+// These tests close the test gap shipped alongside `--bulk` in commit
+// 174feda4 ("feat(cli/workflow): patch --dry-run + --bulk (A1.4 + A3.3)"):
+// the implementation works (verified by hand against real workflow.json
+// fixtures) but the CLI surface had zero regression coverage. The retro at
+// docs/SESSION_REPORT_20260505_orchestrate_task_delivery.md §9.1.4 listed
+// "workflow patch em batch" as a friction; the impl shipped, the tests did
+// not. We pin the contract here so future drift trips CI instead of the next
+// orchestrate-task-delivery operator.
+
+// TestPatch_BulkAppliesAllExpressionsSequentially asserts that every entry
+// in the --bulk JSON array is applied against the in-memory mutation result
+// of the previous one, leaving every targeted field set on disk after a
+// single lock window + single CUE validation.
+func TestPatch_BulkAppliesAllExpressionsSequentially(t *testing.T) {
+	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--bulk", `[
+			".featureName = \"bulk-A\"",
+			".featureName += \"+B\"",
+			".featureName += \"+C\""
+		]`,
+		"--workflow", wfPath,
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("patch --bulk should succeed: %v\nstderr: %s", err, stderr.String())
+	}
+
+	data, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc wf.Workflow
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if doc.FeatureName != "bulk-A+B+C" {
+		t.Errorf("expected sequential composition, got featureName=%q", doc.FeatureName)
+	}
+}
+
+// TestPatch_BulkSchemaViolationLeavesFileUnchanged asserts the single CUE
+// validation runs against the FINAL post-pipeline document, and a violation
+// rolls everything back. The first expression is valid; the second drops a
+// required field. The on-disk file must be byte-identical to before.
+func TestPatch_BulkSchemaViolationLeavesFileUnchanged(t *testing.T) {
+	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
+	before, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--bulk", `[
+			".featureName = \"would-survive\"",
+			".schemaVersion = 0"
+		]`,
+		"--workflow", wfPath,
+	})
+	if err := root.Execute(); err == nil {
+		t.Error("expected non-zero exit when bulk pipeline ends in schema violation")
+	}
+
+	after, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("schema-violating bulk pipeline must leave file untouched\nbefore-len=%d after-len=%d",
+			len(before), len(after))
+	}
+}
+
+// TestPatch_BulkAndJqMutuallyExclusive asserts the operator can't supply both
+// flags. Catches the "--jq fed by stale template + --bulk fed by skill" case
+// where one would silently win and the other would be ignored.
+func TestPatch_BulkAndJqMutuallyExclusive(t *testing.T) {
+	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--jq", `.featureName = "via-jq"`,
+		"--bulk", `[".featureName = \"via-bulk\""]`,
+		"--workflow", wfPath,
+	})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error when --jq and --bulk both supplied")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error, got: %v", err)
+	}
+}
+
+// TestPatch_BulkRejectsInvalidJSONArray asserts a non-JSON --bulk argument
+// trips early — before any lock acquisition or daemon dispatch — with a
+// targeted error referencing the flag.
+func TestPatch_BulkRejectsInvalidJSONArray(t *testing.T) {
+	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
+	before, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--bulk", `not-an-array`,
+		"--workflow", wfPath,
+	})
+	err = root.Execute()
+	if err == nil {
+		t.Fatal("expected non-zero exit for malformed --bulk JSON")
+	}
+	if !strings.Contains(err.Error(), "--bulk") {
+		t.Errorf("expected error to name --bulk, got: %v", err)
+	}
+
+	after, _ := os.ReadFile(wfPath)
+	if string(before) != string(after) {
+		t.Error("malformed --bulk must not mutate workflow.json")
+	}
+}
+
+// TestPatch_BulkRejectsEmptyArray asserts that `--bulk '[]'` (after stripping
+// empty strings) refuses the no-op rather than silently exiting 0 — operators
+// composing the array from templates would otherwise miss a missing variable
+// expansion that produced no expressions.
+func TestPatch_BulkRejectsEmptyArray(t *testing.T) {
+	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--bulk", `["", " ", ""]`,
+		"--workflow", wfPath,
+	})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected non-zero exit for --bulk array with no non-empty expressions")
+	}
+	if !strings.Contains(err.Error(), "no non-empty expressions") {
+		t.Errorf("expected 'no non-empty expressions' in error, got: %v", err)
+	}
+}
+
+// TestPatch_BulkSingleLockWindowEmitsOneAuditLine asserts the bulk pipeline
+// writes ONE audit line on success — confirming the lock-acquisition is
+// shared across all N expressions (advisory lock, single tmp+rename, single
+// validate). Mirrors TestPatch_DefaultEmitsAuditLine for the bulk path.
+func TestPatch_BulkSingleLockWindowEmitsOneAuditLine(t *testing.T) {
+	t.Setenv("BROWZER_LLM", "")
+	t.Setenv("BROWZER_WORKFLOW_QUIET", "")
+	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--bulk", `[
+			".featureName = \"bulk-audit-A\"",
+			".featureName = \"bulk-audit-B\"",
+			".featureName = \"bulk-audit-C\""
+		]`,
+		"--workflow", wfPath,
+		"--sync",
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("bulk: %v\nstderr: %s", err, stderr.String())
+	}
+
+	count := strings.Count(stderr.String(), "verb=patch")
+	if count != 1 {
+		t.Errorf("expected exactly 1 audit line, got %d\nstderr: %s", count, stderr.String())
+	}
+}
+
+// TestResolvePatchExpression_BulkComposition unit-tests the helper that
+// collapses --bulk into a single jq pipeline. Pinned because the composition
+// is the load-bearing piece — if it ever drifts (e.g. switches from `|` to
+// `,` or stops parenthesising), the bulk pipeline silently changes semantics.
+func TestResolvePatchExpression_BulkComposition(t *testing.T) {
+	cases := []struct {
+		name     string
+		jqExpr   string
+		bulk     string
+		want     string
+		wantErr  bool
+		errMatch string
+	}{
+		{
+			name:   "single-expr bulk wraps in parens",
+			bulk:   `[".foo = 1"]`,
+			want:   `(.foo = 1)`,
+			wantErr: false,
+		},
+		{
+			name:   "multiple exprs joined by pipe",
+			bulk:   `[".foo = 1", ".bar = 2"]`,
+			want:   `(.foo = 1) | (.bar = 2)`,
+			wantErr: false,
+		},
+		{
+			name:   "empty entries skipped, surviving entries composed",
+			bulk:   `["", ".foo = 1", "  ", ".bar = 2"]`,
+			want:   `(.foo = 1) | (.bar = 2)`,
+			wantErr: false,
+		},
+		{
+			name:   "jq expr passes through when bulk empty",
+			jqExpr: `.foo = 1`,
+			bulk:   ``,
+			want:   `.foo = 1`,
+			wantErr: false,
+		},
+		{
+			name:     "all-empty array errors",
+			bulk:     `["", " ", "\t"]`,
+			wantErr:  true,
+			errMatch: "no non-empty expressions",
+		},
+		{
+			name:     "non-array JSON errors",
+			bulk:     `{"not": "array"}`,
+			wantErr:  true,
+			errMatch: "invalid JSON array",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolvePatchExpression(tc.jqExpr, tc.bulk)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got none (got=%q)", got)
+				}
+				if tc.errMatch != "" && !strings.Contains(err.Error(), tc.errMatch) {
+					t.Errorf("error %q does not match %q", err, tc.errMatch)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("composition drift:\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}

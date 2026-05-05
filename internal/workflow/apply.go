@@ -122,6 +122,7 @@ type MutatorArgs struct {
 var Mutators = map[string]Mutator{
 	"append-dispatch":            mutatorAppendDispatch,
 	"append-step":               mutatorAppendStep,
+	"append-steps":              mutatorAppendSteps,
 	"update-step":               mutatorUpdateStep,
 	"complete-step":             mutatorCompleteStep,
 	"set-status":                mutatorSetStatus,
@@ -701,6 +702,63 @@ func mutatorAppendStep(raw map[string]any, args MutatorArgs, out *ApplyResult) e
 	if id, _ := stepMap["stepId"].(string); id != "" {
 		out.StepID = id
 	}
+	return nil
+}
+
+// mutatorAppendSteps is the plural sibling of mutatorAppendStep. The
+// payload is a JSON array of step objects; each is appended in order
+// against the same in-memory map, the counters are recomputed once at
+// the end, and ApplyAndPersist runs ONE CUE validation against the
+// final document. The advisory lock + tmp-rename + parent-dir-fsync
+// pipeline is shared with append-step.
+//
+// out.StepID is set to the LAST step's stepId so the audit line
+// reports the trailing edge of the batch (matches the convention of
+// patch verb when it touches multiple steps in one expression).
+//
+// Errors:
+//   - empty payload
+//   - payload is not a JSON array
+//   - payload is an empty array (callers composing the array from a
+//     template should fail loudly when the template expanded to zero
+//     entries instead of silently writing a no-op)
+//   - any element is not a JSON object
+//
+// Closes RETRO 9.1.5 from the 2026-05-05 orchestrate-task-delivery
+// session: appending N steps required N round-trips through the daemon
+// (one advisory-lock acquisition per step, one validation per step).
+// For an 11-task TASKS_MANIFEST that is 11× the lock contention. With
+// this verb the operator pays one round-trip + one validation.
+func mutatorAppendSteps(raw map[string]any, args MutatorArgs, out *ApplyResult) error {
+	if len(args.Payload) == 0 {
+		return fmt.Errorf("append-steps: payload is required")
+	}
+	var stepsPayload []any
+	if err := json.Unmarshal(args.Payload, &stepsPayload); err != nil {
+		return fmt.Errorf("append-steps: payload must be a JSON array of step objects: %w", err)
+	}
+	if len(stepsPayload) == 0 {
+		return fmt.Errorf("append-steps: payload array is empty (would be a no-op)")
+	}
+
+	stepsRaw := raw["steps"]
+	stepsSlice, _ := stepsRaw.([]any)
+	var lastStepID string
+	for i, entry := range stepsPayload {
+		stepMap, ok := entry.(map[string]any)
+		if !ok {
+			return fmt.Errorf("append-steps: payload[%d] is not a JSON object", i)
+		}
+		stepsSlice = append(stepsSlice, stepMap)
+		if id, _ := stepMap["stepId"].(string); id != "" {
+			lastStepID = id
+		}
+	}
+	raw["steps"] = stepsSlice
+
+	recomputeCountersRaw(raw)
+
+	out.StepID = lastStepID
 	return nil
 }
 

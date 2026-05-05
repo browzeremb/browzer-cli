@@ -470,6 +470,79 @@ func TestDescribeStepType_SaveQuietSilencesConfirmation(t *testing.T) {
 	}
 }
 
+// TestDescribeStepAlias_ProducesIdenticalOutput asserts that the
+// `describe-step` cobra alias produces byte-identical stdout to the
+// canonical `describe-step-type` invocation. Closes RETRO 2.5
+// (2026-05-05 orchestrate-task-delivery session): operators and LLM
+// agents typed `describe-step --json` expecting it to work; the
+// cobra "unknown flag --json" surfaced because the subcommand
+// itself didn't exist. The alias collapses the discoverability
+// gap without forking a second implementation.
+func TestDescribeStepAlias_ProducesIdenticalOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"json-PRD", []string{"PRD", "--json"}},
+		{"markdown-TASK", []string{"TASK"}},
+		{"required-only-PRD", []string{"PRD", "--required-only"}},
+		{"field-projection", []string{"PRD", "--field", "title"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var canonStdout, canonStderr bytes.Buffer
+			canonRoot := buildWorkflowCommandT(t, &canonStdout, &canonStderr)
+			canonRoot.SetArgs(append([]string{"workflow", "describe-step-type"}, tc.args...))
+			if err := canonRoot.Execute(); err != nil {
+				t.Fatalf("canonical describe-step-type: %v\nstderr: %s", err, canonStderr.String())
+			}
+
+			var aliasStdout, aliasStderr bytes.Buffer
+			aliasRoot := buildWorkflowCommandT(t, &aliasStdout, &aliasStderr)
+			aliasRoot.SetArgs(append([]string{"workflow", "describe-step"}, tc.args...))
+			if err := aliasRoot.Execute(); err != nil {
+				t.Fatalf("alias describe-step: %v\nstderr: %s", err, aliasStderr.String())
+			}
+
+			if canonStdout.String() != aliasStdout.String() {
+				t.Errorf("alias output drift:\ncanonical: %q\nalias:     %q",
+					canonStdout.String(), aliasStdout.String())
+			}
+		})
+	}
+}
+
+// TestDescribeStepAlias_AcceptsSaveFlag mirrors
+// TestDescribeStepType_SaveWritesFile through the alias. Asserts the
+// alias inherits the full flag surface (no flag-drift) and writes a
+// valid JSON array to the requested path.
+func TestDescribeStepAlias_AcceptsSaveFlag(t *testing.T) {
+	dir := t.TempDir()
+	savePath := dir + "/prd-schema.json"
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "describe-step", "PRD",
+		"--json",
+		"--save", savePath,
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("describe-step --save: %v\nstderr: %s", err, stderr.String())
+	}
+	data, err := os.ReadFile(savePath)
+	if err != nil {
+		t.Fatalf("read save file: %v", err)
+	}
+	var fields []map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("save file content should be valid JSON array: %v", err)
+	}
+	if len(fields) == 0 {
+		t.Error("alias --save: empty fields array")
+	}
+}
+
 // TestDescribeStepType_PRD_DescendsDefaultEmptyListDisjunctions asserts
 // WF-CUE-NOISE-03 (2026-05-05): the SSOT uses the pattern
 // `*[] | [...#NamedDef]` for fields that default to an empty list

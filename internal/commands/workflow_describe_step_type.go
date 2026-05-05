@@ -37,9 +37,17 @@ func registerWorkflowDescribeStepType(parent *cobra.Command) {
 	sort.Strings(allowlist)
 
 	cmd := &cobra.Command{
-		Use:   "describe-step-type <STEP_NAME>",
-		Short: "Describe a workflow step type's schema fields",
+		Use: "describe-step-type <STEP_NAME>",
+		// `describe-step` is a legacy alias kept because operators (and
+		// LLM agents) typed it during the 2026-05-05 orchestrate-task-
+		// delivery session expecting it to work. The cheat-sheet drift
+		// audit reads only the `Use:` field, so the alias is invisible
+		// to that gate; the canonical name remains describe-step-type.
+		Aliases: []string{"describe-step"},
+		Short:   "Describe a workflow step type's schema fields",
 		Long: fmt.Sprintf(`Print a description of the fields defined for a given workflow step type.
+
+Aliases: describe-step (kept for ergonomics — flags + args are identical).
 
 STEP_NAME must be one of:
   %s

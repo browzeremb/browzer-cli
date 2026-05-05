@@ -17,7 +17,8 @@ var workflowCmd = &cobra.Command{
 	Long: "Read and validate Browzer feature workflow.json files.\n" +
 		"\n" +
 		"Mutator verbs (acquire advisory lock + validate post-mutation):\n" +
-		"  append-step, update-step, complete-step, set-status, set-config,\n" +
+		"  append-step, append-steps (plural / single-lock batch),\n" +
+		"  update-step, complete-step, set-status, set-config,\n" +
 		"  set-current-step, append-review-history, append-dispatch,\n" +
 		"  audit-model-override, truncation-audit, reapply-additional-context,\n" +
 		"  patch --jq <expr> (generic; supports --arg KEY=VAL / --argjson KEY=<json>).\n" +
@@ -26,7 +27,7 @@ var workflowCmd = &cobra.Command{
 		"  get-step [--field <jq-path>] [--render <template>] [--bash-vars]\n" +
 		"           [--save <path>] [--quiet]\n" +
 		"  get-config <key>, validate, schema [--json-schema], query <named>,\n" +
-		"  describe-step-type <NAME>.\n" +
+		"  describe-step-type <NAME> (alias: describe-step).\n" +
 		"\n" +
 		"Quiet modes (silence the per-mutation audit line on stderr — errors\n" +
 		"and structured hints still print):\n" +
@@ -79,6 +80,7 @@ func registerWorkflow(parent *cobra.Command) {
 	registerWorkflowAppendDispatches(cmd)
 	registerWorkflowAppendReviewHistory(cmd)
 	registerWorkflowAppendStep(cmd)
+	registerWorkflowAppendSteps(cmd)
 	registerWorkflowAuditModelOverride(cmd)
 	registerWorkflowCompleteStep(cmd)
 	registerWorkflowDescribeStepType(cmd)
