@@ -257,11 +257,221 @@ func ValidateWorkflow(rawJSON []byte) ValidationResult {
 	unified := schemaValue.Unify(payload)
 	vErr := unified.Validate(cue.Concrete(true), cue.All())
 	violations := convertCueErrors(vErr, addedIn)
+
+	// WF-CUE-NOISE-02 enrichment: when the disjunction narrowing failed
+	// for a steps[N] element, CUE compresses the inner branch errors
+	// into a placeholder counter that never surfaces the leaf
+	// constraint failure (e.g. `lint = "pending"`). We re-validate
+	// every failing step against its declared `name`-specific
+	// definition (`#TaskStep` etc) and append those leaf errors so
+	// FormatViolations can render them.
+	if vErr != nil {
+		violations = append(violations, repairStepLeafViolations(rawJSON, ctx, addedIn, violations)...)
+	}
+
 	sortViolations(violations)
+	violations = dedupeViolations(violations)
 	if violations == nil {
 		violations = []Violation{}
 	}
 	return ValidationResult{Valid: len(violations) == 0, Violations: violations}
+}
+
+// dedupeViolations removes consecutive entries with identical
+// (Path, Code, Message). The slice is assumed to be sorted by
+// sortViolations beforehand. Used after WF-CUE-NOISE-02 enrichment
+// where the leaf-recovery pass may produce a duplicate of an entry
+// the original CUE tree already surfaced.
+func dedupeViolations(vs []Violation) []Violation {
+	if len(vs) < 2 {
+		return vs
+	}
+	out := vs[:1]
+	for _, v := range vs[1:] {
+		last := out[len(out)-1]
+		if v.Path == last.Path && v.Code == last.Code && v.Message == last.Message {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// stepNameToDefinition maps the canonical step name (`TASK`, `PRD`,
+// `BRAINSTORMING`, …) to the CUE definition that holds its full
+// per-step shape. Mirrors `#StepDefinitions` in workflow-v1.cue —
+// kept as a Go map so changes to that block surface a compile error
+// here rather than a silent miss.
+var stepNameToDefinition = map[string]string{
+	"PRD":                   "#PRDStep",
+	"TASKS_MANIFEST":        "#TasksManifestStep",
+	"TASK":                  "#TaskStep",
+	"BRAINSTORMING":         "#BrainstormingStep",
+	"CODE_REVIEW":           "#CodeReviewStep",
+	"RECEIVING_CODE_REVIEW": "#ReceivingCodeReviewStep",
+	"WRITE_TESTS":           "#WriteTestsStep",
+	"UPDATE_DOCS":           "#UpdateDocsStep",
+	"FEATURE_ACCEPTANCE":    "#FeatureAcceptanceStep",
+	"COMMIT":                "#CommitStep",
+}
+
+// repairStepLeafViolations is the WF-CUE-NOISE-02 escape hatch.
+//
+// When the top-level `#WorkflowV1` validation surfaces only a
+// disjunction-narrowing failure for a step (the noisy
+// "conflicting values …" lines + empty-disjunction placeholders),
+// the actual constraint failure that triggered the bottom value is
+// hidden behind CUE's collapsing of the disjunction error tree.
+// We recover it by re-validating the step against its declared
+// step-type definition (selected by `name`), which produces a
+// clean leaf-error tree (no narrowing).
+//
+// The function is best-effort:
+//
+//   - Steps without a recognisable `name` are skipped.
+//   - When the per-step re-validation succeeds (the operator's
+//     payload IS structurally consistent with its declared step
+//     type), no violations are appended — the original disjunction
+//     errors stand.
+//   - Output paths are remapped to the steps[N].… form so they
+//     line up with the rest of the diagnostic output.
+//
+// Determinism: violations are returned in arrival order; the caller
+// (ValidateWorkflow) re-sorts the union via sortViolations.
+func repairStepLeafViolations(rawJSON []byte, ctx *cue.Context, addedIn map[string]string, existing []Violation) []Violation {
+	// Cheap check: only do enrichment work when the existing
+	// violations include at least one steps[N] disjunction
+	// placeholder OR sibling-narrowing entry. Otherwise the
+	// schema engine already gave us actionable output.
+	if !hasStepDisjunctionNoise(existing) {
+		return nil
+	}
+	var doc struct {
+		Steps []json.RawMessage `json:"steps"`
+	}
+	if jerr := json.Unmarshal(rawJSON, &doc); jerr != nil {
+		return nil
+	}
+	var out []Violation
+	for idx, raw := range doc.Steps {
+		name := extractStepName(raw)
+		if name == "" {
+			continue
+		}
+		defName, ok := stepNameToDefinition[name]
+		if !ok {
+			continue
+		}
+		defVal, ok := lookupDefinition(defName)
+		if !ok {
+			continue
+		}
+		expr, jerr := cuejson.Extract("step.json", raw)
+		if jerr != nil {
+			continue
+		}
+		stepVal := ctx.BuildExpr(expr)
+		if stepVal.Err() != nil {
+			continue
+		}
+		unified := defVal.Unify(stepVal)
+		vErr := unified.Validate(cue.Concrete(true), cue.All())
+		if vErr == nil {
+			continue
+		}
+		leaves := flattenCueErrors(vErr)
+		prefix := fmt.Sprintf("#WorkflowV1.steps[%d]", idx)
+		for _, ce := range leaves {
+			path := joinCuePath(ce.Path())
+			path = remapStepDefPath(path, defName, prefix)
+			msg := errMessage(ce)
+			// Drop leaf placeholders; we only want actionable
+			// constraint failures here.
+			if emptyDisjunctionRe.MatchString(strings.TrimPrefix(msg, defName+": ")) {
+				continue
+			}
+			// Strip the redundant "#TaskStep: " / "#TaskStep.task…: "
+			// prefix from the message — the path column already
+			// carries it.
+			cleanMsg := stripDefPrefix(msg, defName)
+			out = append(out, Violation{
+				Path:    path,
+				Code:    classifyCode(cleanMsg),
+				Message: cleanMsg,
+				AddedIn: lookupAddedIn(addedIn, path),
+				Field:   trailingField(path),
+			})
+		}
+	}
+	return out
+}
+
+// hasStepDisjunctionNoise reports whether the existing violation
+// slice contains at least one entry that signals the disjunction
+// narrowing path (placeholder counter or sibling-narrowing
+// type-mismatch on a steps[N] element).
+func hasStepDisjunctionNoise(vs []Violation) bool {
+	for _, v := range vs {
+		if !strings.Contains(v.Path, "steps[") && !strings.Contains(v.Path, "steps.") {
+			continue
+		}
+		if emptyDisjunctionRe.MatchString(v.Message) {
+			return true
+		}
+		if v.Code == "type-mismatch" && siblingNarrowingRe.MatchString(v.Message) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractStepName pulls `name` out of a step JSON blob without a
+// full unmarshal. Returns "" when the field is missing or not a
+// string.
+func extractStepName(raw json.RawMessage) string {
+	var probe struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	return probe.Name
+}
+
+// remapStepDefPath rewrites a CUE path like
+// `#TaskStep.task.execution.gates.postChange.lint` to
+// `steps[3].task.execution.gates.postChange.lint` so it composes
+// with the rest of the workflow-level diagnostics.
+func remapStepDefPath(path, defName, prefix string) string {
+	if path == "" {
+		return prefix
+	}
+	if strings.HasPrefix(path, defName+".") {
+		return prefix + "." + strings.TrimPrefix(path, defName+".")
+	}
+	if path == defName {
+		return prefix
+	}
+	return prefix + "." + path
+}
+
+// stripDefPrefix removes `<defName>:` and `<defName>.<...>:` lead-in
+// from a CUE error message. The CUE engine prefixes each message
+// with the path it was raised at; we already render the path
+// independently in FormatViolations.
+func stripDefPrefix(msg, defName string) string {
+	if msg == "" {
+		return msg
+	}
+	colonIdx := strings.Index(msg, ": ")
+	if colonIdx < 0 {
+		return msg
+	}
+	prefix := msg[:colonIdx]
+	if prefix == defName || strings.HasPrefix(prefix, defName+".") {
+		return strings.TrimSpace(msg[colonIdx+1:])
+	}
+	return msg
 }
 
 // ValidateStep validates a single step subtree against the matching
@@ -351,12 +561,46 @@ func ValidateStep(stepJSON []byte, stepType string) ValidationResult {
 // Empty input returns the empty string. Used by apply.go to construct the
 // error message returned by ApplyAndPersist when the validator rejects a
 // post-mutation payload.
+//
+// WF-CUE-NOISE-01 / WF-CUE-NOISE-02 (2026-05-04): the raw CUE engine
+// surfaces two classes of noise that drown out the real constraint
+// failure for operators staring at the rendered output:
+//
+//  1. Sibling-disjunction narrowing: when a discriminated step
+//     (e.g. `name: "PRD"`) fails its own constraint, CUE first emits
+//     one `type-mismatch` per OTHER branch of the disjunction it
+//     tried (`conflicting values "TASK" and "PRD"`, etc). These
+//     lines say "this isn't an UPDATE_DOCS step / this isn't a TASK
+//     step" — true but useless when the operator already typed PRD.
+//  2. Empty-disjunction placeholders: CUE wraps deep failures behind
+//     `"<N> errors in empty disjunction:"` counter strings that have
+//     no actionable content for callers.
+//
+// Filtering rules:
+//
+//  - When a (path)-group contains ≥1 entry whose code is one of
+//    {invalid-pattern, constraint-violation, invalid-enum-value,
+//    missing-required-field} AND ≥1 entry whose code is type-mismatch
+//    matching `^conflicting values "[A-Z_]+" and "[A-Z_]+"$`, drop
+//    every type-mismatch entry from that group (sibling narrowing).
+//  - Always drop entries whose message matches
+//    `^[0-9]+ errors in empty disjunction:?$` after we've already
+//    extracted their leaf children via flattenCueErrors.
+//
+// The contract for callers: when there is a real constraint failure,
+// FormatViolations renders ONLY the constraint failures. The fallback
+// (no constraint failure surfaced) preserves the historical noisy
+// output so operators don't lose information silently.
 func FormatViolations(vs []Violation) string {
 	if len(vs) == 0 {
 		return ""
 	}
+	filtered := suppressDisjunctionNoise(vs)
+	if len(filtered) == 0 {
+		filtered = vs
+	}
 	var b strings.Builder
-	for i, v := range vs {
+	for i, v := range filtered {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
@@ -367,6 +611,113 @@ func FormatViolations(vs []Violation) string {
 		fmt.Fprintf(&b, "%s: %s at @addedIn(%s): %s", path, v.Code, v.AddedIn, v.Message)
 	}
 	return b.String()
+}
+
+// emptyDisjunctionRe matches CUE's empty-disjunction placeholder
+// (`"3 errors in empty disjunction:"`). The trailing colon is
+// optional so messages mid-flight (without the colon) still match.
+var emptyDisjunctionRe = regexp.MustCompile(`^[0-9]+ errors in empty disjunction:?$`)
+
+// siblingNarrowingRe matches the type-mismatch noise emitted when
+// CUE narrows a discriminated-union member against its sibling
+// branches: `conflicting values "PRD" and "TASK"` where both labels
+// are upper-snake-case (the canonical step-name shape).
+var siblingNarrowingRe = regexp.MustCompile(`^conflicting values "[A-Z_]+" and "[A-Z_]+"$`)
+
+// constraintCodes is the set of violation codes that represent a
+// real constraint failure (not narrowing noise, not a wrapper
+// placeholder). When any of these appears in a (path)-group, the
+// type-mismatch sibling-narrowing entries in that group are dropped.
+var constraintCodes = map[string]bool{
+	"invalid-pattern":        true,
+	"constraint-violation":   true,
+	"invalid-enum-value":     true,
+	"missing-required-field": true,
+}
+
+// suppressDisjunctionNoise applies the rules documented on
+// FormatViolations. It returns a new slice and never mutates vs.
+//
+// Two passes:
+//
+//  1. Drop empty-disjunction placeholders (always — the leaves are
+//     already extracted by flattenCueErrors).
+//  2. Group by Path. If a group has a constraint failure AND at
+//     least one sibling-narrowing type-mismatch, drop every
+//     sibling-narrowing entry from that group. Real type-mismatch
+//     errors (e.g. "expected string, got int") are preserved.
+//
+// When the resulting slice is empty (e.g. the only violations were
+// placeholders + sibling narrowing), the caller falls back to the
+// raw input so we never silently render an empty error string.
+func suppressDisjunctionNoise(vs []Violation) []Violation {
+	if len(vs) == 0 {
+		return vs
+	}
+	// Pass 1: drop empty-disjunction placeholder rows.
+	stage1 := make([]Violation, 0, len(vs))
+	for _, v := range vs {
+		if emptyDisjunctionRe.MatchString(v.Message) {
+			continue
+		}
+		stage1 = append(stage1, v)
+	}
+	if len(stage1) == 0 {
+		return stage1
+	}
+	// Pass 2: group by Path; suppress sibling narrowing when a real
+	// constraint failure shares the parent path. We compare against
+	// the Path's parent (strip trailing `.field`) — sibling narrowing
+	// happens at `…name`, the real failure typically lives at a
+	// deeper subtree (`…prd.acceptanceCriteria[1].bindsTo[0]`).
+	hasConstraintByParent := map[string]bool{}
+	for _, v := range stage1 {
+		// A "real" constraint failure is either an explicit constraint
+		// code OR a type-mismatch whose message is NOT the
+		// sibling-narrowing pattern (so a genuine `conflicting values
+		// "pass" and "pending"` enum failure still counts).
+		isReal := constraintCodes[v.Code] ||
+			(v.Code == "type-mismatch" && !siblingNarrowingRe.MatchString(v.Message))
+		if !isReal {
+			continue
+		}
+		parent := stepRootPath(v.Path)
+		if parent == "" {
+			continue
+		}
+		hasConstraintByParent[parent] = true
+	}
+	stage2 := make([]Violation, 0, len(stage1))
+	for _, v := range stage1 {
+		if v.Code == "type-mismatch" && siblingNarrowingRe.MatchString(v.Message) {
+			parent := stepRootPath(v.Path)
+			if parent != "" && hasConstraintByParent[parent] {
+				continue
+			}
+		}
+		stage2 = append(stage2, v)
+	}
+	return stage2
+}
+
+// stepRootPath returns the closest enclosing step subtree path for a
+// violation Path. The schema groups disjunction narrowing under
+// `…steps[N]` (or `#WorkflowV1.steps[N]` for the embedded form), so
+// we trim `path` back to that root. Returns "" when path doesn't
+// reference a steps[] element — those violations are kept as-is.
+func stepRootPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	idx := strings.Index(path, "steps[")
+	if idx < 0 {
+		return ""
+	}
+	closing := strings.Index(path[idx:], "]")
+	if closing < 0 {
+		return ""
+	}
+	return path[:idx+closing+1]
 }
 
 // RecordNoSchemaCheck appends one audit line to
@@ -445,12 +796,22 @@ func FindRepoRoot(start string) string {
 // convertCueErrors lifts cue.Error into our flat Violation slice.
 // Each cue.Error path/message becomes one Violation. Heuristics map error
 // kinds to stable Code values.
+//
+// WF-CUE-NOISE-02 (2026-05-04): when CUE rejects a deeply nested
+// disjunction it wraps leaf failures behind one or more
+// `"<N> errors in empty disjunction:"` placeholders. The flat
+// `cueerrors.Errors(vErr)` call only returns the outer list — the leaf
+// constraint failures (e.g. `invalid value "pending"`) live inside an
+// inner `list` reachable by re-running `cueerrors.Errors` on the
+// placeholder entry. We walk the tree breadth-first, tracking visited
+// errors by identity to terminate on leaves (where a single-element
+// `Errors(entry)` returns the entry itself).
 func convertCueErrors(vErr error, addedIn map[string]string) []Violation {
 	if vErr == nil {
 		return nil
 	}
-	cueErrs := cueerrors.Errors(vErr)
-	if len(cueErrs) == 0 {
+	leaves := flattenCueErrors(vErr)
+	if len(leaves) == 0 {
 		// Fallback: treat the raw error as a single root-level violation
 		// so callers always see at least one entry to act on.
 		return []Violation{{
@@ -460,8 +821,8 @@ func convertCueErrors(vErr error, addedIn map[string]string) []Violation {
 			AddedIn: defaultAddedIn,
 		}}
 	}
-	out := make([]Violation, 0, len(cueErrs))
-	for _, ce := range cueErrs {
+	out := make([]Violation, 0, len(leaves))
+	for _, ce := range leaves {
 		path := joinCuePath(ce.Path())
 		msg := errMessage(ce)
 		v := Violation{
@@ -472,6 +833,55 @@ func convertCueErrors(vErr error, addedIn map[string]string) []Violation {
 			Field:   trailingField(path),
 		}
 		out = append(out, v)
+	}
+	return out
+}
+
+// flattenCueErrors recursively descends CUE's nested disjunction error
+// tree and returns the union of every leaf error encountered. The CUE
+// engine wraps inner-disjunction failures behind a placeholder error
+// whose message is the literal `"<N> errors in empty disjunction:"`;
+// `cueerrors.Errors(placeholder)` returns the inner list, so we walk
+// the worklist until no new errors surface.
+//
+// Termination: an error is "expanded" only when `cueerrors.Errors(e)`
+// returns at least one element distinct from `e` itself (identity
+// compare). A leaf error returns `[e]` and is added to the result
+// without further recursion.
+func flattenCueErrors(root error) []cueerrors.Error {
+	if root == nil {
+		return nil
+	}
+	seen := map[cueerrors.Error]bool{}
+	var out []cueerrors.Error
+	queue := append([]cueerrors.Error(nil), cueerrors.Errors(root)...)
+	for len(queue) > 0 {
+		e := queue[0]
+		queue = queue[1:]
+		if e == nil || seen[e] {
+			continue
+		}
+		seen[e] = true
+		children := cueerrors.Errors(e)
+		// Leaf: Errors(e) returns just [e] (single self-reference) or
+		// nothing. Either way, no further descent is meaningful.
+		if len(children) == 0 || (len(children) == 1 && children[0] == e) {
+			out = append(out, e)
+			continue
+		}
+		// Multi-error wrapper: recurse into children.
+		for _, c := range children {
+			if c == nil || c == e || seen[c] {
+				continue
+			}
+			queue = append(queue, c)
+		}
+		// Also keep the wrapper entry itself if it carries an
+		// otherwise-unobservable message — this preserves the
+		// placeholder line for back-compat with operators who relied
+		// on it for context. Suppression of placeholder noise lives
+		// in FormatViolations (WF-CUE-NOISE-01/02).
+		out = append(out, e)
 	}
 	return out
 }

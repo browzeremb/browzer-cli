@@ -1,7 +1,14 @@
 package commands
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 )
 
 func TestCptFor_ManifestLangWins(t *testing.T) {
@@ -60,6 +67,41 @@ func TestCptFor_UnknownExtFallsBackToDefault(t *testing.T) {
 		if got := cptFor("", p); got != defaultCharsPerToken {
 			t.Errorf("path=%q cpt=%.3f, want default %.2f", p, got, defaultCharsPerToken)
 		}
+	}
+}
+
+// TestDaemonStatus_ExitsOneWhenNoDaemon asserts WF-CLI-UX-3: the
+// command must return a non-nil error mapping to exit code 1 when
+// the daemon socket is unreachable. Otherwise the orchestrator
+// skill's `browzer daemon status … || browzer daemon start …`
+// pre-warm never fires (regression observed 2026-05-04 shakedown).
+func TestDaemonStatus_ExitsOneWhenNoDaemon(t *testing.T) {
+	// Point the daemon socket at a path inside a fresh temp dir so
+	// no concurrent daemon (real or otherwise) interferes.
+	tmp := t.TempDir()
+	t.Setenv("BROWZER_DAEMON_SOCKET", filepath.Join(tmp, "missing.sock"))
+
+	cmd := daemonStatusCmd()
+	cmd.SetContext(context.Background())
+	cmd.SetArgs([]string{})
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected non-nil error when daemon is unreachable; got nil. stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	var ce *cliErrors.CliError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cliErrors.CliError; got %T (%v)", err, err)
+	}
+	if ce.ExitCode != cliErrors.ExitError {
+		t.Errorf("expected exit code %d, got %d", cliErrors.ExitError, ce.ExitCode)
+	}
+	if !strings.Contains(stdout.String(), "not running") {
+		t.Errorf("expected stdout to include 'not running', got %q", stdout.String())
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/auth"
 	"github.com/browzeremb/browzer-cli/internal/config"
 	"github.com/browzeremb/browzer-cli/internal/daemon"
+	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/telemetry"
 	"github.com/browzeremb/browzer-cli/internal/tracker"
 	"github.com/spf13/cobra"
@@ -323,6 +324,17 @@ func daemonStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Report daemon status (uptime, queue, db path)",
+		// WF-CLI-UX-3 (2026-05-04): exit 1 when the daemon is
+		// unreachable so callers like the orchestrator skill's
+		// `browzer daemon status >/dev/null 2>&1 || browzer daemon
+		// start --background &` pre-warm actually fires its `||`
+		// branch. Previously the command exited 0 in both states,
+		// so the daemon was never pre-warmed and the first
+		// workflow mutation of every session hit the
+		// `mode=fallback-sync reason=daemon_unreachable` path.
+		// SilenceUsage suppresses the cobra usage dump that would
+		// otherwise pollute stderr on the not-running exit path.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cli := daemon.NewClient(config.SocketPath(os.Getuid()))
 			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Second)
@@ -330,7 +342,7 @@ func daemonStatusCmd() *cobra.Command {
 			h, err := cli.Health(ctx)
 			if err != nil {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "not running")
-				return nil
+				return cliErrors.WithCode("daemon not running", cliErrors.ExitError)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "running uptime=%ds queue=%d db=%s\n", h.UptimeSec, h.QueueLen, h.DBPath)
 			return nil

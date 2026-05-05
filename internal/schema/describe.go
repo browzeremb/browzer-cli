@@ -70,12 +70,31 @@ var stepPayloadDefinition = map[string]string{
 }
 
 // fieldInfo is one leaf field extracted from the CUE schema.
+//
+// WF-CLI-UX-4 (2026-05-04): extended with `Enum`, `Pattern`, and
+// `ClosedStruct` so an LLM agent reading only `describe-step-type`
+// output can build a payload that passes validation on first try
+// (no need to read the CUE source).
+//
+//   - Enum: populated when the field's CUE type is a disjunction of
+//     string literals (`"pass" | "fail" | "skip"`). Sorted
+//     alphabetically.
+//   - Pattern: populated when the field carries a regex constraint
+//     (`=~"^T-AC-[0-9]+$"`). For composite constraints (e.g. an
+//     array element regex) it captures the inner regex.
+//   - ClosedStruct: true when the field is a struct WITHOUT a
+//     trailing `...` (CUE's "extras allowed" marker). Operators
+//     reading the markdown table append `(closed-struct)` to know
+//     unknown keys will be rejected.
 type fieldInfo struct {
-	Path        string `json:"path"`
-	Required    bool   `json:"required"`
-	Type        string `json:"type"`
-	AddedIn     string `json:"addedIn"`
-	Description string `json:"description"`
+	Path         string   `json:"path"`
+	Required     bool     `json:"required"`
+	Type         string   `json:"type"`
+	Enum         []string `json:"enum,omitempty"`
+	Pattern      string   `json:"pattern,omitempty"`
+	ClosedStruct bool     `json:"closedStruct,omitempty"`
+	AddedIn      string   `json:"addedIn"`
+	Description  string   `json:"description"`
 }
 
 // DescribeStepType returns a description of the named step type. stepName must
@@ -234,6 +253,42 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 				continue
 			}
 		}
+		// WF-CLI-UX-4 (2026-05-04): array-of-struct fields
+		// (`[...#TaskAC]`) deserve the same recursion so leaf
+		// patterns inside the element type (e.g.
+		// `task.acceptanceCriteria[].id` → `^T-AC-[0-9]+$`)
+		// surface in `describe-step-type` output. Without this
+		// the array is rendered as a single `array` row and the
+		// element constraints are lost.
+		if e.child.IncompleteKind() == cue.ListKind {
+			elem := e.child.LookupPath(cue.MakePath(cue.AnyIndex))
+			if elem.Exists() {
+				elemFields, elemErr := elem.Fields(cue.All())
+				if elemErr == nil {
+					hasElemFields := false
+					for elemFields.Next() {
+						hasElemFields = true
+						break
+					}
+					if hasElemFields {
+						walkCUEFields(elem, path+"[]", addedInMap, out)
+						continue
+					}
+				}
+				if resolved := resolveStructFromDisjunction(elem); resolved != nil {
+					walkCUEFields(*resolved, path+"[]", addedInMap, out)
+					continue
+				}
+				// Scalar list element with a constraint
+				// (e.g. `[...=~"^…$"]`). Emit it as a leaf
+				// under the `[]` path so the regex/enum is
+				// rendered.
+				if matchOperandRegex(elem) != "" || len(extractStringEnum(elem)) > 0 {
+					*out = append(*out, makeFieldInfo(path+"[]", elem, addedInMap))
+					continue
+				}
+			}
+		}
 		// Treat as leaf.
 		*out = append(*out, makeFieldInfo(path, e.child, addedInMap))
 	}
@@ -273,16 +328,153 @@ func resolveStructFromDisjunction(v cue.Value) *cue.Value {
 }
 
 // makeFieldInfo builds a fieldInfo for a leaf CUE value.
+//
+// WF-CLI-UX-4 (2026-05-04): the function now also extracts string
+// enum members, regex patterns, and closed-struct semantics so the
+// caller's markdown / JSON projection can render them.
 func makeFieldInfo(path string, v cue.Value, addedInMap map[string]string) fieldInfo {
 	_, hasDefault := v.Default()
 	required := !hasDefault && !cueValueIsNullable(v)
 
-	return fieldInfo{
+	fi := fieldInfo{
 		Path:     path,
 		Required: required,
 		Type:     cueTypeString(v),
 		AddedIn:  lookupAddedIn(addedInMap, path),
 	}
+	fi.Enum = extractStringEnum(v)
+	fi.Pattern = extractRegexPattern(v)
+	if fi.Type == "object" {
+		// IsClosed reports whether the struct rejects extras
+		// (`...` excluded from the SSOT). Only meaningful on
+		// struct-typed fields; bool-typed values panic on the
+		// internal vertex if asked. cueTypeString already
+		// resolved the underlying kind.
+		fi.ClosedStruct = isStructClosed(v)
+	}
+	return fi
+}
+
+// extractStringEnum returns the sorted list of literal string
+// alternatives for a CUE disjunction-of-strings, or nil when v is
+// not a pure string disjunction. The returned list is stable across
+// runs (alpha-sorted) so the markdown / JSON output is
+// deterministic.
+//
+// We accept disjunctions whose Op() is `cue.OrOp` AND every operand
+// is either a concrete string or itself an `OrOp` of strings (the
+// CUE engine sometimes nests for default-marking). Anything else
+// returns nil. Default markers (`*"…"`) are unwrapped: the default
+// branch contributes its underlying string.
+func extractStringEnum(v cue.Value) []string {
+	op, args := v.Expr()
+	if op != cue.OrOp {
+		return nil
+	}
+	values := map[string]bool{}
+	if !collectStringEnumOperands(args, values) {
+		return nil
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for s := range values {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// collectStringEnumOperands recursively walks an OrOp's operand list,
+// gathering literal string alternatives. Returns false when any
+// operand is not a string literal nor a nested string OrOp — in
+// which case the caller treats the whole disjunction as
+// "not enumerable".
+func collectStringEnumOperands(args []cue.Value, into map[string]bool) bool {
+	for _, a := range args {
+		// Default-marked branch (*"foo") still has Default()
+		// available. The underlying value Kind() is StringKind.
+		if a.Kind() == cue.StringKind {
+			s, err := a.String()
+			if err != nil {
+				return false
+			}
+			into[s] = true
+			continue
+		}
+		op, sub := a.Expr()
+		if op == cue.OrOp {
+			if !collectStringEnumOperands(sub, into) {
+				return false
+			}
+			continue
+		}
+		// Anything else — null branch, regex, struct — disqualifies
+		// the field from being treated as an enum.
+		return false
+	}
+	return true
+}
+
+// extractRegexPattern returns the regex literal a field is
+// constrained against (`=~"^T-AC-[0-9]+$"`) or "" when the field
+// is not a regex constraint. The CUE engine encodes these as
+// `cue.MatchOp` whose right-hand operand is a string literal. We
+// also peek through array-element constraints by looking at the
+// element type when v.Kind() is ListKind.
+func extractRegexPattern(v cue.Value) string {
+	if pat := matchOperandRegex(v); pat != "" {
+		return pat
+	}
+	// Array-element regex: `[...=~"^AC-[0-9]+$"]`. The element
+	// constraint lives at index -1 on the unified list value.
+	if v.IncompleteKind() == cue.ListKind {
+		// Iterating with LookupPath via CUE's selectors is finicky
+		// for the "all elements" constraint; use the
+		// `LookupPath(cue.MakePath(cue.AnyIndex))` idiom.
+		elem := v.LookupPath(cue.MakePath(cue.AnyIndex))
+		if elem.Exists() {
+			if pat := matchOperandRegex(elem); pat != "" {
+				return pat
+			}
+		}
+	}
+	return ""
+}
+
+// matchOperandRegex inspects a CUE value's Expr() and, when the
+// outermost operator is `=~` (cue.MatchOp), returns the literal
+// regex string. Otherwise "".
+func matchOperandRegex(v cue.Value) string {
+	op, args := v.Expr()
+	switch op {
+	case cue.RegexMatchOp:
+		if len(args) == 1 {
+			if s, err := args[0].String(); err == nil {
+				return s
+			}
+		}
+	case cue.AndOp, cue.OrOp:
+		// `*null | =~"^…$"` style: dig through one level.
+		for _, a := range args {
+			if pat := matchOperandRegex(a); pat != "" {
+				return pat
+			}
+		}
+	}
+	return ""
+}
+
+// isStructClosed reports whether v is a struct that does NOT allow
+// additional fields beyond those declared. CUE's `IsClosed()`
+// returns true when the schema explicitly closed the struct (no
+// trailing `...`).
+func isStructClosed(v cue.Value) bool {
+	if v.IncompleteKind() != cue.StructKind && v.IncompleteKind() != (cue.NullKind|cue.StructKind) {
+		return false
+	}
+	return v.IsClosed()
 }
 
 // cueValueIsNullable returns true when the CUE value's string representation
@@ -355,10 +547,41 @@ func renderDescribeMarkdown(stepName string, fields []fieldInfo) string {
 		// Escape pipe characters in description to avoid breaking Markdown tables.
 		desc := strings.ReplaceAll(f.Description, "|", "\\|")
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
-			f.Path, req, f.Type, f.AddedIn, desc)
+			f.Path, req, decorateType(f), f.AddedIn, desc)
 	}
 
 	return b.String()
+}
+
+// decorateType renders the surface CUE type plus any constraint
+// hints (enum / pattern / closed-struct) so the markdown table
+// surfaces enough information for an LLM to construct a valid
+// payload without reading the SSOT.
+//
+// Examples:
+//
+//	"string"                     → "string"
+//	enum {pass, fail, skip}      → "string (enum: fail|pass|skip)"
+//	regex `^T-AC-[0-9]+$`        → "string (pattern: ^T-AC-[0-9]+$)"
+//	closed struct                → "object (closed-struct)"
+//
+// The decorations are appended in a stable order: enum → pattern
+// → closed-struct. Enum members are alpha-sorted (mirrors
+// extractStringEnum) so the output is byte-identical across runs.
+// Pipe characters in regex patterns are escaped so they don't break
+// the markdown table.
+func decorateType(f fieldInfo) string {
+	parts := []string{f.Type}
+	if len(f.Enum) > 0 {
+		parts = append(parts, "(enum: "+strings.Join(f.Enum, "\\|")+")")
+	}
+	if f.Pattern != "" {
+		parts = append(parts, "(pattern: "+strings.ReplaceAll(f.Pattern, "|", "\\|")+")")
+	}
+	if f.ClosedStruct {
+		parts = append(parts, "(closed-struct)")
+	}
+	return strings.Join(parts, " ")
 }
 
 // fieldsToProjection converts a []fieldInfo to a nested map[string]any
@@ -366,12 +589,22 @@ func renderDescribeMarkdown(stepName string, fields []fieldInfo) string {
 func fieldsToProjection(fields []fieldInfo) map[string]any {
 	out := map[string]any{}
 	for _, f := range fields {
-		setNestedKey(out, f.Path, map[string]any{
+		entry := map[string]any{
 			"required":    f.Required,
 			"type":        f.Type,
 			"addedIn":     f.AddedIn,
 			"description": f.Description,
-		})
+		}
+		if len(f.Enum) > 0 {
+			entry["enum"] = f.Enum
+		}
+		if f.Pattern != "" {
+			entry["pattern"] = f.Pattern
+		}
+		if f.ClosedStruct {
+			entry["closedStruct"] = true
+		}
+		setNestedKey(out, f.Path, entry)
 	}
 	return out
 }

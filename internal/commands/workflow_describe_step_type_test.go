@@ -260,3 +260,71 @@ func minLen(a, b int) int {
 	}
 	return b
 }
+
+// TestDescribeStepType_SurfacesEnumPatternClosedStruct asserts
+// WF-CLI-UX-4: an LLM agent reading only `describe-step-type TASK`
+// markdown / JSON output can discover string-disjunction enums,
+// regex patterns, and closed-struct semantics without reading the
+// CUE source.
+//
+// Specifically:
+//
+//   - `task.acceptanceCriteria[].id` carries the `^T-AC-[0-9]+$`
+//     pattern.
+//   - `task.execution.gates.baseline.lint` carries the
+//     `pass|fail|skip` enum.
+//   - The JSON projection for a field with an enum exposes the
+//     `enum` key as a sorted []string.
+func TestDescribeStepType_SurfacesEnumPatternClosedStruct(t *testing.T) {
+	out, err := schema.DescribeStepType("TASK", schema.DescribeOpts{})
+	if err != nil {
+		t.Fatalf("DescribeStepType: %v", err)
+	}
+	if !strings.Contains(out, "^T-AC-[0-9]+$") {
+		t.Errorf("expected markdown to surface T-AC regex pattern; got:\n%s", out)
+	}
+	if !strings.Contains(out, "enum: fail\\|pass\\|skip") {
+		t.Errorf("expected markdown to surface lint enum (fail|pass|skip); got:\n%s", out)
+	}
+
+	// JSON form: walk every entry, find the one whose path is
+	// `task.acceptanceCriteria[].id` (or matching tail), and assert
+	// its `pattern` field is non-empty.
+	jsonOut, err := schema.DescribeStepType("TASK", schema.DescribeOpts{JSON: true})
+	if err != nil {
+		t.Fatalf("DescribeStepType JSON: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &rows); err != nil {
+		t.Fatalf("JSON unmarshal: %v\nraw: %s", err, jsonOut)
+	}
+	foundACPattern, foundLintEnum := false, false
+	for _, r := range rows {
+		path, _ := r["path"].(string)
+		if strings.HasSuffix(path, "acceptanceCriteria[].id") {
+			if pat, _ := r["pattern"].(string); pat == "^T-AC-[0-9]+$" {
+				foundACPattern = true
+			}
+		}
+		if strings.HasSuffix(path, ".lint") {
+			if enum, ok := r["enum"].([]any); ok {
+				gotEnum := make([]string, 0, len(enum))
+				for _, e := range enum {
+					if s, ok := e.(string); ok {
+						gotEnum = append(gotEnum, s)
+					}
+				}
+				sort.Strings(gotEnum)
+				if strings.Join(gotEnum, "|") == "fail|pass|skip" {
+					foundLintEnum = true
+				}
+			}
+		}
+	}
+	if !foundACPattern {
+		t.Errorf("JSON output does not expose acceptanceCriteria[].id pattern=^T-AC-[0-9]+$")
+	}
+	if !foundLintEnum {
+		t.Errorf("JSON output does not expose .lint enum=[fail,pass,skip]")
+	}
+}

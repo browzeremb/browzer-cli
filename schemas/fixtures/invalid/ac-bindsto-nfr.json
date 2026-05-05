@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260504-ac-bindsto-nfr",
+  "featureName": "Invalid: PRD ac.bindsTo points at NFR-N (must be FR-N)",
+  "featDir": "docs/browzer/feat-20260504-ac-bindsto-nfr",
+  "originalRequest": "fixture",
+  "operator": { "locale": "pt-BR" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-04T00:00:00Z" },
+  "startedAt": "2026-05-04T00:00:00Z",
+  "updatedAt": "2026-05-04T00:00:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_PRD",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 0,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_PRD",
+      "name": "PRD",
+      "status": "RUNNING",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-04T00:00:00Z",
+      "completedAt": null,
+      "elapsedMin": 0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["generate-prd"],
+      "skillsInvoked": [],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "prd": {
+        "title": "x",
+        "overview": "x",
+        "personas": [],
+        "objectives": [],
+        "inScope": [],
+        "outOfScope": [],
+        "deliverables": [],
+        "functionalRequirements": [{ "id": "FR-1", "text": "x" }],
+        "nonFunctionalRequirements": [{ "id": "NFR-3", "text": "y" }],
+        "successMetrics": [],
+        "acceptanceCriteria": [
+          { "id": "AC-1", "text": "good binding", "bindsTo": ["FR-1"] },
+          { "id": "AC-2", "text": "bad binding", "bindsTo": ["NFR-3"] }
+        ],
+        "risks": [],
+        "assumptions": [],
+        "taskGranularity": "one-task-one-commit"
+      }
+    }
+  ]
+}

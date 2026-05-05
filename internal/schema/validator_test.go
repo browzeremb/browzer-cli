@@ -354,3 +354,68 @@ func TestFindRepoRoot_FallsBackToStart(t *testing.T) {
 		t.Errorf("expected %s, got %s", tmp, got)
 	}
 }
+
+// TestFormatViolations_SuppressesDisjunctionNoise_BindsToFixture
+// asserts WF-CUE-NOISE-01: the ac-bindsto-nfr fixture (PRD step
+// with `acceptanceCriteria[1].bindsTo[0] = "NFR-3"`) renders the
+// FR-only regex error WITHOUT the surrounding cascade of
+// `conflicting values` type-mismatch noise from sibling step
+// types or empty-disjunction placeholders.
+func TestFormatViolations_SuppressesDisjunctionNoise_BindsToFixture(t *testing.T) {
+	root := findFixturesDir(t)
+	payload := readFixture(t, root, "invalid", "ac-bindsto-nfr.json")
+	res := ValidateWorkflow(payload)
+	if res.Valid {
+		t.Fatal("expected fixture to be invalid")
+	}
+	out := FormatViolations(res.Violations)
+	if !strings.Contains(out, `invalid value "NFR-3"`) {
+		t.Errorf("expected output to contain `invalid value \"NFR-3\"`; got %q", out)
+	}
+	// Sibling-narrowing noise must NOT be present: any line
+	// matching `conflicting values "X" and "Y"` where both are
+	// upper-snake-case step names is suppressed.
+	for _, line := range strings.Split(out, "\n") {
+		if siblingNarrowingRe.MatchString(strings.TrimSpace(after(line, ":"))) {
+			t.Errorf("sibling-narrowing line leaked into output: %q", line)
+		}
+	}
+	// Empty-disjunction placeholder must NOT be present.
+	if strings.Contains(out, "errors in empty disjunction") {
+		t.Errorf("empty-disjunction placeholder leaked into output:\n%s", out)
+	}
+}
+
+// TestFormatViolations_RecursesEmptyDisjunction_BadGateEnumFixture
+// asserts WF-CUE-NOISE-02: the task-bad-gate-enum fixture (TASK
+// step with `task.execution.gates.postChange.lint = "pending"`)
+// produces an actionable line that names the offending value, and
+// the output never ends with the bare empty-disjunction placeholder.
+func TestFormatViolations_RecursesEmptyDisjunction_BadGateEnumFixture(t *testing.T) {
+	root := findFixturesDir(t)
+	payload := readFixture(t, root, "invalid", "task-bad-gate-enum.json")
+	res := ValidateWorkflow(payload)
+	if res.Valid {
+		t.Fatal("expected fixture to be invalid")
+	}
+	out := FormatViolations(res.Violations)
+	if !strings.Contains(out, `"pending"`) {
+		t.Errorf("expected output to mention `\"pending\"`; got %q", out)
+	}
+	if strings.HasSuffix(strings.TrimSpace(out), "errors in empty disjunction:") {
+		t.Errorf("output ends with bare empty-disjunction placeholder:\n%s", out)
+	}
+	if strings.Contains(out, "errors in empty disjunction") {
+		t.Errorf("empty-disjunction placeholder leaked into output:\n%s", out)
+	}
+}
+
+// after returns the substring of s after the first occurrence of
+// sep. Convenience helper for the suppression test.
+func after(s, sep string) string {
+	i := strings.Index(s, sep)
+	if i < 0 {
+		return ""
+	}
+	return s[i+len(sep):]
+}
