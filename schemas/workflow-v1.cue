@@ -693,7 +693,9 @@ import "time"
 	mentionsFallbackUsed: bool                                                             @addedIn("2026-04-30T18:00:00Z")
 	mentionsResultEmpty:  *null | "all-new-files" | "no-edges" | "uncommitted-edits" |
 		"index-lag"                                                                        @addedIn("2026-04-30T18:00:00Z")
-	mentionsFallback:     *null | string                                                   @addedIn("2026-04-24T00:00:00Z")
+	// REMOVED 2026-05-05 (B8): legacy `mentionsFallback: *null | string`. No active
+	// consumer; superseded by `mentionsFallbackUsed` (boolean). Migration:
+	//   jq 'del(.steps[].updateDocs.twoPassRun.mentionsFallback)' workflow.json
 }
 
 // =============================================================

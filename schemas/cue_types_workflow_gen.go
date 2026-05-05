@@ -930,9 +930,11 @@ type TwoPassRun struct {
 
 	MentionsFallbackUsed bool `json:"mentionsFallbackUsed"`
 
+	// REMOVED 2026-05-05 (B8): legacy `mentionsFallback: *null | string`. No active
+	// consumer; superseded by `mentionsFallbackUsed` (boolean). Migration:
+	//
+	//	jq 'del(.steps[].updateDocs.twoPassRun.mentionsFallback)' workflow.json
 	MentionsResultEmpty any/* CUE disjunction: (null|string) */ `json:"mentionsResultEmpty"`
-
-	MentionsFallback any/* CUE disjunction: (null|string) */ `json:"mentionsFallback"`
 }
 
 type DocMention struct {

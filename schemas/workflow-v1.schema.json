@@ -3135,8 +3135,7 @@
                     "conceptLevel",
                     "mentionsPass",
                     "mentionsFallbackUsed",
-                    "mentionsResultEmpty",
-                    "mentionsFallback"
+                    "mentionsResultEmpty"
                 ],
                 "properties": {
                     "directRef": {
@@ -3152,6 +3151,7 @@
                         "type": "boolean"
                     },
                     "mentionsResultEmpty": {
+                        "description": "REMOVED 2026-05-05 (B8): legacy `mentionsFallback: *null | string`. No active\nconsumer; superseded by `mentionsFallbackUsed` (boolean). Migration:\n  jq 'del(.steps[].updateDocs.twoPassRun.mentionsFallback)' workflow.json",
                         "type": "string",
                         "enum": [
                             "all-new-files",
@@ -3159,11 +3159,6 @@
                             "uncommitted-edits",
                             "index-lag"
                         ],
-                        "default": null,
-                        "nullable": true
-                    },
-                    "mentionsFallback": {
-                        "type": "string",
                         "default": null,
                         "nullable": true
                     }

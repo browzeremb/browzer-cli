@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -198,12 +199,63 @@ func resolveWriteMode(cmd *cobra.Command) (writeMode, error) {
 // daemonFallbackWarnOnce suppresses repeat stderr warnings when the daemon
 // path is unavailable across multiple calls in a single CLI invocation.
 // Reset on process boundaries (which is fine — agents re-fork per command).
+//
+// B3 (2026-05-05): WAS sufficient when one CLI invocation exercised the
+// daemon many times, but the LLM-driven workflow forks `browzer
+// workflow …` once per mutation. Each fork hit the "warn: daemon path
+// unavailable" line again, which polluted the agent context. The
+// `daemonDownMarker*` helpers below add a persistent marker
+// (`$BROWZER_HOME/.daemon-down-marker`) with a 60s TTL so the warn
+// fires at most once per minute regardless of process boundaries.
 var daemonFallbackWarnOnce sync.Once
 
 // daemonVersionMismatchWarnOnce suppresses repeat protocol-mismatch warnings
 // across multiple WorkflowMutate calls in the same process — the operator
 // only needs to see "your daemon is stale, restart it" once per CLI run.
 var daemonVersionMismatchWarnOnce sync.Once
+
+// daemonDownMarkerTTL caps how long a single daemon-unreachable
+// observation suppresses the warn for fresh CLI invocations.
+const daemonDownMarkerTTL = 60 * time.Second
+
+// daemonDownMarkerActive reports whether the marker file is present
+// AND younger than daemonDownMarkerTTL. Read-only; never creates
+// the marker. On any IO failure returns false so the caller emits
+// the warn — better a redundant line than a missed signal.
+func daemonDownMarkerActive() bool {
+	st, err := os.Stat(config.DaemonDownMarkerPath())
+	if err != nil {
+		return false
+	}
+	return time.Since(st.ModTime()) < daemonDownMarkerTTL
+}
+
+// daemonDownMarkerTouch creates / refreshes the marker so subsequent
+// CLI invocations within daemonDownMarkerTTL can suppress the warn.
+// Best-effort: directory creation + file write failures are silently
+// dropped (no warn, no return — the caller is on the warn path
+// already).
+func daemonDownMarkerTouch() {
+	path := config.DaemonDownMarkerPath()
+	if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+		return
+	}
+	// Open with O_TRUNC to refresh mtime even when the file exists.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(time.Now().UTC().Format(time.RFC3339))
+	_ = f.Close()
+}
+
+// daemonDownMarkerClear removes the marker so the NEXT daemon failure
+// emits a fresh warn instead of being silenced. Called when the
+// daemon answers `Daemon.Version` successfully — a successful
+// preflight is the unambiguous "daemon is back" signal.
+func daemonDownMarkerClear() {
+	_ = os.Remove(config.DaemonDownMarkerPath())
+}
 
 // daemonVersionPreflight runs the one-shot `Daemon.Version` handshake. The
 // `daemon.Client` already caches the response across calls (per Client
@@ -394,9 +446,14 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	quiet := auditQuietRequested(cmd)
 
 	if !cli.HasCapability(ctx, "workflow.v1") {
-		if !quiet {
+		// B3 (2026-05-05): defer to the cross-process marker. Suppress
+		// when active (≤60 s old) so each LLM-driven CLI fork doesn't
+		// re-emit the same line. Touch on emission so the next fork
+		// sees the marker.
+		if !quiet && !daemonDownMarkerActive() {
 			daemonFallbackWarnOnce.Do(func() {
 				_, _ = fmt.Fprintln(stderr, "warn: daemon path unavailable (no workflow.v1) — falling back to standalone for this run")
+				daemonDownMarkerTouch()
 			})
 		}
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_unreachable", startedAt)
@@ -408,13 +465,18 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 	// returns method_not_found, decode error) we fall back to standalone —
 	// the Daemon.Version method is the contract gate, not a soft hint.
 	if vresp, vErr := daemonVersionPreflight(ctx, cli); vErr != nil {
-		if !quiet {
+		if !quiet && !daemonDownMarkerActive() {
 			daemonFallbackWarnOnce.Do(func() {
 				_, _ = fmt.Fprintf(stderr, "warn: daemon version preflight failed (%v) — falling back to standalone for this run\n", vErr)
+				daemonDownMarkerTouch()
 			})
 		}
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_version_unavailable", startedAt)
 	} else if vresp.ProtocolVersion != daemon.CurrentProtocolVersion {
+		// Successful preflight — the daemon IS running, just on a
+		// stale protocol. Clear the down-marker so the next genuine
+		// outage emits a fresh warn instead of staying silent.
+		daemonDownMarkerClear()
 		if !quiet {
 			daemonVersionMismatchWarnOnce.Do(func() {
 				_, _ = fmt.Fprintln(stderr,
@@ -422,6 +484,9 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 			})
 		}
 		return runStandaloneAndAudit(cmd, wfPath, verb, args, noLock, lockTimeout, wf.AuditModeFallbackSync, "daemon_protocol_mismatch", startedAt)
+	} else {
+		// Healthy preflight + matching protocol → daemon is up.
+		daemonDownMarkerClear()
 	}
 
 	awaitDurability := mode == writeModeDaemonSync

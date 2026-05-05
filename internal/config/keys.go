@@ -72,6 +72,25 @@ func TelemetryStatePath() string {
 	return filepath.Join(home, ".browzer", "telemetry.state")
 }
 
+// DaemonDownMarkerPath returns the path to the persistent
+// "daemon is currently unreachable" marker (B3, 2026-05-05). The
+// marker has TTL 60 s expressed via mtime: when the file exists
+// AND `time.Since(mtime) < 60s`, the dispatch path skips the
+// per-process warn-once chatter (the operator has already been
+// told). When the file is absent or older than 60 s, a single
+// fresh warn is emitted and the file is touched.
+//
+// Honors BROWZER_HOME / falls back to ~/.browzer/. The marker is
+// best-effort — failures to read/write it should never block a
+// mutation.
+func DaemonDownMarkerPath() string {
+	if h := HomeOverride(); h != "" {
+		return filepath.Join(h, ".daemon-down-marker")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".browzer", ".daemon-down-marker")
+}
+
 // --- Config keys (persisted in ~/.browzer/config.json) ------------------
 
 const (

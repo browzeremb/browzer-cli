@@ -99,12 +99,27 @@ type ValidationResult struct {
 //
 // Field is the trailing identifier of Path (last segment after `.`/`]`)
 // for cheap UI rendering. Empty when Path is empty (root-level error).
+//
+// AllowedFields is populated when Code == "unknown-field": the closed-struct
+// parent schema's accepted field labels in alphabetical order. Lets a caller
+// render `unknown field "foo" — allowed: bar, baz`.
+//
+// AllowedValues is populated when Code == "invalid-enum-value": the literal
+// CUE-disjunction members the field accepts, alphabetically sorted. Lets a
+// caller render `invalid value "deferred" — allowed: pass, fail, skip`.
+//
+// Both slices are nil (omitted from JSON) when the engine could not resolve
+// the parent / disjunction definition — keeps the JSON shape stable for the
+// historic `unknown-field` / `invalid-enum-value` codes that did not carry
+// these hints.
 type Violation struct {
-	Path    string `json:"path"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	AddedIn string `json:"addedIn"`
-	Field   string `json:"field"`
+	Path          string   `json:"path"`
+	Code          string   `json:"code"`
+	Message       string   `json:"message"`
+	AddedIn       string   `json:"addedIn"`
+	Field         string   `json:"field"`
+	AllowedFields []string `json:"allowedFields,omitempty"`
+	AllowedValues []string `json:"allowedValues,omitempty"`
 }
 
 // internal — CUE compilation + @addedIn lookup table cached once per process.
@@ -268,6 +283,19 @@ func ValidateWorkflow(rawJSON []byte) ValidationResult {
 	if vErr != nil {
 		violations = append(violations, repairStepLeafViolations(rawJSON, ctx, addedIn, violations)...)
 	}
+
+	// A1.5 (2026-05-05): enrich Violations with allowedFields /
+	// allowedValues so an LLM caller never has to grep the SSOT to see
+	// the legal set. The enricher mutates Code from `type-mismatch` to
+	// `invalid-enum-value` when the path resolves to a string-disjunction
+	// field — which is exactly the friction case `lint: "deferred …"`
+	// → `conflicting values "skip" and "deferred …"`. Best-effort: any
+	// schema-walk failure leaves the violation untouched.
+	//
+	// Runs AFTER repairStepLeafViolations so the appended per-step-type
+	// re-validation rows (which carry richer paths than the workflow-root
+	// disjunction-noise lines) are enriched too.
+	enrichViolations(violations, schemaValue)
 
 	sortViolations(violations)
 	violations = dedupeViolations(violations)
@@ -792,6 +820,325 @@ func FindRepoRoot(start string) string {
 // =============================================================
 // internal helpers — not exported.
 // =============================================================
+
+// fieldNotAllowedRe matches CUE's "field not allowed" message — the
+// parent struct is closed and the operator typed an undeclared key. We
+// translate this to the stable `unknown-field` code AND collect the
+// closed-struct's accepted field labels via `lookupAllowedFieldsForPath`.
+var fieldNotAllowedRe = regexp.MustCompile(`field not allowed`)
+
+// conflictingValuesRe extracts the operand strings from CUE's
+// `conflicting values "X" and "Y"` line so the enricher can decide
+// whether the failing value sits in a string disjunction.
+var conflictingValuesRe = regexp.MustCompile(`^conflicting values\s+"[^"]*"\s+and\s+"[^"]*"$`)
+
+// conflictingValueExtractRe pulls the candidate operand strings out of
+// `conflicting values "X" and "Y"` so the enricher can collect each
+// `X` across sibling violations on the same Path. We treat `X` as a
+// legal-enum candidate and `Y` as the operator-supplied bad value.
+var conflictingValueExtractRe = regexp.MustCompile(`^conflicting values\s+"([^"]*)"\s+and\s+"([^"]*)"$`)
+
+// enrichViolations walks each Violation and attaches `AllowedFields` /
+// `AllowedValues` derived from the schema and from sibling-violation
+// inference. Designed so a future change to the CUE engine's message
+// formatting only fails enrichment for the affected entry — the
+// surrounding pipeline still emits a useful violation (just without
+// the hint slice).
+//
+// Mutations are in-place. Two passes:
+//
+//  1. Pre-pass: collect string-disjunction candidates from sibling
+//     `conflicting values "X" and "Y"` lines on the same Path. Three
+//     sibling violations like
+//       conflicting values "fail" and "pending"
+//       conflicting values "pass" and "pending"
+//       conflicting values "skip" and "pending"
+//     unambiguously declare `[fail, pass, skip]` as the disjunction
+//     and `"pending"` as the bad value. We use this when schema-walk
+//     can't reach the field (typically because the path crosses a
+//     discriminated-union narrowing point).
+//  2. Per-violation pass:
+//      - Promote "field not allowed" rows to `unknown-field` and
+//        resolve the parent struct's allowed field labels.
+//      - Reclassify type-mismatch rows whose Path resolves to a
+//        string disjunction → `invalid-enum-value` with AllowedValues
+//        populated from the schema (preferred) or the sibling
+//        inference (fallback).
+//      - Existing `invalid-enum-value` rows get AllowedValues filled
+//        in from either source.
+//
+// The function tolerates an empty schema value: every step
+// short-circuits when the schema-walk returns nothing usable.
+func enrichViolations(vs []Violation, schemaRoot cue.Value) {
+	if len(vs) == 0 {
+		return
+	}
+	siblingEnums := collectSiblingEnumCandidates(vs)
+	for i := range vs {
+		v := &vs[i]
+		// Pass 1: detect "field not allowed" → unknown-field with allowedFields.
+		if fieldNotAllowedRe.MatchString(v.Message) {
+			v.Code = "unknown-field"
+			parent := parentSchemaPath(v.Path)
+			if schemaRoot.Exists() {
+				if fields := lookupAllowedFieldsForPath(schemaRoot, parent); len(fields) > 0 {
+					v.AllowedFields = fields
+				}
+			}
+			continue
+		}
+		// Pass 2: type-mismatch on a string disjunction → invalid-enum-value.
+		if v.Code == "type-mismatch" && conflictingValuesRe.MatchString(v.Message) {
+			values := lookupEnumValuesForPathOrSibling(schemaRoot, v.Path, siblingEnums)
+			if len(values) > 0 {
+				v.Code = "invalid-enum-value"
+				v.AllowedValues = values
+				bad := extractBadValue(v.Message)
+				v.Message = renderEnumValueMismatchMessage(v.Field, values, bad)
+				continue
+			}
+		}
+		// Pass 3: existing invalid-enum-value rows benefit from the same
+		// hint when CUE's default message left allowedValues empty.
+		if v.Code == "invalid-enum-value" && len(v.AllowedValues) == 0 {
+			if values := lookupEnumValuesForPathOrSibling(schemaRoot, v.Path, siblingEnums); len(values) > 0 {
+				v.AllowedValues = values
+			}
+		}
+	}
+}
+
+// collectSiblingEnumCandidates groups violations by Path and, for each
+// path that has ≥2 sibling `conflicting values "X" and "Y"` rows
+// AGREEING on Y (the bad value), collects the X values as the
+// disjunction membership. Returns a Path → sorted []string map. When
+// the Y operand differs across siblings, the path is skipped — that
+// pattern means the engine is reporting multiple distinct mismatches,
+// not a disjunction.
+func collectSiblingEnumCandidates(vs []Violation) map[string][]string {
+	type bucket struct {
+		bad   string
+		legal map[string]bool
+		mixed bool
+	}
+	groups := map[string]*bucket{}
+	for _, v := range vs {
+		if v.Code != "type-mismatch" {
+			continue
+		}
+		match := conflictingValueExtractRe.FindStringSubmatch(v.Message)
+		if len(match) != 3 {
+			continue
+		}
+		legal, bad := match[1], match[2]
+		b, ok := groups[v.Path]
+		if !ok {
+			b = &bucket{bad: bad, legal: map[string]bool{legal: true}}
+			groups[v.Path] = b
+			continue
+		}
+		if b.bad != bad {
+			b.mixed = true
+			continue
+		}
+		b.legal[legal] = true
+	}
+	out := map[string][]string{}
+	for path, b := range groups {
+		if b.mixed || len(b.legal) < 2 {
+			continue
+		}
+		legal := make([]string, 0, len(b.legal))
+		for s := range b.legal {
+			legal = append(legal, s)
+		}
+		sort.Strings(legal)
+		out[path] = legal
+	}
+	return out
+}
+
+// lookupEnumValuesForPathOrSibling tries the schema-walk first;
+// when that returns nothing it falls back to the sibling-inference
+// table populated by collectSiblingEnumCandidates. Either source
+// yields an alpha-sorted slice (or nil).
+func lookupEnumValuesForPathOrSibling(schemaRoot cue.Value, path string, sibling map[string][]string) []string {
+	if schemaRoot.Exists() {
+		if values := lookupEnumValuesForPath(schemaRoot, path); len(values) > 0 {
+			return values
+		}
+	}
+	return sibling[path]
+}
+
+// renderEnumValueMismatchMessage emits a stable message that the
+// FormatViolations pipeline can render verbatim while still being
+// greppable by downstream skills. When `bad` is non-empty the value
+// the operator supplied is preserved in the message so existing
+// stderr-greppers (`grep '"pending"'`) keep working:
+//
+//	bad set:    `<field> = "<bad>" — must be one of [v1, v2, v3]`
+//	bad empty:  `<field> must be one of [v1, v2, v3]`
+func renderEnumValueMismatchMessage(field string, values []string, bad string) string {
+	if field == "" {
+		field = "value"
+	}
+	if bad != "" {
+		return fmt.Sprintf("%s = %q — must be one of [%s]",
+			field, bad, strings.Join(values, ", "))
+	}
+	return fmt.Sprintf("%s must be one of [%s]", field, strings.Join(values, ", "))
+}
+
+// extractBadValue returns the second operand of a `conflicting values
+// "X" and "Y"` line — the value the operator actually supplied.
+// Returns "" when the message is not in that format.
+func extractBadValue(msg string) string {
+	m := conflictingValueExtractRe.FindStringSubmatch(msg)
+	if len(m) != 3 {
+		return ""
+	}
+	return m[2]
+}
+
+// parentSchemaPath strips the trailing path segment so the enricher can
+// walk the parent struct's accepted fields. For `steps[0].task.foo`
+// returns `steps[0].task`. Returns "" when path has no separator.
+func parentSchemaPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(path, "."); idx >= 0 {
+		return path[:idx]
+	}
+	return ""
+}
+
+// lookupAllowedFieldsForPath walks schemaRoot to the struct value at
+// `path` and returns the alpha-sorted list of declared field labels.
+// The walk follows the same dotted/`[N]` form joinCuePath emits.
+//
+// Returns nil when the path can't be resolved or the value at path is
+// not a struct — never panics.
+func lookupAllowedFieldsForPath(schemaRoot cue.Value, path string) []string {
+	v, ok := walkSchemaPath(schemaRoot, path)
+	if !ok {
+		return nil
+	}
+	// Resolve through `*null | <struct>` disjunctions just like the
+	// describe.go walker.
+	if resolved := resolveStructFromDisjunction(v); resolved != nil {
+		v = *resolved
+	}
+	fields, err := v.Fields(cue.All())
+	if err != nil {
+		return nil
+	}
+	var labels []string
+	for fields.Next() {
+		labels = append(labels, fields.Selector().Unquoted())
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// lookupEnumValuesForPath walks schemaRoot to the value at `path` and,
+// when the value is a string disjunction (`"a" | "b" | "c"` possibly
+// default-marked), returns the alpha-sorted list of literal members.
+// Returns nil when the value is not a string disjunction.
+func lookupEnumValuesForPath(schemaRoot cue.Value, path string) []string {
+	v, ok := walkSchemaPath(schemaRoot, path)
+	if !ok {
+		return nil
+	}
+	return extractStringEnum(v)
+}
+
+// walkSchemaPath descends schemaRoot following the dotted joinCuePath
+// form (`steps[0].task.foo`). Array selectors are resolved via
+// `cue.AnyIndex` so any element of a list type works (CUE typically
+// declares lists as `[...#Element]` so element constraints apply
+// uniformly). Returns (cue.Value{}, false) when any segment is missing.
+//
+// CUE prefixes paths with the discriminator definition name in the
+// emitted error tree (e.g. `#WorkflowV1.steps[0].…`); the prefix is
+// stripped because schemaRoot already IS the resolved #WorkflowV1
+// value. Same logic applies to the per-step definitions surfaced
+// through repairStepLeafViolations (`#TaskStep.task.execution.…`).
+func walkSchemaPath(schemaRoot cue.Value, path string) (cue.Value, bool) {
+	if path == "" {
+		return schemaRoot, true
+	}
+	cur := schemaRoot
+	parts := splitDottedPath(path)
+	for _, p := range parts {
+		// Drop the leading definition selector if present — the
+		// caller already passed the resolved root.
+		if strings.HasPrefix(p, "#") {
+			continue
+		}
+		// Skip array indices: CUE's struct walk treats list-element
+		// types as `[...#T]` reachable via `cue.AnyIndex`.
+		if isAllDigits(p) {
+			next := cur.LookupPath(cue.MakePath(cue.AnyIndex))
+			if !next.Exists() {
+				return cue.Value{}, false
+			}
+			cur = next
+			continue
+		}
+		// Resolve disjunction to its struct branch BEFORE descending.
+		if resolved := resolveStructFromDisjunction(cur); resolved != nil {
+			cur = *resolved
+		}
+		next := cur.LookupPath(cue.ParsePath(p))
+		if !next.Exists() {
+			return cue.Value{}, false
+		}
+		cur = next
+	}
+	return cur, true
+}
+
+// splitDottedPath splits `steps[0].task.foo` → `["steps","0","task","foo"]`.
+// Array indices become bare digit segments so walkSchemaPath can apply
+// `cue.AnyIndex` for them.
+func splitDottedPath(path string) []string {
+	var out []string
+	cur := strings.Builder{}
+	flush := func() {
+		s := cur.String()
+		if s != "" {
+			out = append(out, s)
+		}
+		cur.Reset()
+	}
+	for i := 0; i < len(path); i++ {
+		ch := path[i]
+		switch ch {
+		case '.':
+			flush()
+		case '[':
+			flush()
+			// Read until ']'.
+			j := i + 1
+			for j < len(path) && path[j] != ']' {
+				j++
+			}
+			if j > i+1 {
+				out = append(out, path[i+1:j])
+			}
+			i = j
+		default:
+			cur.WriteByte(ch)
+		}
+	}
+	flush()
+	return out
+}
 
 // convertCueErrors lifts cue.Error into our flat Violation slice.
 // Each cue.Error path/message becomes one Violation. Heuristics map error

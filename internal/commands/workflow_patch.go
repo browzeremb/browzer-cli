@@ -13,9 +13,11 @@ import (
 
 func registerWorkflowPatch(parent *cobra.Command) {
 	var jqExpr string
+	var bulkJSON string
 	var lockTimeout time.Duration
 	var argPairs []string
 	var argJSONPairs []string
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "patch",
@@ -31,17 +33,40 @@ per flag):
 
 Both flags may be repeated. KEY must match [A-Za-z_][A-Za-z0-9_]*.
 
+Bulk mode (A3.3, 2026-05-05):
+
+  --bulk '<json-array>'    apply N jq expressions sequentially under ONE
+                           advisory-lock window. The argument is a JSON
+                           array of strings; each entry is run against the
+                           in-memory result of the previous one. CUE
+                           validation runs ONCE at the end. Mutually
+                           exclusive with --jq.
+
+Dry-run mode (A1.4, 2026-05-05):
+
+  --dry-run                applies the mutation, validates the post-
+                           mutation document against the CUE schema,
+                           and prints {ok, errors, beforeHash,
+                           afterHash, diffPaths, stepId} to stdout
+                           WITHOUT writing the file. Combinable with
+                           --bulk.
+
 Example:
 
   browzer workflow patch --workflow "$WORKFLOW" \
     --arg id="$STEP_ID" \
     --argjson changes="$CHANGES_JSON_ARRAY" \
-    --jq '(.steps[] | select(.stepId == $id)).task.scope = $changes'`,
+    --jq '(.steps[] | select(.stepId == $id)).task.scope = $changes'
+
+  browzer workflow patch --bulk '[".foo = 1", ".bar = 2"]' --dry-run`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if jqExpr == "" {
-				return fmt.Errorf("--jq is required; provide a jq mutation expression")
+			if jqExpr == "" && bulkJSON == "" {
+				return fmt.Errorf("--jq or --bulk is required; provide a jq mutation expression")
+			}
+			if jqExpr != "" && bulkJSON != "" {
+				return fmt.Errorf("--jq and --bulk are mutually exclusive")
 			}
 			vars, err := parseJQBindFlags(argPairs, argJSONPairs)
 			if err != nil {
@@ -55,26 +80,109 @@ Example:
 			if !noLock {
 				noLock, _ = cmd.InheritedFlags().GetBool("no-lock")
 			}
+
+			// Resolve the effective single jq program to feed the
+			// mutator. For --bulk we coalesce N expressions into one
+			// pipeline that's applied atomically under a single lock.
+			effectiveExpr, err := resolvePatchExpression(jqExpr, bulkJSON)
+			if err != nil {
+				return err
+			}
+
+			// Dry-run path: never touches the file. Skips the dispatch
+			// machinery entirely (no lock, no daemon round-trip) so the
+			// preview is cheap.
+			if dryRun {
+				return runPatchDryRun(cmd, wfPath, effectiveExpr, vars)
+			}
+
 			mode, err := resolveWriteMode(cmd)
 			if err != nil {
 				return err
 			}
 			dispatchErr := dispatchToDaemonOrFallback(cmd, wfPath, "patch", wf.MutatorArgs{
-				JQExpr: jqExpr,
+				JQExpr: effectiveExpr,
 				JQVars: vars,
 			}, mode, noLock, lockTimeout)
-			if dispatchErr != nil && strings.Contains(dispatchErr.Error(), "undefined variable") {
+			if dispatchErr != nil && strings.Contains(dispatchErr.Error(), "undefined variable") &&
+				!quietByDefaultUnderLLM(cmd) {
+				// A2 (2026-05-05): hint suppressed under BROWZER_LLM=1 so
+				// LLM tool-result contexts stay clean. The error message
+				// itself still surfaces — only the soft-warning hint
+				// disappears.
 				fmt.Fprintln(os.Stderr, "hint: this may indicate a stale daemon binary that does not understand --arg/--argjson; try `browzer daemon stop && browzer daemon start`")
 			}
 			return dispatchErr
 		},
 	}
 
-	cmd.Flags().StringVar(&jqExpr, "jq", "", "jq expression to apply as mutation (required)")
+	cmd.Flags().StringVar(&jqExpr, "jq", "", "jq expression to apply as mutation (required unless --bulk)")
+	cmd.Flags().StringVar(&bulkJSON, "bulk", "", "JSON array of jq expressions applied sequentially under one lock")
 	cmd.Flags().StringArrayVar(&argPairs, "arg", nil, "bind $KEY to literal string VALUE in the jq expression: --arg KEY=VALUE (repeatable)")
 	cmd.Flags().StringArrayVar(&argJSONPairs, "argjson", nil, "bind $KEY to parsed JSON value in the jq expression: --argjson KEY=<json> (repeatable)")
 	cmd.Flags().DurationVar(&lockTimeout, "lock-timeout", 5*time.Second, "advisory lock acquisition timeout")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate mutation without writing workflow.json; emit JSON preview to stdout")
 	parent.AddCommand(cmd)
+}
+
+// resolvePatchExpression collapses --jq / --bulk into a single jq
+// expression. --bulk is a JSON array of strings; the strings are
+// concatenated with `|` so the post-CUE-validation step sees the
+// composed pipeline result. Returns an error if --bulk is malformed
+// or empty.
+//
+// Empty strings inside --bulk are tolerated and skipped (callers
+// generating bulk arrays from templates may leave gaps); a fully
+// empty array (after skipping) returns an explicit error so the
+// caller doesn't get a no-op silently.
+func resolvePatchExpression(jqExpr, bulkJSON string) (string, error) {
+	if bulkJSON == "" {
+		return jqExpr, nil
+	}
+	var exprs []string
+	if err := json.Unmarshal([]byte(bulkJSON), &exprs); err != nil {
+		return "", fmt.Errorf("--bulk: invalid JSON array: %w", err)
+	}
+	cleaned := make([]string, 0, len(exprs))
+	for _, e := range exprs {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		cleaned = append(cleaned, "("+e+")")
+	}
+	if len(cleaned) == 0 {
+		return "", fmt.Errorf("--bulk: array contains no non-empty expressions")
+	}
+	return strings.Join(cleaned, " | "), nil
+}
+
+// runPatchDryRun applies the jq expression in-memory, validates the
+// post-mutation document against the CUE schema, and writes a single
+// JSON object to stdout describing the outcome. Returns a non-nil
+// error only on infrastructure failures (file IO, marshal); CUE
+// validation failures land in `result.Errors` and exit with status 1
+// so shells can branch on success.
+func runPatchDryRun(cmd *cobra.Command, wfPath, expr string, vars map[string]any) error {
+	res, err := wf.ApplyDryRun(wfPath, "patch", wf.MutatorArgs{
+		JQExpr: expr,
+		JQVars: vars,
+	})
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(res)
+	if err != nil {
+		return fmt.Errorf("dry-run: marshal result: %w", err)
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	if !res.Ok {
+		// Non-zero exit so shell `&&` chains stop on validation
+		// failure. The result is already on stdout — the error
+		// itself stays terse.
+		return fmt.Errorf("dry-run: %d validation error(s)", len(res.Errors))
+	}
+	return nil
 }
 
 // parseJQBindFlags merges --arg and --argjson pairs into a single

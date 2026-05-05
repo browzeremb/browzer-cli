@@ -76,6 +76,7 @@ func registerWorkflow(parent *cobra.Command) {
 	// surface.
 	cmd.PersistentFlags().Bool("no-schema-check", false, "bypass CUE schema validation (writes audit line to .browzer/audit/no-schema-check.log)")
 	registerWorkflowAppendDispatch(cmd)
+	registerWorkflowAppendDispatches(cmd)
 	registerWorkflowAppendReviewHistory(cmd)
 	registerWorkflowAppendStep(cmd)
 	registerWorkflowAuditModelOverride(cmd)
@@ -90,6 +91,7 @@ func registerWorkflow(parent *cobra.Command) {
 	registerWorkflowSchema(cmd)
 	registerWorkflowSetConfig(cmd)
 	registerWorkflowSetCurrentStep(cmd)
+	registerWorkflowSetFindingStatuses(cmd)
 	registerWorkflowSetStatus(cmd)
 	registerWorkflowTruncationAudit(cmd)
 	registerWorkflowUpdateStep(cmd)

@@ -425,8 +425,7 @@
           "conceptLevel": true,
           "mentionsPass": true,
           "mentionsFallbackUsed": false,
-          "mentionsResultEmpty": null,
-          "mentionsFallback": null
+          "mentionsResultEmpty": null
         }
       }
     },

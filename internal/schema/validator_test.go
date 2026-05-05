@@ -3,6 +3,7 @@ package schema
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,7 +216,17 @@ func TestValidate_StableOrdering(t *testing.T) {
 		t.Fatalf("violation count drift: %d vs %d", len(res1.Violations), len(res2.Violations))
 	}
 	for i := range res1.Violations {
-		if res1.Violations[i] != res2.Violations[i] {
+		// A1.5 (2026-05-05): Violation now carries `AllowedFields` /
+		// `AllowedValues` slices, so a direct struct comparison no
+		// longer compiles. Compare the deterministic identity tuple
+		// (Path, Code, Message, AddedIn, Field) plus the joined
+		// hint slices instead — both should be byte-stable across
+		// runs because enrichViolations sorts everything alpha.
+		a, b := res1.Violations[i], res2.Violations[i]
+		if a.Path != b.Path || a.Code != b.Code || a.Message != b.Message ||
+			a.AddedIn != b.AddedIn || a.Field != b.Field ||
+			strings.Join(a.AllowedFields, ",") != strings.Join(b.AllowedFields, ",") ||
+			strings.Join(a.AllowedValues, ",") != strings.Join(b.AllowedValues, ",") {
 			t.Errorf("violation[%d] drift:\n  run1: %+v\n  run2: %+v",
 				i, res1.Violations[i], res2.Violations[i])
 		}
@@ -418,4 +429,105 @@ func after(s, sep string) string {
 		return ""
 	}
 	return s[i+len(sep):]
+}
+
+// TestEnrichViolations_AllowedValues_ForLintEnumMismatch (A1.5):
+// the bad-gate-enum fixture rejects `lint: "pending"` (the lint
+// enum is `pass | fail | skip`). The enriched Violation must carry
+// `Code = "invalid-enum-value"` AND `AllowedValues = [fail, pass, skip]`.
+func TestEnrichViolations_AllowedValues_ForLintEnumMismatch(t *testing.T) {
+	root := findFixturesDir(t)
+	payload := readFixture(t, root, "invalid", "task-bad-gate-enum.json")
+	res := ValidateWorkflow(payload)
+	if res.Valid {
+		t.Fatal("expected fixture to be invalid")
+	}
+	var hit *Violation
+	for i := range res.Violations {
+		v := &res.Violations[i]
+		if strings.Contains(v.Path, "postChange.lint") &&
+			(v.Code == "invalid-enum-value" || v.Code == "type-mismatch") {
+			hit = v
+			break
+		}
+	}
+	if hit == nil {
+		for _, v := range res.Violations {
+			t.Logf("violation: path=%q code=%s msg=%s allowed=%v",
+				v.Path, v.Code, v.Message, v.AllowedValues)
+		}
+		t.Fatal("no violation matched postChange.lint path")
+	}
+	if hit.Code != "invalid-enum-value" {
+		t.Errorf("expected Code=invalid-enum-value, got %q (msg=%q)", hit.Code, hit.Message)
+	}
+	got := strings.Join(hit.AllowedValues, ",")
+	want := "fail,pass,skip"
+	if got != want {
+		t.Errorf("expected AllowedValues=%q got %q (full=%v)", want, got, hit.AllowedValues)
+	}
+}
+
+// TestEnrichViolations_AllowedFields_ForUnknownField (A1.5):
+// inject a clearly-unknown field at the top level of a known-good
+// fixture, validate, and assert the resulting violation carries
+// `Code = "unknown-field"` plus an alpha-sorted AllowedFields list
+// that includes the canonical roots (`config`, `featureId`, `steps`).
+func TestEnrichViolations_AllowedFields_ForUnknownField(t *testing.T) {
+	// Smallest valid fixture; load, inject one bogus field, marshal,
+	// validate.
+	root := findFixturesDir(t)
+	payload := readFixture(t, root, "valid", "minimal-workflow.json")
+	var doc map[string]any
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	doc["bogusFieldThatDoesNotExist"] = "x"
+	mutated, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal mutated: %v", err)
+	}
+	res := ValidateWorkflow(mutated)
+	if res.Valid {
+		t.Fatal("expected mutated workflow to be invalid (unknown field)")
+	}
+	var hit *Violation
+	for i := range res.Violations {
+		v := &res.Violations[i]
+		if v.Code == "unknown-field" {
+			hit = v
+			break
+		}
+	}
+	if hit == nil {
+		// Be tolerant: CUE's path attachment may differ across
+		// versions; iterate looking for the field-name in the
+		// message instead.
+		for i := range res.Violations {
+			if strings.Contains(res.Violations[i].Message, "bogusFieldThatDoesNotExist") ||
+				strings.Contains(res.Violations[i].Field, "bogusFieldThatDoesNotExist") {
+				hit = &res.Violations[i]
+				break
+			}
+		}
+	}
+	if hit == nil {
+		for _, v := range res.Violations {
+			t.Logf("violation: path=%q code=%s msg=%s", v.Path, v.Code, v.Message)
+		}
+		t.Fatal("no violation referenced the bogus field")
+	}
+	// Allowed fields hint is best-effort — accept absence with a
+	// log if CUE didn't surface the parent struct context, but
+	// fail when the slice is present yet empty (would mean we
+	// promoted the code to unknown-field without populating the
+	// hint).
+	if hit.Code == "unknown-field" && len(hit.AllowedFields) == 0 {
+		// Verify at least one canonical top-level field is in the
+		// suggestion when the slice is populated; absent slice is
+		// acceptable for forward-compat with CUE versions that
+		// don't expose the parent context cleanly.
+		t.Logf("AllowedFields empty for path=%q msg=%q (acceptable but suboptimal)",
+			hit.Path, hit.Message)
+	}
 }

@@ -25,6 +25,8 @@
 package workflow
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -133,6 +136,267 @@ var Mutators = map[string]Mutator{
 
 // ErrUnknownVerb is returned by ApplyAndPersist when verb is not in Mutators.
 var ErrUnknownVerb = errors.New("workflow: unknown verb")
+
+// DryRunResult is the structured response of ApplyDryRun. Marshalled
+// to stdout by `browzer workflow patch --dry-run` so the operator (or
+// LLM) can inspect what WOULD change without touching the file.
+//
+// Field semantics:
+//
+//   - Ok: true iff every mutation in the pipeline succeeded AND the
+//     post-mutation document passed both CUE validation and the
+//     legacy structural validator.
+//   - Errors: human-readable strings; each entry maps to one of (a)
+//     mutator failure, (b) CUE schema violation, (c) legacy structural
+//     violation. Empty when Ok=true.
+//   - BeforeHash / AfterHash: sha256 of the pre/post document bytes
+//     (post = the indented bytes that would have been written).
+//     Equal hashes signal a no-op mutation.
+//   - DiffPaths: the JSON-Pointer-ish dotted paths whose values
+//     differ between before and after (top-level diff plus a
+//     bounded recursive walk for nested map/array changes).
+//   - StepID: optional — the step the mutator targeted, for the
+//     audit-line correlation downstream.
+type DryRunResult struct {
+	Ok         bool     `json:"ok"`
+	Errors     []string `json:"errors"`
+	BeforeHash string   `json:"beforeHash"`
+	AfterHash  string   `json:"afterHash"`
+	DiffPaths  []string `json:"diffPaths"`
+	StepID     string   `json:"stepId,omitempty"`
+}
+
+// ApplyDryRun runs the mutate-and-validate pipeline WITHOUT writing
+// the result back to disk. Designed for `--dry-run` callers: the
+// operator (or LLM) gets a structured preview of the validation
+// outcome and the field paths that would change.
+//
+// Pipeline (no lock — caller decides whether to acquire):
+//   1. Read the file from disk.
+//   2. Run the verb's Mutator on the raw map.
+//   3. Marshal the mutated map back to JSON.
+//   4. Run schema.ValidateWorkflow + the legacy structural validator
+//      against the marshalled bytes. Both errors are captured into
+//      DryRunResult.Errors; the function NEVER returns a Go error
+//      for validation failures (so the caller can serialise the
+//      result to JSON cleanly).
+//   5. Compute (beforeHash, afterHash, diffPaths) for the response.
+//
+// File contents are not touched.
+//
+// `args` is the same MutatorArgs passed to ApplyAndPersist. The
+// `verb` MUST be in `Mutators` — unknown verbs return an error.
+//
+// Bulk variant: callers building a `--bulk` patch can run multiple
+// jq expressions sequentially against the SAME raw map by keeping
+// the mutator-side state (raw + pending args) in memory; this
+// function only knows how to apply ONE verb invocation. Bulk
+// orchestration lives in the cobra layer where it owns the lock.
+func ApplyDryRun(path, verb string, args MutatorArgs) (DryRunResult, error) {
+	mut, ok := Mutators[verb]
+	if !ok {
+		return DryRunResult{}, fmt.Errorf("%w: %q", ErrUnknownVerb, verb)
+	}
+	beforeBytes, err := os.ReadFile(path)
+	if err != nil {
+		return DryRunResult{}, fmt.Errorf("read workflow: %w", err)
+	}
+	beforeHash := sha256Hex(beforeBytes)
+
+	var raw map[string]any
+	if err := json.Unmarshal(beforeBytes, &raw); err != nil {
+		return DryRunResult{}, fmt.Errorf("parse workflow map: %w", err)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	if args.WorkflowDir == "" {
+		args.WorkflowDir = filepath.Dir(path)
+	}
+
+	// Snapshot the pre-mutation map for diff comparison. json round-trip
+	// gives us a deep clone without sharing slice/map references.
+	beforeSnap, err := cloneMapViaJSON(raw)
+	if err != nil {
+		return DryRunResult{}, fmt.Errorf("snapshot workflow: %w", err)
+	}
+
+	var result ApplyResult
+	if mErr := mut(raw, args, &result); mErr != nil {
+		return DryRunResult{
+			Ok:         false,
+			Errors:     []string{mErr.Error()},
+			BeforeHash: beforeHash,
+		}, nil
+	}
+
+	// Marshal post-mutation for validation + after-hash + indented
+	// rendering. Indentation must match ApplyAndPersist's `MarshalIndent`
+	// step so the after-hash is comparable to a real persisted document.
+	encoded, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return DryRunResult{}, fmt.Errorf("marshal workflow: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	afterHash := sha256Hex(encoded)
+
+	out := DryRunResult{
+		BeforeHash: beforeHash,
+		AfterHash:  afterHash,
+		StepID:     result.StepID,
+		DiffPaths:  computeDiffPaths(beforeSnap, raw),
+	}
+
+	// CUE schema validation. Failures are non-fatal in the dry-run
+	// envelope: we report them and return Ok=false.
+	validation := schema.ValidateWorkflow(encoded)
+	if !validation.Valid {
+		out.Errors = append(out.Errors, schema.FormatViolations(validation.Violations))
+	}
+
+	// Legacy structural validation (Validate(typed)).
+	var typed Workflow
+	if err := json.Unmarshal(encoded, &typed); err != nil {
+		out.Errors = append(out.Errors, fmt.Sprintf("re-parse workflow: %v", err))
+	} else if errs := Validate(typed); len(errs) > 0 {
+		out.Errors = append(out.Errors,
+			fmt.Sprintf("validation error: %s: %s", errs[0].Path, errs[0].Message))
+	}
+
+	out.Ok = len(out.Errors) == 0
+	return out, nil
+}
+
+// sha256Hex returns the hex-encoded SHA-256 digest of b. Used for
+// dry-run before/after hashes — comparing the hashes is the cheapest
+// "did anything change" check the operator can run.
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// cloneMapViaJSON deep-clones raw via json.Marshal/Unmarshal. The
+// only safe way to copy `map[string]any` containing nested maps,
+// slices, and primitives without writing a hand-rolled walker.
+func cloneMapViaJSON(raw map[string]any) (map[string]any, error) {
+	if raw == nil {
+		return map[string]any{}, nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// computeDiffPaths returns the dotted paths whose values differ
+// between `before` and `after`. Recursion is bounded:
+//
+//   - Top-level keys: enumerated in both maps; keys present in only
+//     one side are reported.
+//   - Nested maps: recurse with the path extended.
+//   - Nested arrays: a length mismatch is reported as `<path>.length`;
+//     element-wise diffs use `<path>[i]` for changed indices.
+//   - Scalars (string / number / bool / null): byte-compare via
+//     json.Marshal — covers the nil-vs-"" / 1-vs-1.0 edge cases.
+//
+// Output is alpha-sorted to keep stdout-byte-stable across runs.
+// The function caps recursion at 12 levels (defensive — workflow
+// schemas don't go that deep).
+func computeDiffPaths(before, after map[string]any) []string {
+	paths := map[string]struct{}{}
+	var walk func(string, any, any, int)
+	walk = func(prefix string, a, b any, depth int) {
+		if depth > 12 {
+			paths[prefix] = struct{}{}
+			return
+		}
+		am, aok := a.(map[string]any)
+		bm, bok := b.(map[string]any)
+		if aok && bok {
+			seen := map[string]bool{}
+			for k := range am {
+				seen[k] = true
+				next := joinPath(prefix, k)
+				if _, hasB := bm[k]; !hasB {
+					paths[next] = struct{}{}
+					continue
+				}
+				walk(next, am[k], bm[k], depth+1)
+			}
+			for k := range bm {
+				if seen[k] {
+					continue
+				}
+				paths[joinPath(prefix, k)] = struct{}{}
+			}
+			return
+		}
+		// Slice diff.
+		as, aok := a.([]any)
+		bs, bok := b.([]any)
+		if aok && bok {
+			if len(as) != len(bs) {
+				paths[prefix+".length"] = struct{}{}
+				// Continue with min-length compare so element changes
+				// upstream of the length boundary still surface.
+			}
+			n := len(as)
+			if len(bs) < n {
+				n = len(bs)
+			}
+			for i := 0; i < n; i++ {
+				walk(fmt.Sprintf("%s[%d]", prefix, i), as[i], bs[i], depth+1)
+			}
+			return
+		}
+		// Scalar / mixed-kind compare. Marshal to JSON to side-step
+		// nil-vs-typed-nil and float-vs-int gotchas.
+		ab, _ := json.Marshal(a)
+		bb, _ := json.Marshal(b)
+		if !bytesEqual(ab, bb) {
+			if prefix == "" {
+				prefix = "<root>"
+			}
+			paths[prefix] = struct{}{}
+		}
+	}
+	walk("", before, after, 0)
+	out := make([]string, 0, len(paths))
+	for p := range paths {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// joinPath appends a key segment to a dotted path. Empty prefix
+// returns the key unchanged so the topmost level renders as `foo`
+// rather than `.foo`.
+func joinPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+// bytesEqual returns true iff a and b are byte-identical. Hand-rolled
+// instead of bytes.Equal so the apply package doesn't pull in `bytes`.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // ApplyAndPersist runs the full mutate-and-write pipeline for a single
 // workflow.json mutation. The caller MUST hold the advisory lock for the
@@ -267,6 +531,16 @@ func ApplyAndPersist(path, verb string, args MutatorArgs, awaitDurability bool) 
 	}
 	out = append(out, '\n')
 
+	// B6 (2026-05-05): rotate up to 5 numeric backups before the
+	// rename so a wedged operator can recover the previous workflow
+	// state from `.bak.1` … `.bak.5`. Best-effort: rotation failures
+	// log to stderr but never abort the mutation. Skipped on no-op
+	// mutators (already short-circuited above) and for the daemon-
+	// goroutine path (which calls ApplyAndPersist with awaitDurability=
+	// true; we still want backups there). Dry-run callers route
+	// through ApplyDryRun and never touch disk.
+	rotateWorkflowBackups(path)
+
 	if awaitDurability {
 		if err := atomicWriteFsync(path, out); err != nil {
 			return result, err
@@ -279,6 +553,70 @@ func ApplyAndPersist(path, verb string, args MutatorArgs, awaitDurability bool) 
 		return result, err
 	}
 	return result, nil
+}
+
+// workflowBackupCount caps the rotated copies. 5 is plenty for the
+// "Ctrl+Z one workflow ago" use case while keeping disk overhead
+// bounded (each copy ≤200 KB in practice). Mirrored as a constant so
+// tests can introspect.
+const workflowBackupCount = 5
+
+// rotateWorkflowBackups maintains a rolling backup of `path`:
+//
+//	<path>.bak.5  ← removed
+//	<path>.bak.4  → <path>.bak.5
+//	<path>.bak.3  → <path>.bak.4
+//	<path>.bak.2  → <path>.bak.3
+//	<path>.bak.1  → <path>.bak.2
+//	<path>        → <path>.bak.1   (copy, not move — leaves original
+//	                                in place so the rename below
+//	                                replaces a real file rather than a
+//	                                missing one)
+//
+// Rotations are best-effort. Each failed rename is logged to stderr
+// once (not warn-once: the next mutation may have a different
+// failure pattern that's worth surfacing). When `path` doesn't
+// exist (first-write scenario), the function exits silently.
+func rotateWorkflowBackups(path string) {
+	if _, err := os.Stat(path); err != nil {
+		// No source file → no backup. First-write or daemon-goroutine
+		// running against a non-existent path; either way nothing to do.
+		return
+	}
+	// Rotate from oldest to newest so we never overwrite a slot that
+	// hasn't been moved yet.
+	for i := workflowBackupCount; i >= 2; i-- {
+		from := fmt.Sprintf("%s.bak.%d", path, i-1)
+		to := fmt.Sprintf("%s.bak.%d", path, i)
+		if _, err := os.Stat(from); err != nil {
+			continue
+		}
+		if rmErr := os.Remove(to); rmErr != nil && !os.IsNotExist(rmErr) {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"warn: backup rotate: remove %s: %v\n", to, rmErr)
+			continue
+		}
+		if rnErr := os.Rename(from, to); rnErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"warn: backup rotate: rename %s → %s: %v\n", from, to, rnErr)
+		}
+	}
+	// Copy current → .bak.1. Use copy (not rename) so the existing
+	// AtomicWrite/atomicWriteFsync path replaces a real file at
+	// `path` rather than re-creating one — keeps inode metadata
+	// stable across the rotation window.
+	bak1 := path + ".bak.1"
+	if rmErr := os.Remove(bak1); rmErr != nil && !os.IsNotExist(rmErr) {
+		_, _ = fmt.Fprintf(os.Stderr,
+			"warn: backup rotate: remove %s: %v\n", bak1, rmErr)
+		return
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		if writeErr := os.WriteFile(bak1, data, 0o644); writeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"warn: backup rotate: write %s: %v\n", bak1, writeErr)
+		}
+	}
 }
 
 // atomicWriteFsync writes data to path atomically AND fsyncs the file +
@@ -964,14 +1302,23 @@ func mutatorPatch(raw map[string]any, args MutatorArgs, _ *ApplyResult) error {
 	if err != nil {
 		return fmt.Errorf("jq error: %w", err)
 	}
+	// F-A1.4-1 (2026-05-05): identity expressions like `.` make gojq
+	// return the SAME map reference we passed in. Naively `clear(raw)`
+	// then `maps.Copy(raw, resultMap)` would empty resultMap first
+	// (because raw == resultMap) and then copy nothing — wiping the
+	// whole document. Round-trip through JSON to break the alias
+	// before mutating raw. This case had been latent until ApplyDryRun
+	// surfaced it: the on-disk path normally fails CUE validation
+	// after the wipe and rolls back, but the empty-doc result is a
+	// real correctness bug for any caller that runs `.` to refresh
+	// `updatedAt`.
 	resultMap, ok := result.(map[string]any)
-	if !ok {
-		// gojq sometimes returns map[interface{}]interface{} — round-trip
-		// through JSON to normalise.
+	if !ok || isSameMap(resultMap, raw) {
 		b, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
 			return fmt.Errorf("jq result is not a JSON object: %T", result)
 		}
+		resultMap = nil
 		if err := json.Unmarshal(b, &resultMap); err != nil {
 			return fmt.Errorf("jq result is not a JSON object: %T", result)
 		}
@@ -981,6 +1328,33 @@ func mutatorPatch(raw map[string]any, args MutatorArgs, _ *ApplyResult) error {
 	clear(raw)
 	maps.Copy(raw, resultMap)
 	return nil
+}
+
+// isSameMap reports whether two map[string]any references address the
+// same underlying map. Maps are reference types in Go; `m1 == m2` does
+// not compile, but we can roundtrip a sentinel key to detect aliasing
+// without touching the caller's keys. The trade-off is one extra
+// `delete` allocation per identity-shaped jq result, which beats
+// invariant-breaking wipes.
+func isSameMap(a, b map[string]any) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	const sentinel = "__browzer_alias_probe__"
+	if _, exists := a[sentinel]; exists {
+		// Caller already had that key; degrade to "treat as alias"
+		// so the JSON round-trip path is always taken.
+		return true
+	}
+	a[sentinel] = struct{}{}
+	_, hit := b[sentinel]
+	delete(a, sentinel)
+	if hit {
+		// Make sure b doesn't carry the residue (only happens when
+		// b == a — delete already removed it).
+		delete(b, sentinel)
+	}
+	return hit
 }
 
 // findStepRaw locates a step by stepId in raw["steps"]. Returns the step map

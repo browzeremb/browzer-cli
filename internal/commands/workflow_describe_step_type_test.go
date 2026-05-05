@@ -328,3 +328,66 @@ func TestDescribeStepType_SurfacesEnumPatternClosedStruct(t *testing.T) {
 		t.Errorf("JSON output does not expose .lint enum=[fail,pass,skip]")
 	}
 }
+
+// TestDescribeStepType_InlineEnums_OnlyEnumOrRegex (A1.3, 2026-05-05):
+// the --inline-enums output emits ONE entry per enumerable field
+// (string disjunction OR regex constraint), and entries carry
+// either `values` or `regex`. Non-enumerable fields are dropped.
+func TestDescribeStepType_InlineEnums_OnlyEnumOrRegex(t *testing.T) {
+	opts := schema.DescribeOpts{InlineEnums: true, JSON: true}
+	out, err := schema.DescribeStepType("CODE_REVIEW", opts)
+	if err != nil {
+		t.Fatalf("describe CODE_REVIEW --inline-enums: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("unmarshal output: %v\n%s", err, out)
+	}
+	if len(rows) == 0 {
+		t.Fatal("inline-enums emitted zero rows for CODE_REVIEW (expected ≥1 enum field)")
+	}
+	for _, r := range rows {
+		path, _ := r["path"].(string)
+		if path == "" {
+			t.Errorf("row missing path: %+v", r)
+		}
+		_, hasValues := r["values"]
+		_, hasRegex := r["regex"]
+		if !hasValues && !hasRegex {
+			t.Errorf("row %q has neither values nor regex: %+v", path, r)
+		}
+		if hasValues && hasRegex {
+			t.Errorf("row %q has BOTH values and regex (mutually exclusive): %+v", path, r)
+		}
+		// Every row must declare a type.
+		if _, ok := r["type"].(string); !ok {
+			t.Errorf("row %q missing type: %+v", path, r)
+		}
+	}
+	// At least one regressionRun.tool entry should be present —
+	// it's a known string-disjunction enum on every CODE_REVIEW.
+	found := false
+	for _, r := range rows {
+		path, _ := r["path"].(string)
+		if path != "regressionRun.tool" {
+			continue
+		}
+		values, _ := r["values"].([]any)
+		var got []string
+		for _, v := range values {
+			if s, ok := v.(string); ok {
+				got = append(got, s)
+			}
+		}
+		sort.Strings(got)
+		want := []string{"cargo test", "go test", "jest", "lefthook", "pytest", "skipped", "vitest"}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("regressionRun.tool values mismatch: got %v want %v", got, want)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Errorf("expected regressionRun.tool entry in inline-enums output")
+	}
+}

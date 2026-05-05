@@ -34,6 +34,18 @@ type DescribeOpts struct {
 	// JSON emits a JSON projection of the step-type schema instead of
 	// a Markdown table.
 	JSON bool
+	// InlineEnums (A1.3, 2026-05-05) emits a compact JSON array of
+	// ONLY the enumerable fields, one entry per field as either
+	//   {"path":"<dotted>", "type":"<surface>", "values":[…]}    — for
+	//                                                              string
+	//                                                              disjunctions
+	//   {"path":"<dotted>", "type":"<surface>", "regex":"…"}      — for
+	//                                                              regex
+	//                                                              constraints
+	// Designed for LLM consumption: skips non-enum fields entirely
+	// so the caller sees only the literal value sets it must
+	// match. Implies JSON output regardless of `JSON`.
+	InlineEnums bool
 }
 
 // ValidStepNames is the canonical allowlist used both for input validation
@@ -163,6 +175,34 @@ func DescribeStepType(stepName string, opts DescribeOpts) (string, error) {
 			return "", fmt.Errorf("describe: --field %q: %w", opts.Field, err)
 		}
 		return result, nil
+	}
+
+	// --inline-enums: filter to enum/regex fields, emit compact LLM-
+	// friendly shape. Skips non-enum fields entirely.
+	if opts.InlineEnums {
+		out := make([]map[string]any, 0, len(fields))
+		for _, f := range fields {
+			if len(f.Enum) > 0 {
+				out = append(out, map[string]any{
+					"path":   f.Path,
+					"type":   f.Type,
+					"values": f.Enum,
+				})
+				continue
+			}
+			if f.Pattern != "" {
+				out = append(out, map[string]any{
+					"path":  f.Path,
+					"type":  f.Type,
+					"regex": f.Pattern,
+				})
+			}
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return "", fmt.Errorf("describe: marshal inline-enums json: %w", err)
+		}
+		return string(b), nil
 	}
 
 	// --json: return JSON array (keys are sorted by json.Marshal's map

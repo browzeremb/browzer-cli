@@ -30,6 +30,7 @@ func registerWorkflowDescribeStepType(parent *cobra.Command) {
 	var fieldPath string
 	var requiredOnly bool
 	var jsonMode bool
+	var inlineEnums bool
 
 	allowlist := make([]string, len(schema.ValidStepNames))
 	copy(allowlist, schema.ValidStepNames)
@@ -48,15 +49,23 @@ The special alias "workflow" describes the top-level #WorkflowV1 fields.
 Output modes:
   (default)      Markdown table: Field | Required | Type | AddedIn | Description
   --json         JSON array of field objects (sorted by path, byte-identical)
+  --inline-enums Compact JSON array of ONLY enumerable fields, each as
+                 {path, type, values:[...]} for string disjunctions or
+                 {path, type, regex:"..."} for regex constraints.
+                 Designed for LLM consumption: lets the agent build a
+                 payload that passes CUE validation on first try.
+                 Implies --json semantics (machine-readable).
   --field <path> jq-style path into the field projection (returns JSON)
   --required-only  filter to fields with no CUE default (must be supplied)
 
 Flags --field and --required-only can be combined.
 --json and --field are mutually exclusive (--field implies JSON output).
+--inline-enums and --field are mutually exclusive.
 
 Examples:
   browzer workflow describe-step-type TASK
   browzer workflow describe-step-type TASK --json
+  browzer workflow describe-step-type CODE_REVIEW --inline-enums
   browzer workflow describe-step-type TASK --field task.execution.scopeAdjustments
   browzer workflow describe-step-type CODE_REVIEW --field codeReview.regressionRun --json
   browzer workflow describe-step-type TASK --required-only`,
@@ -78,10 +87,15 @@ Examples:
 				return fmt.Errorf("unknown step type %q", stepName)
 			}
 
+			if inlineEnums && fieldPath != "" {
+				return fmt.Errorf("--inline-enums and --field are mutually exclusive")
+			}
+
 			opts := schema.DescribeOpts{
 				Field:        fieldPath,
 				RequiredOnly: requiredOnly,
-				JSON:         jsonMode,
+				JSON:         jsonMode || inlineEnums,
+				InlineEnums:  inlineEnums,
 			}
 
 			result, err := schema.DescribeStepType(stepName, opts)
@@ -104,6 +118,7 @@ Examples:
 	cmd.Flags().StringVar(&fieldPath, "field", "", "jq-style path to filter the field projection (implies JSON output for the matched value)")
 	cmd.Flags().BoolVar(&requiredOnly, "required-only", false, "show only fields with no CUE default (required fields)")
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit a JSON array of field objects instead of a Markdown table")
+	cmd.Flags().BoolVar(&inlineEnums, "inline-enums", false, "emit only enumerable fields as {path,type,values}/{path,type,regex} JSON")
 
 	parent.AddCommand(cmd)
 }
