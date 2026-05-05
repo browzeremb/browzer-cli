@@ -461,6 +461,10 @@ import "time"
 	duplicationFindings: *[] | [...#DuplicationFinding]                     @addedIn("2026-04-24T00:00:00Z")
 	regressionRun:       *null | #RegressionRun                             @addedIn("2026-04-24T00:00:00Z")
 	findings:            *[] | [...#Finding]                                @addedIn("2026-04-24T00:00:00Z")
+	// True when the operator pre-registered dispatchMode + reviewTier in
+	// `Skill(code-review, "dispatchMode: <…>; tier: <…>")` under autonomous
+	// mode, bypassing the Phase-1 prompt. See code-review/SKILL.md §1.
+	preRegistered:       *false | bool                                      @addedIn("2026-05-04T00:00:00Z")
 }
 
 #CodeReviewConsolidator: {
@@ -473,6 +477,14 @@ import "time"
 	reusedGates: *[] | [...string]                        @addedIn("2026-04-24T00:00:00Z")
 	freshGates:  *[] | [...string]                        @addedIn("2026-04-24T00:00:00Z")
 	duration?:   string                                    @addedIn("2026-04-24T00:00:00Z")
+	// The literal lint+typecheck+test command run for the baseline gate,
+	// persisted verbatim for the audit log. See code-review/SKILL.md §1.
+	command:     *"" | string                              @addedIn("2026-05-04T00:00:00Z")
+	// Enumerated per-test failures parsed from the baseline run.
+	// Lumped counts (`failureCount: N` without an array) are rejected by
+	// the skill's failure-enumeration contract — see code-review/SKILL.md
+	// §1 + references/regression-tester.md §Pre-existing-on-main.
+	failures:    *[] | [...#RegressionFailure]             @addedIn("2026-05-04T00:00:00Z")
 }
 
 #SeverityCounts: {
@@ -535,6 +547,10 @@ import "time"
 	suggestedFix:  *"" | string                               @addedIn("2026-04-24T00:00:00Z")
 	assignedSkill: *"" | string                               @addedIn("2026-04-24T00:00:00Z")
 	status:        "open" | "fixing" | "fixed" | "wontfix"    @addedIn("2026-04-24T00:00:00Z")
+	// Set to true when the same finding was raised by an off-lane reviewer
+	// (cross-domain duplicate). The off-lane copies become advisory and the
+	// owning lane drives the fix. See code-review/references/severity-matrix.md §49.
+	crossLaneOverlap: *false | bool                          @addedIn("2026-05-04T00:00:00Z")
 }
 
 // =============================================================
@@ -699,6 +715,10 @@ import "time"
 	verdict?:                 "completed" | "stopped" | "paused-pending-operator" @addedIn("2026-05-04T00:00:00Z")
 	executionRequiredProbe:   *false | bool                                       @addedIn("2026-05-04T00:00:00Z")
 	liveVerificationAttempt:  *false | bool                                       @addedIn("2026-05-04T00:00:00Z")
+	// True when the operator pre-registered `mode: <…>` in
+	// `Skill(feature-acceptance, "mode: <autonomous|manual|hybrid>; …")`,
+	// bypassing the Phase-1 prompt. See feature-acceptance/SKILL.md §1.
+	preRegistered:            *false | bool                                       @addedIn("2026-05-04T00:00:00Z")
 }
 
 #FAcceptanceCriterion: {
@@ -723,6 +743,13 @@ import "time"
 	measured: number | string                  @addedIn("2026-04-24T00:00:00Z")
 	target:   number | string                  @addedIn("2026-04-24T00:00:00Z")
 	status:   "met" | "unmet"                  @addedIn("2026-04-24T00:00:00Z")
+	// Live-verification gate result. The §2.5 step in feature-acceptance
+	// flips `resolved: true` only after the live probe agrees with `status`,
+	// and records the `rationale` (reason / evidence pointer) so a later
+	// audit can re-verify the decision. See feature-acceptance/references/
+	// live-verify.md.
+	resolved:  *false | bool                   @addedIn("2026-05-04T00:00:00Z")
+	rationale: *"" | string                    @addedIn("2026-05-04T00:00:00Z")
 }
 
 #ACRelaxation: {

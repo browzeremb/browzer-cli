@@ -323,7 +323,8 @@
                     "customMembers",
                     "duplicationFindings",
                     "regressionRun",
-                    "findings"
+                    "findings",
+                    "preRegistered"
                 ],
                 "properties": {
                     "agentTeamsEnabled": {
@@ -401,6 +402,11 @@
                         "items": {
                             "$ref": "#/components/schemas/Finding"
                         }
+                    },
+                    "preRegistered": {
+                        "description": "True when the operator pre-registered dispatchMode + reviewTier in\n`Skill(code-review, \"dispatchMode: <…>; tier: <…>\")` under autonomous\nmode, bypassing the Phase-1 prompt. See code-review/SKILL.md §1.",
+                        "type": "boolean",
+                        "default": false
                     }
                 }
             },
@@ -409,7 +415,9 @@
                 "required": [
                     "source",
                     "reusedGates",
-                    "freshGates"
+                    "freshGates",
+                    "command",
+                    "failures"
                 ],
                 "properties": {
                     "source": {
@@ -434,6 +442,18 @@
                     },
                     "duration": {
                         "type": "string"
+                    },
+                    "command": {
+                        "description": "The literal lint+typecheck+test command run for the baseline gate,\npersisted verbatim for the audit log. See code-review/SKILL.md §1.",
+                        "type": "string",
+                        "default": ""
+                    },
+                    "failures": {
+                        "description": "Enumerated per-test failures parsed from the baseline run.\nLumped counts (`failureCount: N` without an array) are rejected by\nthe skill's failure-enumeration contract — see code-review/SKILL.md\n§1 + references/regression-tester.md §Pre-existing-on-main.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/RegressionFailure"
+                        }
                     }
                 }
             },
@@ -906,7 +926,9 @@
                     "id",
                     "measured",
                     "target",
-                    "status"
+                    "status",
+                    "resolved",
+                    "rationale"
                 ],
                 "properties": {
                     "id": {
@@ -939,6 +961,15 @@
                             "met",
                             "unmet"
                         ]
+                    },
+                    "resolved": {
+                        "description": "Live-verification gate result. The §2.5 step in feature-acceptance\nflips `resolved: true` only after the live probe agrees with `status`,\nand records the `rationale` (reason / evidence pointer) so a later\naudit can re-verify the decision. See feature-acceptance/references/\nlive-verify.md.",
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "default": ""
                     }
                 }
             },
@@ -953,7 +984,8 @@
                     "acRelaxations",
                     "operatorActionsRequested",
                     "executionRequiredProbe",
-                    "liveVerificationAttempt"
+                    "liveVerificationAttempt",
+                    "preRegistered"
                 ],
                 "properties": {
                     "mode": {
@@ -1011,6 +1043,11 @@
                         "default": false
                     },
                     "liveVerificationAttempt": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "preRegistered": {
+                        "description": "True when the operator pre-registered `mode: <…>` in\n`Skill(feature-acceptance, \"mode: <autonomous|manual|hybrid>; …\")`,\nbypassing the Phase-1 prompt. See feature-acceptance/SKILL.md §1.",
                         "type": "boolean",
                         "default": false
                     }
@@ -1081,7 +1118,8 @@
                     "description",
                     "suggestedFix",
                     "assignedSkill",
-                    "status"
+                    "status",
+                    "crossLaneOverlap"
                 ],
                 "properties": {
                     "id": {
@@ -1128,6 +1166,11 @@
                             "fixed",
                             "wontfix"
                         ]
+                    },
+                    "crossLaneOverlap": {
+                        "description": "Set to true when the same finding was raised by an off-lane reviewer\n(cross-domain duplicate). The off-lane copies become advisory and the\nowning lane drives the fix. See code-review/references/severity-matrix.md §49.",
+                        "type": "boolean",
+                        "default": false
                     }
                 }
             },

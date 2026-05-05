@@ -5,16 +5,17 @@
 //
 // Production builds inject the value via:
 //
-//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.7.0'" ./cmd/browzer
+//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.10.0'" ./cmd/browzer
 //
-// Latest released tag: cli-v1.7.0 (WF-SYNC-1 fix-pack — daemon JQVars
-// roundtrip restored, `validate --json` + `--since-version` flags,
-// CUE #FeatureAcceptance + #BrainstormDecision drift closures, hybrid-cache
-// `.browzer/active-step` for langfuse_hook trace attribution, gojq
-// multi-statement shim, AWAITING_REVIEW transition relaxation,
-// review-history shape translation). Tag with
-// `git tag cli-v1.7.0 && git push origin cli-v1.7.0` once the fix-pack
-// commits are pushed.
+// Latest released tag: cli-v1.10.0 (skill↔CLI schema-drift sweep —
+// 7 new optional fields on the CUE workflow schema closing 20 drift
+// hits surfaced by the 2026-05-04 dogfood retro: #Finding.crossLaneOverlap,
+// #CodeReview.preRegistered, #FeatureAcceptance.preRegistered,
+// #CodeReviewBaseline.command, #CodeReviewBaseline.failures,
+// #FSuccessMetric.resolved, #FSuccessMetric.rationale). All fields are
+// `*<default> | <type>` so existing fixtures stay valid. Tag with
+// `git tag cli-v1.10.0 && git push origin cli-v1.10.0` once the
+// release commit is pushed.
 //
 // Empty default is acceptable in tests and dev (`go run`/`go test`); callers
 // that need a non-empty fallback (e.g. user-facing `--version` output) should

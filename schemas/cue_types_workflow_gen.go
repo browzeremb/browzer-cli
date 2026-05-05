@@ -634,6 +634,11 @@ type CodeReview struct {
 	RegressionRun any/* CUE disjunction: (null|struct) */ `json:"regressionRun"`
 
 	Findings []any/* CUE closed list */ `json:"findings"`
+
+	// True when the operator pre-registered dispatchMode + reviewTier in
+	// `Skill(code-review, "dispatchMode: <…>; tier: <…>")` under autonomous
+	// mode, bypassing the Phase-1 prompt. See code-review/SKILL.md §1.
+	PreRegistered bool `json:"preRegistered"`
 }
 
 type CodeReviewConsolidator struct {
@@ -650,6 +655,16 @@ type CodeReviewBaseline struct {
 	FreshGates []any/* CUE closed list */ `json:"freshGates"`
 
 	Duration string `json:"duration,omitempty"`
+
+	// The literal lint+typecheck+test command run for the baseline gate,
+	// persisted verbatim for the audit log. See code-review/SKILL.md §1.
+	Command string `json:"command"`
+
+	// Enumerated per-test failures parsed from the baseline run.
+	// Lumped counts (`failureCount: N` without an array) are rejected by
+	// the skill's failure-enumeration contract — see code-review/SKILL.md
+	// §1 + references/regression-tester.md §Pre-existing-on-main.
+	Failures []any/* CUE closed list */ `json:"failures"`
 }
 
 type SeverityCounts struct {
@@ -746,6 +761,11 @@ type Finding struct {
 	AssignedSkill string `json:"assignedSkill"`
 
 	Status string `json:"status"`
+
+	// Set to true when the same finding was raised by an off-lane reviewer
+	// (cross-domain duplicate). The off-lane copies become advisory and the
+	// owning lane drives the fix. See code-review/references/severity-matrix.md §49.
+	CrossLaneOverlap bool `json:"crossLaneOverlap"`
 }
 
 // =============================================================
@@ -970,6 +990,11 @@ type FeatureAcceptance struct {
 	ExecutionRequiredProbe bool `json:"executionRequiredProbe"`
 
 	LiveVerificationAttempt bool `json:"liveVerificationAttempt"`
+
+	// True when the operator pre-registered `mode: <…>` in
+	// `Skill(feature-acceptance, "mode: <autonomous|manual|hybrid>; …")`,
+	// bypassing the Phase-1 prompt. See feature-acceptance/SKILL.md §1.
+	PreRegistered bool `json:"preRegistered"`
 }
 
 type FAcceptanceCriterion struct {
@@ -1006,6 +1031,15 @@ type FSuccessMetric struct {
 	Target any/* CUE disjunction: (string|number) */ `json:"target"`
 
 	Status string `json:"status"`
+
+	// Live-verification gate result. The §2.5 step in feature-acceptance
+	// flips `resolved: true` only after the live probe agrees with `status`,
+	// and records the `rationale` (reason / evidence pointer) so a later
+	// audit can re-verify the decision. See feature-acceptance/references/
+	// live-verify.md.
+	Resolved bool `json:"resolved"`
+
+	Rationale string `json:"rationale"`
 }
 
 type ACRelaxation struct {
