@@ -22,6 +22,9 @@ const (
 	QueryDeferredScopeAdjustments QueryName = "deferred-scope-adjustments"
 	QueryOpenFindings             QueryName = "open-findings"
 	QueryNextStepID               QueryName = "next-step-id"
+	QueryTasksManifest            QueryName = "tasks-manifest"
+	QueryStepsByName              QueryName = "steps-by-name"
+	QueryStepsByOwner             QueryName = "steps-by-owner"
 	// Cache pre-warm queries (added 2026-04-29, Phase 5 feature cache).
 	// Note: explore queries are NOT pre-warmable — they are on-demand
 	// (user intent varies per turn). Only deps + mentions cover the
@@ -82,6 +85,27 @@ func QueryRegistry() map[QueryName]QueryDefinition {
 			Name:        QueryNextStepID,
 			Description: "Next monotonic step ordinal (max(STEP_NN) + 1) — for skill stepId derivation.",
 			Run:         queryNextStepID,
+		},
+		QueryTasksManifest: {
+			Name: QueryTasksManifest,
+			Description: "Payload of the (single) TASKS_MANIFEST step's tasksManifest field — " +
+				"orchestrator + execute-with-teams iterate tasksOrder/parallelizable. " +
+				"Returns null when no TASKS_MANIFEST step is present.",
+			Run: queryTasksManifest,
+		},
+		QueryStepsByName: {
+			Name: QueryStepsByName,
+			Description: "Steps grouped by their name field — emits {<StepName>: [<step>, …], …} " +
+				"in document order. Skills index `[0]` for first / `[-1]` for last to derive " +
+				"step references (e.g. last CODE_REVIEW, first BRAINSTORMING).",
+			Run: queryStepsByName,
+		},
+		QueryStepsByOwner: {
+			Name: QueryStepsByOwner,
+			Description: "Steps grouped by their owner field — emits {<owner>: [<step>, …], …} " +
+				"in document order. Worktree rendezvous reads its own workflow.json copy and " +
+				"selects only the steps it owns before patching them back into the main workflow.",
+			Run: queryStepsByOwner,
 		},
 		QueryCacheWarmDeps: {
 			Name: QueryCacheWarmDeps,
@@ -589,6 +613,69 @@ func queryNextStepID(raw map[string]any) (any, error) {
 		}
 	}
 	return max + 1, nil
+}
+
+// ── steps-by-name ─────────────────────────────────────────────────────────────
+
+// queryStepsByName groups steps by their `name` field in document order. The
+// returned map is JSON-serialisable as `{<StepName>: [<step>, …], …}`. Callers
+// pick first / last with jq `[0]` / `[-1]` indexing.
+func queryStepsByName(raw map[string]any) (any, error) {
+	out := map[string][]any{}
+	for _, s := range stepsArray(raw) {
+		step := stepObject(s)
+		if step == nil {
+			continue
+		}
+		name := stringField(step, "name")
+		if name == "" {
+			continue
+		}
+		out[name] = append(out[name], step)
+	}
+	return out, nil
+}
+
+// ── steps-by-owner ────────────────────────────────────────────────────────────
+
+// queryStepsByOwner groups steps by their `owner` field in document order.
+// Returned shape: `{<owner>: [<step>, …], …}`. Steps without an `owner` field
+// are silently skipped (rendezvous only cares about owned steps). The empty-
+// string owner is also skipped to avoid bucketing un-claimed steps.
+func queryStepsByOwner(raw map[string]any) (any, error) {
+	out := map[string][]any{}
+	for _, s := range stepsArray(raw) {
+		step := stepObject(s)
+		if step == nil {
+			continue
+		}
+		owner := stringField(step, "owner")
+		if owner == "" {
+			continue
+		}
+		out[owner] = append(out[owner], step)
+	}
+	return out, nil
+}
+
+// ── tasks-manifest ────────────────────────────────────────────────────────────
+
+// queryTasksManifest returns the `tasksManifest` payload of the (single)
+// TASKS_MANIFEST step. The orchestrator and execute-with-teams iterate
+// `.tasksOrder[]` and `.parallelizable` from this payload. Returns nil when no
+// TASKS_MANIFEST step is present so callers can detect absence with `null`.
+func queryTasksManifest(raw map[string]any) (any, error) {
+	for _, s := range stepsArray(raw) {
+		step := stepObject(s)
+		if step == nil {
+			continue
+		}
+		if stringField(step, "name") != "TASKS_MANIFEST" {
+			continue
+		}
+		return nestedMap(step, "tasksManifest"), nil
+	}
+	return nil, nil
 }
 
 // ── cache-warm-deps ───────────────────────────────────────────────────────────

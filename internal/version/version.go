@@ -5,16 +5,16 @@
 //
 // Production builds inject the value via:
 //
-//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.10.0'" ./cmd/browzer
+//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.11.0'" ./cmd/browzer
 //
-// Latest released tag: cli-v1.10.0 (skill↔CLI schema-drift sweep —
-// 7 new optional fields on the CUE workflow schema closing 20 drift
-// hits surfaced by the 2026-05-04 dogfood retro: #Finding.crossLaneOverlap,
-// #CodeReview.preRegistered, #FeatureAcceptance.preRegistered,
-// #CodeReviewBaseline.command, #CodeReviewBaseline.failures,
-// #FSuccessMetric.resolved, #FSuccessMetric.rationale). All fields are
-// `*<default> | <type>` so existing fixtures stay valid. Tag with
-// `git tag cli-v1.10.0 && git push origin cli-v1.10.0` once the
+// Latest released tag: cli-v1.11.0 (skills+cli autoresearch sweep —
+// 3 new named workflow queries closing every raw `jq … "$WORKFLOW"` pattern
+// in skill bodies: `tasks-manifest`, `steps-by-name`, `steps-by-owner`.
+// Query catalog grew from 10 → 13. Eight SKILL.md / reference files
+// migrated to consume the new queries (or existing `next-step-id` /
+// `get-config` / `get-step` surfaces). `scripts/audit/skill-no-raw-jq-workflow.mjs`
+// is the metric (lower = better; baseline 33 → final 0). Tag with
+// `git tag cli-v1.11.0 && git push origin cli-v1.11.0` once the
 // release commit is pushed.
 //
 // Empty default is acceptable in tests and dev (`go run`/`go test`); callers
