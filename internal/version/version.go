@@ -5,9 +5,9 @@
 //
 // Production builds inject the value via:
 //
-//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.14.0'" ./cmd/browzer
+//	go build -ldflags "-X 'github.com/browzeremb/browzer-cli/internal/version.Version=1.15.0'" ./cmd/browzer
 //
-// Latest released tag: cli-v1.14.0 (token-economy session followups +
+// Latest released tag: cli-v1.15.0 (token-economy session followups +
 // CLAUDE_SKILL_DIR/scripts convention). The cut bundles three CLI
 // surfaces: (a) read-path JSON helpers (`marshalReadJSON` /
 // `marshalNoHTMLEscape`) applied uniformly across every read verb so
@@ -27,7 +27,7 @@
 // `PopulateSearchResultPaths` helper) round out the cut.
 // Previous tag: cli-v1.13.0 (eval pipeline schema unification +
 // on-behalf-of org-attribution trailer). Tag with
-// `git tag cli-v1.14.0 && git push origin cli-v1.14.0` once the
+// `git tag cli-v1.15.0 && git push origin cli-v1.15.0` once the
 // release commit is pushed.
 //
 // Empty default is acceptable in tests and dev (`go run`/`go test`); callers
