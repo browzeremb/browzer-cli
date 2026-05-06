@@ -403,19 +403,30 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 					walkCUEFields(*resolved, path+"[]", addedInMap, out)
 					continue
 				}
-				// Scalar list element with a constraint
-				// (e.g. `[...=~"^…$"]`). Emit it as a leaf
-				// under the `[]` path so the regex/enum is
-				// rendered.
+				// Scalar list element. Emit it as a leaf
+				// under the `[]` path so consumers learn the
+				// element type (and any regex/enum constraint).
+				//
+				// DOG-DESCRIBE-1 (2026-05-06): previously we only
+				// emitted this row when a regex pattern or enum
+				// constraint existed on the element, meaning a
+				// plain `*[] | [...string]` (e.g. `objectives`,
+				// `inScope`, `outOfScope`) produced ONLY the
+				// parent `<field>` row with type=array. Consumers
+				// reading describe-step-type could not tell
+				// whether the array held strings or objects —
+				// they had to fall back to the CUE source. Now
+				// we emit `<field>[]` with the element type
+				// unconditionally, matching the descent we
+				// already do for struct elements (via
+				// walkCUEFields when hasElemFields is true).
 				//
 				// Array elements themselves are not optional in
 				// the iterator sense — a present element is
 				// always required, the array's optionality lives
 				// on the parent field (already emitted above).
-				if matchOperandRegex(*elem) != "" || len(extractStringEnum(*elem)) > 0 {
-					*out = append(*out, makeFieldInfo(path+"[]", *elem, addedInMap, false))
-					continue
-				}
+				*out = append(*out, makeFieldInfo(path+"[]", *elem, addedInMap, false))
+				continue
 			}
 			// Parent row already emitted above; skip the
 			// fallback leaf emit below to avoid duplication.

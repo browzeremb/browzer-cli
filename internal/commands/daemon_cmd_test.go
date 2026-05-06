@@ -70,6 +70,42 @@ func TestCptFor_UnknownExtFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestDaemonStatus_JSONFlagWhenNoDaemon asserts that `--json` emits
+// `{"running":false}` and still exits 1 when the daemon is unreachable.
+// Required by the orchestrate-task-delivery SKILL Step 0.2 health-check
+// that pipes the JSON through jq looking for `.protocolVersion` and
+// `.uptimeSec` — without `--json` the SKILL falls into the "down" case
+// branch via empty stream + `|| echo "down"` rather than via a parsed
+// object, hiding the underlying state.
+func TestDaemonStatus_JSONFlagWhenNoDaemon(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("BROWZER_DAEMON_SOCKET", filepath.Join(tmp, "missing.sock"))
+
+	cmd := daemonStatusCmd()
+	cmd.SetContext(context.Background())
+	cmd.SetArgs([]string{"--json"})
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected non-nil error when daemon is unreachable; got nil. stdout=%q", stdout.String())
+	}
+	var ce *cliErrors.CliError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cliErrors.CliError; got %T (%v)", err, err)
+	}
+	if ce.ExitCode != cliErrors.ExitError {
+		t.Errorf("expected exit code %d, got %d", cliErrors.ExitError, ce.ExitCode)
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got != `{"running":false}` {
+		t.Errorf("expected stdout %q, got %q", `{"running":false}`, got)
+	}
+}
+
 // TestDaemonStatus_ExitsOneWhenNoDaemon asserts WF-CLI-UX-3: the
 // command must return a non-nil error mapping to exit code 1 when
 // the daemon socket is unreachable. Otherwise the orchestrator

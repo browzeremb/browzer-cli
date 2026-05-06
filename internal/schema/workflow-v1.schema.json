@@ -63,7 +63,8 @@
                         ]
                     },
                     "at": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     }
                 }
             },
@@ -134,8 +135,7 @@
                 "type": "object",
                 "required": [
                     "chosen",
-                    "rationale",
-                    "alternativesConsidered"
+                    "rationale"
                 ],
                 "properties": {
                     "chosen": {
@@ -159,13 +159,7 @@
                     "jobToBeDone",
                     "successSignal",
                     "inScope",
-                    "outOfScope",
-                    "repoSurface",
-                    "techConstraints",
-                    "failureModes",
-                    "acceptanceCriteria",
-                    "dependencies",
-                    "openQuestions"
+                    "outOfScope"
                 ],
                 "properties": {
                     "primaryUser": {
@@ -232,12 +226,7 @@
                 "required": [
                     "questionsAsked",
                     "researchRoundRun",
-                    "researchAgents",
-                    "dimensions",
-                    "researchFindings",
-                    "assumptions",
-                    "openRisks",
-                    "decision"
+                    "dimensions"
                 ],
                 "properties": {
                     "questionsAsked": {
@@ -318,13 +307,7 @@
                 "required": [
                     "dispatchMode",
                     "reviewTier",
-                    "mandatoryMembers",
-                    "recommendedMembers",
-                    "customMembers",
-                    "duplicationFindings",
-                    "regressionRun",
-                    "findings",
-                    "preRegistered"
+                    "mandatoryMembers"
                 ],
                 "properties": {
                     "agentTeamsEnabled": {
@@ -413,11 +396,7 @@
             "CodeReviewBaseline": {
                 "type": "object",
                 "required": [
-                    "source",
-                    "reusedGates",
-                    "freshGates",
-                    "command",
-                    "failures"
+                    "source"
                 ],
                 "properties": {
                     "source": {
@@ -505,13 +484,7 @@
                 "type": "object",
                 "required": [
                     "conventionalType",
-                    "scope",
-                    "subject",
-                    "body",
-                    "trailers",
-                    "prePushAuditsRun",
-                    "pushAttempts",
-                    "prePushAudits"
+                    "subject"
                 ],
                 "properties": {
                     "sha": {
@@ -600,8 +573,7 @@
             "CyclomaticAudit": {
                 "type": "object",
                 "required": [
-                    "conductedBy",
-                    "files"
+                    "conductedBy"
                 ],
                 "properties": {
                     "conductedBy": {
@@ -652,14 +624,7 @@
                     "dispatchPromptDigest",
                     "promptByteCount",
                     "promptPath",
-                    "renderTemplateUsed",
-                    "dispatchedAt",
-                    "model",
-                    "status",
-                    "findingsAddressed",
-                    "filesModified",
-                    "filesCreated",
-                    "filesDeleted"
+                    "dispatchedAt"
                 ],
                 "properties": {
                     "agentId": {
@@ -682,7 +647,8 @@
                         "nullable": true
                     },
                     "dispatchedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "model": {
                         "type": "string",
@@ -765,7 +731,6 @@
                 "required": [
                     "doc",
                     "reason",
-                    "linesChanged",
                     "verdict"
                 ],
                 "properties": {
@@ -926,9 +891,7 @@
                     "id",
                     "measured",
                     "target",
-                    "status",
-                    "resolved",
-                    "rationale"
+                    "status"
                 ],
                 "properties": {
                     "id": {
@@ -977,15 +940,7 @@
                 "type": "object",
                 "required": [
                     "mode",
-                    "modeNote",
-                    "acceptanceCriteria",
-                    "nfrVerifications",
-                    "successMetrics",
-                    "acRelaxations",
-                    "operatorActionsRequested",
-                    "executionRequiredProbe",
-                    "liveVerificationAttempt",
-                    "preRegistered"
+                    "acceptanceCriteria"
                 ],
                 "properties": {
                     "mode": {
@@ -1118,10 +1073,7 @@
                     "category",
                     "file",
                     "description",
-                    "suggestedFix",
-                    "assignedSkill",
-                    "status",
-                    "crossLaneOverlap"
+                    "status"
                 ],
                 "properties": {
                     "id": {
@@ -1203,7 +1155,8 @@
                 ],
                 "properties": {
                     "at": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "stepId": {
                         "type": "string",
@@ -1217,8 +1170,7 @@
             "GreenTests": {
                 "type": "object",
                 "required": [
-                    "added",
-                    "augmented"
+                    "added"
                 ],
                 "properties": {
                     "added": {
@@ -1303,8 +1255,7 @@
                     "file",
                     "line",
                     "mutator",
-                    "killedByNewTest",
-                    "addedTestFile"
+                    "killedByNewTest"
                 ],
                 "properties": {
                     "file": {
@@ -1329,12 +1280,7 @@
             "MutationTesting": {
                 "type": "object",
                 "required": [
-                    "ran",
-                    "tool",
-                    "score",
-                    "target",
-                    "survivors",
-                    "coverageGap"
+                    "ran"
                 ],
                 "properties": {
                     "ran": {
@@ -1415,7 +1361,8 @@
                 ],
                 "properties": {
                     "at": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "stepId": {
                         "type": "string",
@@ -1429,12 +1376,9 @@
             "OperatorAction": {
                 "type": "object",
                 "required": [
-                    "ac",
                     "kind",
                     "description",
-                    "at",
-                    "resolved",
-                    "resolution"
+                    "at"
                 ],
                 "properties": {
                     "ac": {
@@ -1458,7 +1402,8 @@
                         "type": "string"
                     },
                     "at": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "resolved": {
                         "type": "boolean",
@@ -1473,9 +1418,6 @@
             },
             "OperatorInfo": {
                 "type": "object",
-                "required": [
-                    "locale"
-                ],
                 "properties": {
                     "locale": {
                         "type": "string",
@@ -1487,19 +1429,8 @@
                 "type": "object",
                 "required": [
                     "title",
-                    "overview",
-                    "personas",
-                    "objectives",
-                    "inScope",
-                    "outOfScope",
-                    "deliverables",
                     "functionalRequirements",
-                    "nonFunctionalRequirements",
-                    "successMetrics",
-                    "acceptanceCriteria",
-                    "risks",
-                    "assumptions",
-                    "taskGranularity"
+                    "acceptanceCriteria"
                 ],
                 "properties": {
                     "title": {
@@ -1648,8 +1579,7 @@
                 "required": [
                     "name",
                     "source",
-                    "exitCode",
-                    "durationMs"
+                    "exitCode"
                 ],
                 "properties": {
                     "name": {
@@ -1680,14 +1610,7 @@
                 "type": "object",
                 "required": [
                     "sha",
-                    "attemptedAt",
-                    "lefthookBypassed",
-                    "noVerifyPassed",
-                    "amendUsed",
-                    "bypassedAudits",
-                    "bypassReason",
-                    "retryCount",
-                    "previousFailure"
+                    "attemptedAt"
                 ],
                 "properties": {
                     "sha": {
@@ -1695,7 +1618,8 @@
                         "pattern": "^[a-f0-9]{7,40}$"
                     },
                     "attemptedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "lefthookBypassed": {
                         "type": "boolean",
@@ -1736,10 +1660,7 @@
                 "type": "object",
                 "required": [
                     "iteration",
-                    "summary",
-                    "dispatches",
-                    "unrecovered",
-                    "notes"
+                    "summary"
                 ],
                 "properties": {
                     "iteration": {
@@ -1803,9 +1724,6 @@
                     "skill",
                     "model",
                     "status",
-                    "filesChanged",
-                    "researchBundle",
-                    "failureTrace",
                     "startedAt",
                     "completedAt"
                 ],
@@ -1882,10 +1800,12 @@
                         "nullable": true
                     },
                     "startedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "completedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     }
                 }
             },
@@ -1958,20 +1878,13 @@
                 "type": "object",
                 "required": [
                     "tool",
-                    "scope",
                     "command",
                     "commandSource",
                     "executionDepth",
-                    "filesInRadius",
-                    "testFilesExecuted",
                     "exitCode",
                     "passed",
                     "failed",
-                    "skippedTests",
-                    "skipped",
-                    "skipReason",
-                    "summary",
-                    "failures"
+                    "skipped"
                 ],
                 "properties": {
                     "tool": {
@@ -2065,8 +1978,7 @@
                 "required": [
                     "question",
                     "answer",
-                    "confidence",
-                    "sources"
+                    "confidence"
                 ],
                 "properties": {
                     "question": {
@@ -2097,7 +2009,6 @@
                     "round",
                     "proposal",
                     "operatorAction",
-                    "operatorNote",
                     "decidedAt"
                 ],
                 "properties": {
@@ -2122,7 +2033,8 @@
                         "default": ""
                     },
                     "decidedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     }
                 }
             },
@@ -2193,11 +2105,6 @@
             },
             "SeverityCounts": {
                 "type": "object",
-                "required": [
-                    "high",
-                    "medium",
-                    "low"
-                ],
                 "properties": {
                     "high": {
                         "type": "integer",
@@ -2220,8 +2127,7 @@
                 "type": "object",
                 "required": [
                     "domain",
-                    "skill",
-                    "relevance"
+                    "skill"
                 ],
                 "properties": {
                     "domain": {
@@ -2280,8 +2186,7 @@
             "StepApplicability": {
                 "type": "object",
                 "required": [
-                    "applicable",
-                    "reason"
+                    "applicable"
                 ],
                 "properties": {
                     "applicable": {
@@ -2300,18 +2205,7 @@
                     "name",
                     "status",
                     "applicability",
-                    "startedAt",
-                    "completedAt",
-                    "elapsedMin",
-                    "retryCount",
-                    "itDependsOn",
-                    "nextStep",
-                    "skillsToInvoke",
-                    "skillsInvoked",
-                    "owner",
-                    "warnings",
-                    "reviewHistory",
-                    "dispatches"
+                    "startedAt"
                 ],
                 "properties": {
                     "stepId": {
@@ -2332,12 +2226,14 @@
                         "$ref": "#/components/schemas/StepApplicability"
                     },
                     "startedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "completedAt": {
                         "type": "string",
                         "default": null,
-                        "nullable": true
+                        "nullable": true,
+                        "format": "date-time"
                     },
                     "elapsedMin": {
                         "type": "number",
@@ -2489,8 +2385,7 @@
             "StepWorktrees": {
                 "type": "object",
                 "required": [
-                    "used",
-                    "worktrees"
+                    "used"
                 ],
                 "properties": {
                     "used": {
@@ -2556,7 +2451,6 @@
                 "required": [
                     "role",
                     "skill",
-                    "model",
                     "status"
                 ],
                 "properties": {
@@ -2586,10 +2480,12 @@
                         ]
                     },
                     "startedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "completedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "skillsLoaded": {
                         "type": "array",
@@ -2606,11 +2502,7 @@
                 "type": "object",
                 "required": [
                     "taskId",
-                    "title",
-                    "suggestedModel",
-                    "trivial",
-                    "skillsFound",
-                    "scope"
+                    "title"
                 ],
                 "properties": {
                     "taskId": {
@@ -2659,9 +2551,6 @@
                 "type": "object",
                 "required": [
                     "scope",
-                    "invariants",
-                    "suggestedModel",
-                    "trivial",
                     "execution"
                 ],
                 "properties": {
@@ -2721,11 +2610,7 @@
             "TaskExecutionResult": {
                 "type": "object",
                 "required": [
-                    "gates",
-                    "scopeAdjustments",
-                    "agents",
-                    "invariantsChecked",
-                    "nextSteps"
+                    "gates"
                 ],
                 "properties": {
                     "gates": {
@@ -2798,13 +2683,6 @@
             },
             "TaskExplorer": {
                 "type": "object",
-                "required": [
-                    "model",
-                    "filesModified",
-                    "filesToRead",
-                    "domains",
-                    "skillsFound"
-                ],
                 "properties": {
                     "model": {
                         "type": "string",
@@ -2817,7 +2695,8 @@
                         "nullable": true
                     },
                     "completedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "filesModified": {
                         "type": "array",
@@ -2867,11 +2746,6 @@
             },
             "TaskFiles": {
                 "type": "object",
-                "required": [
-                    "created",
-                    "modified",
-                    "deleted"
-                ],
                 "properties": {
                     "created": {
                         "type": "array",
@@ -2897,8 +2771,7 @@
                 "type": "object",
                 "required": [
                     "baseline",
-                    "postChange",
-                    "regression"
+                    "postChange"
                 ],
                 "properties": {
                     "baseline": {
@@ -2917,12 +2790,6 @@
             },
             "TaskReviewer": {
                 "type": "object",
-                "required": [
-                    "model",
-                    "additionalContext",
-                    "skipTestsReason",
-                    "testSpecs"
-                ],
                 "properties": {
                     "model": {
                         "type": "string",
@@ -2935,7 +2802,8 @@
                         "nullable": true
                     },
                     "completedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "additionalContext": {
                         "description": "additionalContext: free-form prose (default \"\") OR a structured object\nconsumable by the `reapply-additional-context` mutator (apply.go:1011).\nString form is preserved for back-compat and skill orchestrators that\nemit prose summaries; object form is the canonical shape consumed by\nthe mutator to translate Reviewer corrections into `task.scope` updates.",
@@ -2998,8 +2866,7 @@
                 "required": [
                     "totalTasks",
                     "tasksOrder",
-                    "dependencyGraph",
-                    "parallelizable"
+                    "dependencyGraph"
                 ],
                 "properties": {
                     "totalTasks": {
@@ -3149,8 +3016,7 @@
                     "directRef",
                     "conceptLevel",
                     "mentionsPass",
-                    "mentionsFallbackUsed",
-                    "mentionsResultEmpty"
+                    "mentionsFallbackUsed"
                 ],
                 "properties": {
                     "directRef": {
@@ -3187,8 +3053,7 @@
                     "lastTrace",
                     "totalIterations",
                     "modelsTried",
-                    "researchPassesRun",
-                    "loggedToTechDebt"
+                    "researchPassesRun"
                 ],
                 "properties": {
                     "findingId": {
@@ -3230,9 +3095,6 @@
             "UpdateDocs": {
                 "type": "object",
                 "required": [
-                    "docsMentioning",
-                    "anchorDocsAlwaysIncluded",
-                    "patches",
                     "twoPassRun"
                 ],
                 "properties": {
@@ -3299,14 +3161,14 @@
                         "type": "string"
                     },
                     "at": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     }
                 }
             },
             "WorkflowConfig": {
                 "type": "object",
                 "required": [
-                    "mode",
                     "setAt"
                 ],
                 "properties": {
@@ -3339,7 +3201,8 @@
                         "type": "boolean"
                     },
                     "setAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "switchedFrom": {
                         "type": "string",
@@ -3349,7 +3212,8 @@
                         ]
                     },
                     "switchedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     }
                 }
             },
@@ -3358,23 +3222,13 @@
                 "type": "object",
                 "required": [
                     "schemaVersion",
-                    "pluginVersion",
                     "featureId",
                     "featureName",
                     "featDir",
-                    "originalRequest",
                     "operator",
                     "config",
                     "startedAt",
                     "updatedAt",
-                    "completedAt",
-                    "totalElapsedMin",
-                    "currentStepId",
-                    "nextStepId",
-                    "totalSteps",
-                    "completedSteps",
-                    "notes",
-                    "globalWarnings",
                     "steps"
                 ],
                 "properties": {
@@ -3410,15 +3264,18 @@
                         "$ref": "#/components/schemas/WorkflowConfig"
                     },
                     "startedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "updatedAt": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                     },
                     "completedAt": {
                         "type": "string",
                         "default": null,
-                        "nullable": true
+                        "nullable": true,
+                        "format": "date-time"
                     },
                     "totalElapsedMin": {
                         "type": "number",
@@ -3515,11 +3372,7 @@
             "WriteTests": {
                 "type": "object",
                 "required": [
-                    "skipped",
-                    "skipReason",
-                    "runner",
-                    "filesAuthored",
-                    "notes"
+                    "skipped"
                 ],
                 "properties": {
                     "skipped": {

@@ -31,7 +31,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
+
+// nowUTCFunc returns the current UTC time. Wrapped as a package-level
+// var so scaffold tests can pin a deterministic clock.
+var nowUTCFunc = func() time.Time { return time.Now().UTC() }
 
 // embeddedJSONSchema is the OpenAPI 3.0 projection of the CUE SSOT,
 // mirrored from `packages/cli/schemas/workflow-v1.schema.json` so
@@ -278,6 +283,18 @@ func scaffoldFromComponent(component map[string]any, schemas map[string]any, see
 			if first, ok := enum[0].(string); ok {
 				return first, nil
 			}
+		}
+		// DOG-DESCRIBE-2 (2026-05-06): honor `format: "date-time"`.
+		// The CUE source declares timestamp fields as
+		// `time.Format(time.RFC3339)` and the projection enricher
+		// (scripts/enrich-openapi-projection.mjs) carries the constraint
+		// through as `format: "date-time"`. An empty-string placeholder
+		// fails CUE validation (rejects `""` against `time.Format(...)`);
+		// emit a current-UTC RFC3339 timestamp so the scaffold satisfies
+		// validation as-is and the operator overrides it explicitly when
+		// they have a real value.
+		if format, _ := component["format"].(string); format == "date-time" {
+			return nowUTCFunc().Format(time.RFC3339), nil
 		}
 		return "", nil
 	case "integer", "number":

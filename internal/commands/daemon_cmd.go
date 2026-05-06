@@ -321,7 +321,8 @@ func daemonStopCmd() *cobra.Command {
 }
 
 func daemonStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Report daemon status (uptime, queue, db path)",
 		// WF-CLI-UX-3 (2026-05-04): exit 1 when the daemon is
@@ -341,13 +342,61 @@ func daemonStatusCmd() *cobra.Command {
 			defer cancel()
 			h, err := cli.Health(ctx)
 			if err != nil {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "not running")
+				if asJSON {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), `{"running":false}`)
+				} else {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "not running")
+				}
 				return cliErrors.WithCode("daemon not running", cliErrors.ExitError)
+			}
+			if asJSON {
+				// Best-effort version preflight. A v1 daemon (or one that lost
+				// the Daemon.Version handler) returns method_not_found; surface
+				// that as zero-valued protocol fields rather than failing the
+				// whole status call. The skill orchestrator's Step 0.2 health
+				// check inspects `protocolVersion` + `uptimeSec` — both must
+				// appear in the JSON shape unconditionally.
+				ver, verErr := cli.DaemonVersion(ctx)
+				out := struct {
+					Running          bool     `json:"running"`
+					DaemonVersion    string   `json:"daemonVersion"`
+					SchemaVersion    int      `json:"schemaVersion"`
+					ProtocolVersion  int      `json:"protocolVersion"`
+					ProtocolFeatures []string `json:"protocolFeatures"`
+					UptimeSec        int      `json:"uptimeSec"`
+					QueueLen         int      `json:"queueLen"`
+					DBPath           string   `json:"dbPath"`
+					Capabilities     []string `json:"capabilities,omitempty"`
+				}{
+					Running:          true,
+					DaemonVersion:    ver.DaemonVersion,
+					SchemaVersion:    ver.SchemaVersion,
+					ProtocolVersion:  ver.ProtocolVersion,
+					ProtocolFeatures: ver.ProtocolFeatures,
+					UptimeSec:        h.UptimeSec,
+					QueueLen:         h.QueueLen,
+					DBPath:           h.DBPath,
+					Capabilities:     h.Capabilities,
+				}
+				if verErr != nil {
+					// Leave protocol fields zero. Skill caller will treat
+					// "0 protocolVersion" as "stale" and force a daemon
+					// restart, which is the correct outcome.
+					out.ProtocolFeatures = nil
+				}
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetEscapeHTML(false)
+				if err := enc.Encode(out); err != nil {
+					return err
+				}
+				return nil
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "running uptime=%ds queue=%d db=%s\n", h.UptimeSec, h.QueueLen, h.DBPath)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit status as a JSON object (running, daemonVersion, protocolVersion, uptimeSec, queueLen, dbPath)")
+	return cmd
 }
 
 func writePID() error {

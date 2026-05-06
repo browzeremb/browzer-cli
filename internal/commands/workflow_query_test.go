@@ -3,6 +3,8 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -398,6 +400,153 @@ func TestWorkflowQuery_StepsByName_HandlesTrickyChars_RoundtripStable(t *testing
 				t.Fatalf("iter %d: stdout contains HTML escape %s; raw: %s",
 					i, badEscape, got)
 			}
+		}
+	}
+}
+
+// TestWorkflowQuery_StepsByName_AfterRecentAppendStep_ProducesValidJSON
+// covers the WRITE-then-READ race window specifically hypothesised in
+// SESSION_REPORT_20260506_orchestrate_task_delivery.md §3.1: an
+// append-step mutation that has just landed (validatedOk=true) is
+// immediately followed by `query steps-by-name`, and the relato
+// reported the read path emitting JSON that broke `jq` parse — only
+// once, intermittently, against a ~35KB workflow with HTML chars in
+// AC text.
+//
+// This test pins the contract: append-step ↔ query-steps-by-name
+// interleaved 50× MUST NEVER produce stdout that fails json.Unmarshal
+// nor jq -e '.' (we approximate jq's tolerance with the Go decoder
+// since they agree on RFC 8259 conformance). HTML chars (>, <, &)
+// are present in the AC text to match the original sighting profile.
+//
+// DOG-FOLLOW-1 (2026-05-06): pinning this even though the bug did NOT
+// reproduce in the dogfood validation session. The test guards against
+// a future regression to the read-path encoding (e.g. a refactor that
+// swaps marshalNoHTMLEscape back to encoding/json's default). If the
+// race ever IS a real write-side race, the interleaving here gives
+// it the wall-clock window it needs to surface.
+func TestWorkflowQuery_StepsByName_AfterRecentAppendStep_ProducesValidJSON(t *testing.T) {
+	// Minimal seed — empty steps[] so append-step doesn't have to
+	// reconcile against pre-existing entries (queryWorkflowJSON has
+	// a TASK step with intentionally-empty taskId for OTHER tests).
+	const seedJSON = `{
+  "schemaVersion": 2,
+  "featureId": "feat-20260506-race-pin",
+  "featureName": "Race Pin",
+  "featDir": "docs/browzer/feat-20260506-race-pin",
+  "originalRequest": "race pin",
+  "operator": {"locale": "en-US"},
+  "config": {"mode": "autonomous", "setAt": "2026-05-06T00:00:00Z"},
+  "startedAt": "2026-05-06T00:00:00Z",
+  "updatedAt": "2026-05-06T00:00:00Z",
+  "totalElapsedMin": 0,
+  "currentStepId": "",
+  "nextStepId": "",
+  "totalSteps": 0,
+  "completedSteps": 0,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": []
+}`
+	wfPath := writeWorkflowFile(t, seedJSON)
+
+	// Add a PRD step via a synthetic payload that contains the trio of
+	// HTML-special chars plus URL-encoded ampersand (`&` literal must
+	// survive byte-by-byte). 50 iterations is enough to exceed the
+	// daemon's typical advisory-lock release window (~3-5ms) under
+	// load.
+	prdPayload := `{
+  "stepId": "STEP_02_PRD",
+  "name": "PRD",
+  "taskId": "",
+  "status": "COMPLETED",
+  "applicability": {"applicable": true, "reason": "regression pin"},
+  "startedAt": "2026-05-06T00:00:00Z",
+  "completedAt": "2026-05-06T00:01:00Z",
+  "elapsedMin": 1.0,
+  "retryCount": 0,
+  "itDependsOn": [],
+  "nextStep": "",
+  "skillsToInvoke": [],
+  "skillsInvoked": [],
+  "owner": null,
+  "warnings": [],
+  "reviewHistory": [],
+  "dispatches": [],
+  "prd": {
+    "title": "regression pin",
+    "taskGranularity": "small",
+    "acceptanceCriteria": [
+      {
+        "id": "AC-1",
+        "bindsTo": ["FR-1"],
+        "description": "GIVEN limit & 11 reqs in 60s, response > 0 AND <= 60 with ?org=acme&tier=pro literal"
+      }
+    ],
+    "functionalRequirements": [
+      {"id": "FR-1", "description": "Emit headers"}
+    ]
+  }
+}`
+
+	// Stage the payload in a tempfile so --payload can read it.
+	payloadPath := filepath.Join(t.TempDir(), "prd-payload.json")
+	if err := os.WriteFile(payloadPath, []byte(prdPayload), 0o600); err != nil {
+		t.Fatalf("write payload tempfile: %v", err)
+	}
+
+	for i := range 50 {
+		// Step 1: append-step the PRD payload (idempotently — we
+		// rebuild the workflow each iter to keep the contract pure).
+		if i > 0 {
+			// Rewrite the workflow to its seed state on each iteration
+			// so the next append-step doesn't trip duplicate-stepId.
+			wfPath = writeWorkflowFile(t, seedJSON)
+		}
+		var appendStdout, appendStderr bytes.Buffer
+		root := buildWorkflowCommandT(t, &appendStdout, &appendStderr)
+		root.SetArgs([]string{
+			"workflow", "append-step",
+			"--workflow", wfPath,
+			"--payload", payloadPath,
+		})
+		// Allow the append-step audit line to land in stderr; we don't
+		// care about it for assertion purposes.
+		if err := root.Execute(); err != nil {
+			t.Fatalf("iter %d: append-step: %v\nstderr: %s",
+				i, err, appendStderr.String())
+		}
+
+		// Step 2: immediate query-steps-by-name read.
+		var qStdout, qStderr bytes.Buffer
+		root = buildWorkflowCommandT(t, &qStdout, &qStderr)
+		root.SetArgs([]string{"workflow", "query", "steps-by-name", "--workflow", wfPath})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("iter %d: query: %v\nstderr: %s",
+				i, err, qStderr.String())
+		}
+
+		// Step 3: assert the JSON decodes AND no HTML escapes leaked.
+		var parsed map[string]any
+		if err := json.Unmarshal(qStdout.Bytes(), &parsed); err != nil {
+			t.Fatalf("iter %d: stdout failed JSON decode: %v\n"+
+				"raw bytes (%d): %q",
+				i, err, qStdout.Len(), qStdout.String())
+		}
+		got := qStdout.String()
+		for _, badEscape := range []string{"\\u003c", "\\u003e", "\\u0026"} {
+			if strings.Contains(got, badEscape) {
+				t.Fatalf("iter %d: stdout contains HTML escape %s "+
+					"(PR1 marshalNoHTMLEscape regression?)",
+					i, badEscape)
+			}
+		}
+		// Spot-check the AC.description survived literal byte-by-byte:
+		// the literal sequence `?org=acme&tier=pro` must be present
+		// (encoding/json default would have written `?org=acme&tier=pro`).
+		if !strings.Contains(got, "?org=acme&tier=pro") {
+			t.Fatalf("iter %d: literal `?org=acme&tier=pro` missing — "+
+				"HTML escape regressed", i)
 		}
 	}
 }

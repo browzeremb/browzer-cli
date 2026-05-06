@@ -23,6 +23,15 @@ JSON_EMBED   := ../internal/schema/workflow-v1.schema.json
 GO_OUT       := cue_types_workflow_gen.go
 MD_OUT       := ../../skills/references/workflow-schema.md
 MD_RENDER    := ../../../scripts/cue-to-markdown.mjs
+# DOG-DESCRIBE-2 (2026-05-06): post-processes the OpenAPI output to
+# carry through `time.Format(time.RFC3339)` as `format: "date-time"`
+# AND to align `*default | T` fields with the WF-OPTIONAL-MARKER
+# Phase 1.1 contract (defaulted fields are NOT required from operator
+# POV). Without this step, scaffold.go can't tell timestamp fields
+# from plain strings and emits empty-string placeholders that fail CUE
+# validation; and `parallelizable`/similar fields with explicit defaults
+# show up as required in scaffolds despite being optional.
+ENRICH_JSON  := ../../../scripts/enrich-openapi-projection.mjs
 
 VALID_FIXTURES   := $(wildcard fixtures/valid/*.json)
 INVALID_FIXTURES := $(wildcard fixtures/invalid/*.json)
@@ -38,8 +47,10 @@ sync-embed: $(SCHEMA) $(JSON_OUT)
 	@cp $(SCHEMA) $(EMBED_MIRROR)
 	@cp $(JSON_OUT) $(JSON_EMBED)
 
-$(JSON_OUT): $(SCHEMA)
-	$(CUE) def --out openapi $(SCHEMA) > $@.tmp && mv $@.tmp $@
+$(JSON_OUT): $(SCHEMA) $(ENRICH_JSON)
+	$(CUE) def --out openapi $(SCHEMA) > $@.tmp
+	$(NODE) $(ENRICH_JSON) $@.tmp $(SCHEMA)
+	mv $@.tmp $@
 
 $(GO_OUT): $(SCHEMA)
 	$(CUE) exp gengotypes . && [ -f $(GO_OUT) ] && touch $(GO_OUT)
@@ -73,6 +84,7 @@ ci-check: vet
 	@cmp -s $(JSON_OUT) $(JSON_EMBED) || \
 	  { echo "FAIL: JSON Schema embed mirror $(JSON_EMBED) drifted from $(JSON_OUT) — run 'make sync-embed'"; exit 1; }
 	@$(CUE) def --out openapi $(SCHEMA) > $(JSON_OUT).new
+	@$(NODE) $(ENRICH_JSON) $(JSON_OUT).new $(SCHEMA) 2>/dev/null
 	@diff -u $(JSON_OUT) $(JSON_OUT).new || \
 	  { echo "FAIL: $(JSON_OUT) is out of date (run 'make all')"; rm $(JSON_OUT).new; exit 1; }
 	@rm $(JSON_OUT).new

@@ -20,7 +20,23 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
+
+// timeParseRFC3339 is a thin wrapper around time.Parse for assertion
+// readability. Returns the parsed time + parse error.
+func timeParseRFC3339(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
+
+// mustParseRFC3339 calls t.Fatal on parse error so callers can shorten
+// fixture-pinning bodies.
+func mustParseRFC3339(t *testing.T, s string) time.Time {
+	t.Helper()
+	out, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("mustParseRFC3339(%q): %v", s, err)
+	}
+	return out
+}
 
 // TestScaffoldStep_PRD_HasStepBaseAndPayload asserts the PRD skeleton
 // covers BOTH the StepBase wrapper fields and the `prd` payload.
@@ -35,13 +51,37 @@ func TestScaffoldStep_PRD_HasStepBaseAndPayload(t *testing.T) {
 		t.Fatalf("scaffold output is not valid JSON: %v\nraw: %s", err, string(out))
 	}
 
-	// StepBase fields (per workflow-v1.schema.json `StepBase.required`).
+	// StepBase TRULY-required fields (per workflow-v1.schema.json
+	// `StepBase.required` AFTER the enrich-openapi-projection.mjs step
+	// drops `*default | T` fields per WF-OPTIONAL-MARKER Phase 1.1).
+	//
+	// DOG-DESCRIBE-2 (2026-05-06): the previous expectation list
+	// included every field declared in `#StepBase` regardless of
+	// whether CUE marked it with an explicit default — that pinned
+	// the old, broken `cue def --out openapi` projection which
+	// over-stated `required[]`. The OPENAPI mirror is now aligned
+	// with the CUE source semantics: defaulted fields (e.g.
+	// `retryCount: *0 | int`, `owner: *null | string`,
+	// `dispatches: *[] | [...]`) are NOT in `required[]` and the
+	// scaffold correctly omits them so the operator sees the
+	// minimum surface they MUST fill.
 	wantBase := []string{
 		"stepId",
 		"name",
 		"status",
 		"applicability",
 		"startedAt",
+	}
+	for _, f := range wantBase {
+		if _, ok := skeleton[f]; !ok {
+			t.Errorf("PRD scaffold missing StepBase field %q", f)
+		}
+	}
+
+	// Defaulted fields MUST NOT appear in the scaffold (operator-
+	// optional per WF-OPTIONAL-MARKER Phase 1.1). Pinning them here
+	// flags any future drift back to the over-stated-required shape.
+	wantOmitted := []string{
 		"completedAt",
 		"elapsedMin",
 		"retryCount",
@@ -54,9 +94,9 @@ func TestScaffoldStep_PRD_HasStepBaseAndPayload(t *testing.T) {
 		"reviewHistory",
 		"dispatches",
 	}
-	for _, f := range wantBase {
-		if _, ok := skeleton[f]; !ok {
-			t.Errorf("PRD scaffold missing StepBase field %q", f)
+	for _, f := range wantOmitted {
+		if _, ok := skeleton[f]; ok {
+			t.Errorf("PRD scaffold should omit defaulted StepBase field %q", f)
 		}
 	}
 
@@ -116,13 +156,19 @@ func TestScaffoldStep_TypeCorrectEmptyValues(t *testing.T) {
 	if got, ok := skeleton["stepId"].(string); !ok || got != "" {
 		t.Errorf("stepId: got %v (%T), want \"\"", skeleton["stepId"], skeleton["stepId"])
 	}
-	// itDependsOn is an array → []
-	if arr, ok := skeleton["itDependsOn"].([]any); !ok || len(arr) != 0 {
-		t.Errorf("itDependsOn: got %v (%T), want []", skeleton["itDependsOn"], skeleton["itDependsOn"])
+	// startedAt is a `time.Format(time.RFC3339)` string. After
+	// DOG-DESCRIBE-2 (2026-05-06) the scaffold honors `format:
+	// "date-time"` and emits a current-UTC RFC3339 timestamp instead
+	// of "" (which would fail CUE validation).
+	startedAt, ok := skeleton["startedAt"].(string)
+	if !ok {
+		t.Fatalf("startedAt: got %v (%T), want string", skeleton["startedAt"], skeleton["startedAt"])
 	}
-	// elapsedMin is a number → 0 (json.Unmarshal → float64(0))
-	if got, ok := skeleton["elapsedMin"].(float64); !ok || got != 0 {
-		t.Errorf("elapsedMin: got %v (%T), want 0", skeleton["elapsedMin"], skeleton["elapsedMin"])
+	if startedAt == "" {
+		t.Errorf("startedAt should be a RFC3339 timestamp, got empty string (DOG-DESCRIBE-2 regression)")
+	}
+	if _, parseErr := timeParseRFC3339(startedAt); parseErr != nil {
+		t.Errorf("startedAt %q is not RFC3339-parseable: %v", startedAt, parseErr)
 	}
 	// applicability is an object — must recurse into StepApplicability.
 	app, ok := skeleton["applicability"].(map[string]any)
@@ -132,6 +178,33 @@ func TestScaffoldStep_TypeCorrectEmptyValues(t *testing.T) {
 	// StepApplicability.required[] = [applicable]; reason is optional.
 	if _, ok := app["applicable"].(bool); !ok {
 		t.Errorf("applicability.applicable: got %v (%T), want bool", app["applicable"], app["applicable"])
+	}
+}
+
+// TestScaffoldStep_DateTimeFormat_EmitsRFC3339 directly exercises the
+// DOG-DESCRIBE-2 contract: a required string field with `format:
+// "date-time"` must scaffold as a CUE-validatable RFC3339 timestamp.
+// Without this fix the scaffold emitted `""` which fails the CUE
+// `time.Format(time.RFC3339)` constraint, forcing every operator to
+// hand-patch `startedAt` before `append-step` / `append-steps`.
+func TestScaffoldStep_DateTimeFormat_EmitsRFC3339(t *testing.T) {
+	// Pin the clock so the assertion is exact.
+	prev := nowUTCFunc
+	defer func() { nowUTCFunc = prev }()
+	pinned := mustParseRFC3339(t, "2026-05-06T12:34:56Z")
+	nowUTCFunc = func() time.Time { return pinned }
+
+	out, err := ScaffoldStep("PRD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var skeleton map[string]any
+	if err := json.Unmarshal(out, &skeleton); err != nil {
+		t.Fatal(err)
+	}
+	startedAt, _ := skeleton["startedAt"].(string)
+	if startedAt != "2026-05-06T12:34:56Z" {
+		t.Errorf("startedAt: got %q, want %q (DOG-DESCRIBE-2)", startedAt, "2026-05-06T12:34:56Z")
 	}
 }
 
