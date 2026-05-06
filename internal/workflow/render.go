@@ -3,6 +3,7 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -63,7 +64,8 @@ type taskTDDDecision struct {
 }
 
 type taskTestSpec struct {
-	Type string `json:"type"`
+	Intent string `json:"intent"`
+	Scope  string `json:"scope"`
 }
 
 type taskExplorer struct {
@@ -459,17 +461,38 @@ func renderExecuteTask(step Step) (string, error) {
 		fmt.Fprintf(&b, "TDD applicable: no\n")
 	}
 
-	// Test specs
-	var redCount, greenCount int
+	// Test specs (RETRO PR 6 §2.3): TestSpec.type is now `intent` —
+	// `red`/`green`/`chaos` describe which stage of the loop the spec
+	// satisfies. The `scope` axis (unit/integration/e2e/chaos) is
+	// summarized separately so the rendered prompt surfaces both axes.
+	var redCount, greenCount, chaosCount int
+	scopes := map[string]int{}
 	for _, ts := range tp.Reviewer.TestSpecs {
-		switch ts.Type {
+		switch ts.Intent {
 		case "red":
 			redCount++
 		case "green":
 			greenCount++
+		case "chaos":
+			chaosCount++
+		}
+		if ts.Scope != "" {
+			scopes[ts.Scope]++
 		}
 	}
-	fmt.Fprintf(&b, "Test specs: %d red, %d green\n", redCount, greenCount)
+	fmt.Fprintf(&b, "Test specs (intent): %d red, %d green, %d chaos\n", redCount, greenCount, chaosCount)
+	if len(scopes) > 0 {
+		scopeKeys := make([]string, 0, len(scopes))
+		for k := range scopes {
+			scopeKeys = append(scopeKeys, k)
+		}
+		sort.Strings(scopeKeys)
+		var parts []string
+		for _, k := range scopeKeys {
+			parts = append(parts, fmt.Sprintf("%d %s", scopes[k], k))
+		}
+		fmt.Fprintf(&b, "Test specs (scope): %s\n", strings.Join(parts, ", "))
+	}
 
 	// Skills to invoke
 	if len(tp.Explorer.SkillsFound) == 0 {

@@ -5,7 +5,17 @@ import (
 	"testing"
 
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/spf13/cobra"
 )
+
+// newTestRootForRegistration is a bare cobra root used only to assert
+// flag registration on subcommands without triggering the shared init
+// path (which loads auth + config from disk). Tests that need the full
+// CLI pipeline should invoke `browzer` as a subprocess via root_test.go
+// helpers instead.
+func newTestRootForRegistration(_ *testing.T) *cobra.Command {
+	return &cobra.Command{Use: "browzer"}
+}
 
 // TestExtractAnchor_PicksFirstNonTrivialLine verifies that the anchor
 // extractor walks past blanks, comment-only lines, and short lines to
@@ -78,5 +88,37 @@ func TestExtractAnchor_SkipsTooShortLines(t *testing.T) {
 	got := output.ExtractAnchor(snippet, "fallback")
 	if !strings.Contains(got, "longEnoughToAnchor") {
 		t.Errorf("expected anchor to land on the long-enough line, got %q", got)
+	}
+}
+
+// TestExplore_QuietFlagRegistered pins the existence of `--quiet` on the
+// explore command (RETRO PR 6 §2.1). The previous behaviour was
+// `unknown flag: --quiet`, which broke parity with the workflow read
+// verbs (`workflow get-step --quiet`, `describe-step-type --quiet`)
+// that operators + skill orchestrators rely on under BROWZER_LLM=1.
+func TestExplore_QuietFlagRegistered(t *testing.T) {
+	root := newTestRootForRegistration(t)
+	registerExplore(root)
+	cmd, _, err := root.Find([]string{"explore"})
+	if err != nil {
+		t.Fatalf("explore subcommand not registered: %v", err)
+	}
+	if f := cmd.Flags().Lookup("quiet"); f == nil {
+		t.Fatalf("explore is missing --quiet flag (RETRO PR 6 §2.1)")
+	}
+}
+
+// TestSearch_QuietFlagRegistered mirrors the explore-side regression for
+// `browzer search --quiet`. Both verbs were missing the flag in the
+// 2026-05-06 retro session; this test catches a future regression.
+func TestSearch_QuietFlagRegistered(t *testing.T) {
+	root := newTestRootForRegistration(t)
+	registerSearch(root)
+	cmd, _, err := root.Find([]string{"search"})
+	if err != nil {
+		t.Fatalf("search subcommand not registered: %v", err)
+	}
+	if f := cmd.Flags().Lookup("quiet"); f == nil {
+		t.Fatalf("search is missing --quiet flag (RETRO PR 6 §2.1)")
 	}
 }

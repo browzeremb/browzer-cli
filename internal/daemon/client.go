@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -151,6 +155,18 @@ func (c *Client) DaemonVersion(ctx context.Context) (DaemonVersionResponse, erro
 	}
 	var out DaemonVersionResponse
 	err := c.call(ctx, "Daemon.Version", struct{}{}, &out)
+	// RETRO PR 6 §3.2: retry-once on transient connection errors
+	// (ECONNRESET / EOF / broken pipe). The reported scenario was a daemon
+	// killed by idle-timeout between phases; the second CLI invocation
+	// dialed a half-dead socket and got ECONNRESET. By the time we retry,
+	// the kernel has finished tearing down the socket — the second dial
+	// either succeeds (daemon respawned by SessionStart hook) or fails
+	// hard (ECONNREFUSED → fallback as today). The preflight is read-only
+	// — `Daemon.Version` has no side effects — so the retry is safe.
+	if err != nil && isTransientConnError(err) {
+		out = DaemonVersionResponse{}
+		err = c.call(ctx, "Daemon.Version", struct{}{}, &out)
+	}
 	if err != nil {
 		// Don't cache: transient failures (daemon restart, socket
 		// flake) shouldn't permanently disable the daemon path for
@@ -162,6 +178,42 @@ func (c *Client) DaemonVersion(ctx context.Context) (DaemonVersionResponse, erro
 	c.versionResp = out
 	c.versionErr = nil
 	return out, nil
+}
+
+// isTransientConnError detects connection-reset / EOF / broken-pipe class
+// errors that indicate the daemon socket was alive at dial time but tore
+// down during the request. Used by `Client.DaemonVersion` to retry once
+// before bubbling the error up to the dispatcher (RETRO PR 6 §3.2).
+//
+// We do NOT retry on `connect: no such file or directory` /
+// `connection refused` — those are pre-dial signals that the daemon is
+// definitively gone, and retrying just doubles the wait before the
+// dispatcher falls back to standalone-sync.
+func isTransientConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	msg := err.Error()
+	transient := []string{
+		"connection reset by peer",
+		"broken pipe",
+		"unexpected EOF",
+		// Captured by client.call's `fmt.Errorf("read: %w", err)`
+		// when the daemon hangs up mid-response — the wrapper
+		// loses the underlying syscall errno on some Go versions.
+		"read: EOF",
+	}
+	for _, s := range transient {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // WorkflowMutate calls the daemon's WorkflowMutate method.

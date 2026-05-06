@@ -1,7 +1,7 @@
 {
     "openapi": "3.0.0",
     "info": {
-        "title": "Single source of truth for docs/browzer/<feat>/workflow.json (schema v2).\nEdit this file ONLY — workflow-v1.schema.json, workflow_v1.go, and\npackages/skills/references/workflow-schema.md are regenerated from it via\n`make ci-check`. See README.md.\n\nHard cutoff: schemaVersion 2 introduced 2026-05-04 — workflows under v1 are\nread-only post-merge (per WORKFLOW_SYNC_REDESIGN.md §5).\n\n@addedIn dating convention:\n  2026-04-24T00:00:00Z — pre-existing fields from schema v1 (workflow.json\n                         introduction).\n  2026-04-30T18:00:00Z — fields added in feat-20260430-ci-flake-strike retro\n                         (kind enum, executionDepth, commandSource).\n  2026-05-04T00:00:00Z — fields newly required by this PR (totalElapsedMin,\n                         completedAt, elapsedMin, dispatches[], pluginVersion).",
+        "title": "Single source of truth for docs/browzer/<feat>/workflow.json (schema v2).\nEdit this file ONLY — workflow-v1.schema.json, workflow_v1.go, and\npackages/skills/references/workflow-schema.md are regenerated from it via\n`make ci-check`. See README.md.\n\nHard cutoff: schemaVersion 2 introduced 2026-05-04 — workflows under v1 are\nread-only post-merge (per WORKFLOW_SYNC_REDESIGN.md §5).\n\n@addedIn dating convention:\n  2026-04-24T00:00:00Z — pre-existing fields from schema v1 (workflow.json\n                         introduction).\n  2026-04-30T18:00:00Z — fields added in feat-20260430-ci-flake-strike retro\n                         (kind enum, executionDepth, commandSource).\n  2026-05-04T00:00:00Z — fields newly required by this PR (totalElapsedMin,\n                         completedAt, elapsedMin, dispatches[], pluginVersion).\n  2026-05-06T00:00:00Z — RETRO PR 6: #TestSpec.type → intent (semantic\n                         rename — CONTRACT BREAK, no alias) + scope enum;\n                         #FileChange kind expanded with \"rename-domain\".",
         "version": "no version"
     },
     "paths": {},
@@ -1080,6 +1080,7 @@
                 ]
             },
             "FileChange": {
+                "description": "#FileChange entries rewrite TASK fields per `kind`:\n  - corrected:     replaces `from` path with `to` path inside task.scope\n  - added:         appends `path` (or `to` as fallback) to task.scope\n  - dropped:       removes `path` (or `from` as fallback) from task.scope\n  - rename-domain: rewrites `from` → `to` inside task.explorer.domains AND\n                   propagates the rename to task.explorer.skillsFound[].domain.\n                   Closes RETRO PR 6 §5.6 — previously, fixing a typo in a\n                   domain string required out-of-band jq surgery on the\n                   /tmp/reviewer-tasks.json file before append-steps.",
                 "type": "object",
                 "required": [
                     "kind"
@@ -1090,7 +1091,8 @@
                         "enum": [
                             "corrected",
                             "added",
-                            "dropped"
+                            "dropped",
+                            "rename-domain"
                         ]
                     },
                     "from": {
@@ -3066,11 +3068,13 @@
                 ]
             },
             "TestSpec": {
+                "description": "#TestSpec — Reviewer-emitted green-test plan entry. RETRO PR 6 §2.3 (2026-05-06):\n  - `type` (literal \"green\") was renamed to `intent` (the semantic axis: which\n    stage of the red→green→refactor loop the spec satisfies). Adding an enum\n    for `intent` clarifies that other plan stages exist; for now only \"green\"\n    is emitted by `generate-task` — `red` and `chaos` are reserved for future\n    reviewer passes that emit failing-first or fault-injection specs.\n  - `scope` is a NEW required field naming the testing layer the spec belongs\n    to. Replaces the cargo-culted `type: \"unit\"|\"integration\"|\"e2e\"` LLMs kept\n    emitting because the universal testing convention overloads the word\n    `type`. `scope` resolves the collision and is mandatory for the\n    `write-tests` skill's per-runner dispatch logic.\nCONTRACT BREAK: no `type:\"green\"` back-compat alias — schema v2 was already a\nhard cutoff per WORKFLOW_SYNC_REDESIGN.md §5; consumers must move to `intent`\n+ `scope`.",
                 "type": "object",
                 "required": [
                     "testId",
                     "file",
-                    "type",
+                    "intent",
+                    "scope",
                     "description"
                 ],
                 "properties": {
@@ -3081,10 +3085,21 @@
                     "file": {
                         "type": "string"
                     },
-                    "type": {
+                    "intent": {
                         "type": "string",
                         "enum": [
-                            "green"
+                            "green",
+                            "red",
+                            "chaos"
+                        ]
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": [
+                            "unit",
+                            "integration",
+                            "e2e",
+                            "chaos"
                         ]
                     },
                     "description": {

@@ -24,9 +24,9 @@ func taskStepFixture(t *testing.T) Step {
 				"reason":     "clear I/O",
 			},
 			"testSpecs": []any{
-				map[string]any{"type": "red", "description": "red test 1"},
-				map[string]any{"type": "red", "description": "red test 2"},
-				map[string]any{"type": "green", "description": "green test 1"},
+				map[string]any{"intent": "red", "scope": "unit", "description": "red test 1"},
+				map[string]any{"intent": "red", "scope": "unit", "description": "red test 2"},
+				map[string]any{"intent": "green", "scope": "integration", "description": "green test 1"},
 			},
 		},
 		"explorer": map[string]any{
@@ -89,6 +89,9 @@ func TestRender_ExecuteTask_AllFieldsPresent(t *testing.T) {
 		{"TDD reason", "clear I/O"},
 		{"red count", "2 red"},
 		{"green count", "1 green"},
+		{"chaos count", "0 chaos"},
+		{"scope unit count", "2 unit"},
+		{"scope integration count", "1 integration"},
 		{"skills", "go-best-practices"},
 		{"skills second", "superpowers:tdd"},
 		{"invariant rule", "invariant one"},

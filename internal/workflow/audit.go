@@ -54,6 +54,14 @@ type AuditLine struct {
 	// (e.g. fallback after queue_full, no-op idempotent skip). Empty for
 	// successful primary-path writes.
 	Reason string
+	// ExplorerProjected is true when at least one TASK step's
+	// task.explorer payload was auto-projected from the rich shape to the
+	// lean shape during this verb (RETRO PR 6 §2.2). Surfaced in the
+	// audit line as `explorerProjected=true` so the operator + judge can
+	// detect drift between subagent prompts and the CUE schema. False is
+	// the happy path; the field is suppressed entirely when false to
+	// keep the common case terse.
+	ExplorerProjected bool
 }
 
 // WriteAudit emits a single line ending with '\n' describing one mutation.
@@ -100,6 +108,12 @@ func WriteAudit(w io.Writer, a AuditLine) {
 	fmt.Fprintf(&b, " elapsedMs=%d", a.ElapsedMs)
 	if a.Reason != "" {
 		fmt.Fprintf(&b, " reason=%s", auditQuote(a.Reason))
+	}
+	// explorerProjected is suppressed when false (RETRO PR 6 §2.2 — the
+	// signal-on-deviation contract: emitting on every line would dilute the
+	// semantic of "drift detected").
+	if a.ExplorerProjected {
+		b.WriteString(" explorerProjected=true")
 	}
 	b.WriteByte('\n')
 	_, _ = w.Write([]byte(b.String()))

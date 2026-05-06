@@ -64,6 +64,7 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
+			quietFlag, _ := cmd.Flags().GetBool("quiet")
 
 			if schema {
 				if saveFlag != "" {
@@ -94,8 +95,15 @@ Examples:
 			}
 
 			// Staleness warning to stderr (never stdout — would pollute --json).
-			if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
-				output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
+			// RETRO PR 6 §2.1: --quiet collapses the staleness warning so the
+			// banner-free contract `workflow describe-step-type --quiet` already
+			// honors extends to `explore --quiet` and `search --quiet`. The
+			// underlying staleness state is unchanged; only the stderr noise
+			// is suppressed.
+			if !quietFlag {
+				if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
+					output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
+				}
 			}
 
 			ac, err := requireAuth(0)
@@ -157,6 +165,11 @@ Examples:
 	cmd.Flags().BoolVar(&anchorsOnly, "anchors", false, "Drop lineRange from each entry; rely on the stable anchor field instead")
 	cmd.Flags().Bool("json", false, "emit JSON")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
+	// RETRO PR 6 §2.1: parity with `workflow * --quiet`. Suppresses the
+	// staleness banner emitted to stderr when the workspace index is
+	// behind HEAD. Does NOT silence the actual JSON / formatted result on
+	// stdout — that would break the contract.
+	cmd.Flags().Bool("quiet", false, "suppress the staleness warning (parity with workflow read verbs)")
 	parent.AddCommand(cmd)
 }
 

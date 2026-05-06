@@ -456,6 +456,15 @@ type AdditionalContextObj struct {
 	Changes []FileChange `json:"changes"`
 }
 
+// #FileChange entries rewrite TASK fields per `kind`:
+//   - corrected:     replaces `from` path with `to` path inside task.scope
+//   - added:         appends `path` (or `to` as fallback) to task.scope
+//   - dropped:       removes `path` (or `from` as fallback) from task.scope
+//   - rename-domain: rewrites `from` → `to` inside task.explorer.domains AND
+//     propagates the rename to task.explorer.skillsFound[].domain.
+//     Closes RETRO PR 6 §5.6 — previously, fixing a typo in a
+//     domain string required out-of-band jq surgery on the
+//     /tmp/reviewer-tasks.json file before append-steps.
 type FileChange struct {
 	Kind string `json:"kind"`
 
@@ -468,12 +477,29 @@ type FileChange struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// #TestSpec — Reviewer-emitted green-test plan entry. RETRO PR 6 §2.3 (2026-05-06):
+//   - `type` (literal "green") was renamed to `intent` (the semantic axis: which
+//     stage of the red→green→refactor loop the spec satisfies). Adding an enum
+//     for `intent` clarifies that other plan stages exist; for now only "green"
+//     is emitted by `generate-task` — `red` and `chaos` are reserved for future
+//     reviewer passes that emit failing-first or fault-injection specs.
+//   - `scope` is a NEW required field naming the testing layer the spec belongs
+//     to. Replaces the cargo-culted `type: "unit"|"integration"|"e2e"` LLMs kept
+//     emitting because the universal testing convention overloads the word
+//     `type`. `scope` resolves the collision and is mandatory for the
+//     `write-tests` skill's per-runner dispatch logic.
+//
+// CONTRACT BREAK: no `type:"green"` back-compat alias — schema v2 was already a
+// hard cutoff per WORKFLOW_SYNC_REDESIGN.md §5; consumers must move to `intent`
+// + `scope`.
 type TestSpec struct {
 	TestId string `json:"testId"`
 
 	File string `json:"file"`
 
-	Type string `json:"type"`
+	Intent string `json:"intent"`
+
+	Scope string `json:"scope"`
 
 	Description string `json:"description"`
 

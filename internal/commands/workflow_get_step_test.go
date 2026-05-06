@@ -260,8 +260,8 @@ const workflowWithTaskStepJSON = `{
             "reason": "clear I/O behavior"
           },
           "testSpecs": [
-            {"type": "red", "description": "all fields present"},
-            {"type": "green", "description": "minimal step no panic"}
+            {"intent": "red", "scope": "unit", "description": "all fields present"},
+            {"intent": "green", "scope": "unit", "description": "minimal step no panic"}
           ]
         },
         "explorer": {

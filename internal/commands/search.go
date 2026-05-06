@@ -14,20 +14,29 @@ import (
 )
 
 // searchSchemaJSON is the baked-in JSON Schema 2020-12 doc for the
-// search response (an array of SearchResult entries).
+// search response. Mirrors the explore-side `{entries: [...]}` envelope
+// (RETRO PR 6 #8 — paridade entre os dois verbos irmãos): consumers can
+// pipe both surfaces through the same `.entries[]` jq selector. The
+// previous bare-array shape is gone — schema v2 is a hard cutoff.
 const searchSchemaJSON = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SearchResponse",
-  "type": "array",
-  "items": {
-    "type": "object",
-    "required": ["text", "score", "path"],
-    "properties": {
-      "text":         {"type": "string"},
-      "position":     {"type": "integer"},
-      "score":        {"type": "number"},
-      "path":         {"type": "string"},
-      "documentName": {"type": "string"}
+  "type": "object",
+  "required": ["entries"],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "score", "path"],
+        "properties": {
+          "text":         {"type": "string"},
+          "position":     {"type": "integer"},
+          "score":        {"type": "number"},
+          "path":         {"type": "string"},
+          "documentName": {"type": "string"}
+        }
+      }
     }
   }
 }
@@ -66,6 +75,7 @@ Examples:
 
 			jsonFlag, _ := cmd.Flags().GetBool("json")
 			saveFlag, _ := cmd.Flags().GetString("save")
+			quietFlag, _ := cmd.Flags().GetBool("quiet")
 			if schema {
 				if saveFlag != "" {
 					return os.WriteFile(saveFlag, []byte(searchSchemaJSON), 0o644)
@@ -113,8 +123,12 @@ Examples:
 						converted[i].Score = 0
 					}
 				}
+				// RETRO PR 6 #8: emit `{entries:[...]}` envelope. The
+				// previous bare-array shape was sibling-inconsistent with
+				// `explore --json` and forced consumers to special-case
+				// each verb's jq selector.
 				return emitOrFail(
-					resp.Results,
+					map[string]any{"entries": resp.Results},
 					output.Options{JSON: jsonFlag, Save: saveFlag},
 					output.FormatSearchResults(converted),
 				)
@@ -133,8 +147,12 @@ Examples:
 				return cliErrors.NoProject()
 			}
 
-			if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
-				output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
+			// RETRO PR 6 §2.1: --quiet suppresses the staleness banner
+			// (parity with `workflow describe-step-type --quiet`).
+			if !quietFlag {
+				if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
+					output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
+				}
 			}
 
 			results, err := ac.Client.SearchWorkspace(rootContext(cmd), project.WorkspaceID, query, limit, 0)
@@ -159,8 +177,9 @@ Examples:
 					converted[i].Score = 0
 				}
 			}
+			// RETRO PR 6 #8: same envelope as the cross-workspace branch.
 			return emitOrFail(
-				results,
+				map[string]any{"entries": results},
 				output.Options{JSON: jsonFlag, Save: saveFlag},
 				output.FormatSearchResults(converted),
 			)
@@ -173,5 +192,6 @@ Examples:
 	cmd.Flags().BoolVar(&allWorkspaces, "all-workspaces", false, "Search across all workspaces in the organization (mutually exclusive with --workspaces)")
 	cmd.Flags().Bool("json", false, "emit JSON")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
+	cmd.Flags().Bool("quiet", false, "suppress the staleness warning (parity with workflow read verbs)")
 	parent.AddCommand(cmd)
 }

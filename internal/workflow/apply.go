@@ -61,6 +61,15 @@ type ApplyResult struct {
 	// NoOpReason is set together with NoOp=true to give the audit line a
 	// human-readable explanation. Empty when NoOp=false.
 	NoOpReason string
+
+	// ExplorerProjected is true when the append-step / append-steps verb
+	// auto-projected at least one TASK step's `task.explorer` payload from
+	// the rich (agent-friendly) shape to the lean (CUE-canonical) shape
+	// before validation. Surfaced in the audit line as
+	// `explorerProjected=true` so the operator + judge can detect drift
+	// between the subagent prompt and the schema (RETRO PR 6 §2.2). Set
+	// to false unless the projection actually changed the payload.
+	ExplorerProjected bool
 }
 
 // Mutator is the in-place transform applied to the raw workflow map under
@@ -692,6 +701,17 @@ func mutatorAppendStep(raw map[string]any, args MutatorArgs, out *ApplyResult) e
 		return fmt.Errorf("parse step payload: %w", err)
 	}
 
+	// RETRO PR 6 §2.2 — auto-project Explorer rich shape to lean before CUE.
+	// Only TASK steps carry an explorer payload; the helper is a no-op for
+	// any other step.name. Skipped under BROWZER_EXPLORER_LEGACY_REJECT=1.
+	if name, _ := stepMap["name"].(string); name == "TASK" {
+		if taskMap, ok := stepMap["task"].(map[string]any); ok {
+			if projectExplorerRichToLean(taskMap) {
+				out.ExplorerProjected = true
+			}
+		}
+	}
+
 	stepsRaw := raw["steps"]
 	stepsSlice, _ := stepsRaw.([]any)
 	stepsSlice = append(stepsSlice, stepMap)
@@ -763,6 +783,7 @@ func mutatorAppendSteps(raw map[string]any, args MutatorArgs, out *ApplyResult) 
 	stepsRaw := raw["steps"]
 	stepsSlice, _ := stepsRaw.([]any)
 	var lastStepID string
+	projectedAny := false
 	// CRITICAL: assignment of stepsSlice back into raw["steps"] happens
 	// AFTER the loop. Moving it inside the loop breaks the
 	// all-or-nothing rollback contract — a mid-batch error would leave
@@ -770,6 +791,15 @@ func mutatorAppendSteps(raw map[string]any, args MutatorArgs, out *ApplyResult) 
 	// validation that reads raw before re-marshal.
 	for _, entry := range stepsPayload {
 		stepMap := entry.(map[string]any) // safe: validated above
+		// RETRO PR 6 §2.2 — auto-project Explorer rich shape to lean
+		// per TASK step. Same contract as the singular append-step.
+		if name, _ := stepMap["name"].(string); name == "TASK" {
+			if taskMap, ok := stepMap["task"].(map[string]any); ok {
+				if projectExplorerRichToLean(taskMap) {
+					projectedAny = true
+				}
+			}
+		}
 		stepsSlice = append(stepsSlice, stepMap)
 		lastStepID = stepMap["stepId"].(string) // safe: validated above
 	}
@@ -778,6 +808,7 @@ func mutatorAppendSteps(raw map[string]any, args MutatorArgs, out *ApplyResult) 
 	recomputeCountersRaw(raw)
 
 	out.StepID = lastStepID
+	out.ExplorerProjected = projectedAny
 	return nil
 }
 
@@ -1602,6 +1633,20 @@ func mutatorReapplyAdditionalContext(raw map[string]any, args MutatorArgs, out *
 			if len(scopeSlice) != before {
 				changed = true
 			}
+		case "rename-domain":
+			// RETRO PR 6 §5.6: rewrite Reviewer-discovered domain typos
+			// across BOTH task.explorer.domains AND every entry in
+			// task.explorer.skillsFound[].domain. Previously the operator
+			// had to jq-surgery /tmp/reviewer-tasks.json before append-steps
+			// because no mutator covered this surface.
+			from, _ := ch["from"].(string)
+			to, _ := ch["to"].(string)
+			if from == "" || to == "" {
+				continue
+			}
+			if renameTaskExplorerDomain(taskMap, from, to) {
+				changed = true
+			}
 		}
 	}
 
@@ -1614,6 +1659,189 @@ func mutatorReapplyAdditionalContext(raw map[string]any, args MutatorArgs, out *
 	taskMap["scope"] = scopeSlice
 	raw["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
 	return nil
+}
+
+// renameTaskExplorerDomain rewrites every occurrence of `from` → `to` inside
+// task.explorer.domains[] AND task.explorer.skillsFound[].domain. Returns true
+// when any field actually changed (so the caller can record idempotent NoOps
+// distinct from real edits). Used by the rename-domain branch of
+// reapply-additional-context (RETRO PR 6 §5.6).
+//
+// Closes the gap where the existing kind="corrected" mutator only operated on
+// task.scope[] — leaving Reviewer-emitted domain typos like "fastapi-backend"
+// unrewritten in task.explorer.domains and task.explorer.skillsFound[].domain.
+func renameTaskExplorerDomain(taskMap map[string]any, from, to string) bool {
+	if from == to || from == "" || to == "" {
+		return false
+	}
+	explorerRaw, ok := taskMap["explorer"]
+	if !ok {
+		return false
+	}
+	explorerMap, ok := explorerRaw.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	changed := false
+
+	// task.explorer.domains[] — rewrite each matching entry. Idempotent: if
+	// `to` is already present and `from` is also present, the slice keeps a
+	// single entry (deduplicate-on-rewrite).
+	if domainsRaw, ok := explorerMap["domains"]; ok {
+		if domains, ok := domainsRaw.([]any); ok {
+			seen := make(map[string]struct{}, len(domains))
+			renamed := make([]any, 0, len(domains))
+			for _, d := range domains {
+				ds, isStr := d.(string)
+				if !isStr {
+					renamed = append(renamed, d)
+					continue
+				}
+				if ds == from {
+					ds = to
+					changed = true
+				}
+				if _, dup := seen[ds]; dup {
+					continue
+				}
+				seen[ds] = struct{}{}
+				renamed = append(renamed, ds)
+			}
+			explorerMap["domains"] = renamed
+		}
+	}
+
+	// task.explorer.skillsFound[].domain — rewrite the field on each matching
+	// SkillFound entry. Touching .domain in-place keeps the rest of the entry
+	// (skill, relevance) intact.
+	if skillsRaw, ok := explorerMap["skillsFound"]; ok {
+		if skills, ok := skillsRaw.([]any); ok {
+			for _, sf := range skills {
+				sfMap, ok := sf.(map[string]any)
+				if !ok {
+					continue
+				}
+				if dom, _ := sfMap["domain"].(string); dom == from {
+					sfMap["domain"] = to
+					changed = true
+				}
+			}
+		}
+	}
+
+	return changed
+}
+
+// projectExplorerRichToLean is the §2.2 (RETRO PR 6) auto-projection that
+// translates the rich shape Explorer subagents are documented to emit into
+// the lean shape #TaskExplorer persists. The translation runs once per
+// payload, immediately before the CUE pass — the rich shape is for agent
+// reasoning (anchors + reasons keep Reviewer's signal high), the lean shape
+// is for persistence (small file, stable schema).
+//
+// Translations applied to `task.explorer`:
+//
+//	filesModified: [{path, anchor?, imports?, importedBy?, new?}, ...]
+//	  → ["pkg/foo.go", ...] (extract `.path` from each object; preserve
+//	    bare strings unchanged)
+//	filesToRead:   [{path, reason?}, ...]
+//	  → ["pkg/foo.go", ...]
+//	depsGraph:     {"pkg/foo.go": {forward:[...], reverse:[...]}}
+//	  → {"pkg/foo.go": {imports:[...], importedBy:[...]}} (rename keys; keep
+//	    bare imports/importedBy unchanged when already present)
+//
+// Returns true if ANY field was actually projected (so callers can decide
+// whether to set explorerProjected=true on the audit line).
+//
+// Disable via env BROWZER_EXPLORER_LEGACY_REJECT=1 — when set, the projection
+// is skipped and the original payload reaches the CUE validator unchanged
+// (which will reject it). Operators / CI can use the flag to detect drift
+// in subagent prompts that emit the rich shape (the §2.4 audit relies on
+// the lean shape passing without projection).
+func projectExplorerRichToLean(taskMap map[string]any) bool {
+	if os.Getenv("BROWZER_EXPLORER_LEGACY_REJECT") == "1" {
+		return false
+	}
+	explorerRaw, ok := taskMap["explorer"]
+	if !ok {
+		return false
+	}
+	explorerMap, ok := explorerRaw.(map[string]any)
+	if !ok {
+		return false
+	}
+	changed := false
+
+	flatten := func(field string) {
+		raw, ok := explorerMap[field]
+		if !ok {
+			return
+		}
+		entries, ok := raw.([]any)
+		if !ok {
+			return
+		}
+		out := make([]any, 0, len(entries))
+		fieldChanged := false
+		for _, entry := range entries {
+			switch v := entry.(type) {
+			case string:
+				out = append(out, v)
+			case map[string]any:
+				if path, _ := v["path"].(string); path != "" {
+					out = append(out, path)
+					fieldChanged = true
+				}
+				// objects without a path are dropped silently — no
+				// salvageable lean form.
+			default:
+				// unknown type — preserve so the CUE validator
+				// produces a precise error instead of us swallowing it.
+				out = append(out, entry)
+			}
+		}
+		if fieldChanged {
+			explorerMap[field] = out
+			changed = true
+		}
+	}
+	flatten("filesModified")
+	flatten("filesToRead")
+
+	// depsGraph[path].forward / .reverse → .imports / .importedBy. The
+	// CUE schema (#TaskExplorer.depsGraph) keys on imports/importedBy;
+	// subagent preambles document the natural-language pair forward/reverse
+	// (because they read better as "blast radius forward/reverse" in the
+	// agent's head). Rename in-place so the agent docs and the CUE schema
+	// can both stay correct without forcing the operator to translate.
+	if depsRaw, ok := explorerMap["depsGraph"]; ok {
+		if depsMap, ok := depsRaw.(map[string]any); ok {
+			for k, v := range depsMap {
+				node, ok := v.(map[string]any)
+				if !ok {
+					continue
+				}
+				if fwd, ok := node["forward"]; ok {
+					if _, alreadyHas := node["imports"]; !alreadyHas {
+						node["imports"] = fwd
+					}
+					delete(node, "forward")
+					changed = true
+				}
+				if rev, ok := node["reverse"]; ok {
+					if _, alreadyHas := node["importedBy"]; !alreadyHas {
+						node["importedBy"] = rev
+					}
+					delete(node, "reverse")
+					changed = true
+				}
+				depsMap[k] = node
+			}
+		}
+	}
+
+	return changed
 }
 
 // mutatorAuditModelOverride records a model override onto a TASK step's

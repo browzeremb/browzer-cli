@@ -333,3 +333,71 @@ func TestWorkflowQuery_OutputDoesNotEscapeHTMLChars(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkflowQuery_StepsByName_HandlesTrickyChars_RoundtripStable is the
+// RETRO PR 6 §3.1 regression pin. The 2026-05-06 session reported an
+// intermittent `jq: Invalid escape at line 162, column 615` against a
+// real PRD payload — the column landed inside a description containing
+// backticks + code fences. Post-session, `query steps-by-name | jq -r ...`
+// succeeded, so the bug was either a write-side encoding race OR an
+// operator-side bash escape mishap.
+//
+// This test pins the CONTRACT, not the bug: a workflow.json containing
+// every escape-edge-case (backticks, escaped backticks, code fences,
+// HTML chars, unicode, control chars in description fields) MUST
+// round-trip through `query steps-by-name` and produce
+// strictly-valid-JSON output every time across 100 sequential runs.
+// Any future regression on the read path that emits invalid JSON for
+// these inputs trips this test.
+func TestWorkflowQuery_StepsByName_HandlesTrickyChars_RoundtripStable(t *testing.T) {
+	// Build a workflow whose PRD step has trickyDescription embedded.
+	// jq invariably trips on:
+	//   1. Bare backticks (jq accepts them but Markdown lookalikes
+	//      sometimes reach the parser as escaped sequences)
+	//   2. `\``-escaped backticks (the operator's first instinct;
+	//      bash variant of the original report's `\\\``)
+	//   3. Code fences (triple-backtick blocks)
+	//   4. HTML-special chars (`<`, `>`, `&`)
+	//   5. Unicode (en-dash, smart quotes)
+	//   6. Multi-line text with embedded newlines.
+	tricky := "WHEN `x > y` AND \\`code\\` is set " +
+		"AND ```fenced``` matches THEN ok — pass\nLine two with «smart» quotes"
+
+	prdJSON, mErr := json.Marshal(tricky)
+	if mErr != nil {
+		t.Fatalf("seed marshal: %v", mErr)
+	}
+	wfRaw := strings.ReplaceAll(queryWorkflowJSON,
+		`"reason": "default"`,
+		`"reason": `+string(prdJSON),
+	)
+	wfPath := writeWorkflowFile(t, wfRaw)
+
+	// Run the read 100x. Each run must:
+	//   (a) decode as valid JSON
+	//   (b) preserve the literal tricky text (not double-escaped)
+	for i := range 100 {
+		var stdout, stderr bytes.Buffer
+		root := buildWorkflowCommandT(t, &stdout, &stderr)
+		root.SetArgs([]string{"workflow", "query", "steps-by-name", "--workflow", wfPath})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("iter %d: Execute: %v\nstderr: %s", i, err, stderr.String())
+		}
+
+		var parsed any
+		if err := json.Unmarshal(stdout.Bytes(), &parsed); err != nil {
+			t.Fatalf("iter %d: stdout failed JSON decode: %v\nraw bytes: %q",
+				i, err, stdout.String())
+		}
+		// Spot-check the literal tricky chars are present (the encoder
+		// MUST NOT have produced HTML-escapes or double-backslashed the
+		// embedded `\`` sequences).
+		got := stdout.String()
+		for _, badEscape := range []string{"\\u003c", "\\u003e", "\\u0026"} {
+			if strings.Contains(got, badEscape) {
+				t.Fatalf("iter %d: stdout contains HTML escape %s; raw: %s",
+					i, badEscape, got)
+			}
+		}
+	}
+}

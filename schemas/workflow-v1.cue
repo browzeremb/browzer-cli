@@ -13,6 +13,9 @@
 //                          (kind enum, executionDepth, commandSource).
 //   2026-05-04T00:00:00Z — fields newly required by this PR (totalElapsedMin,
 //                          completedAt, elapsedMin, dispatches[], pluginVersion).
+//   2026-05-06T00:00:00Z — RETRO PR 6: #TestSpec.type → intent (semantic
+//                          rename — CONTRACT BREAK, no alias) + scope enum;
+//                          #FileChange kind expanded with "rename-domain".
 package workflow
 
 import "time"
@@ -299,20 +302,44 @@ import "time"
 	changes: [...#FileChange] @addedIn("2026-05-04T00:00:00Z")
 }
 
+// #FileChange entries rewrite TASK fields per `kind`:
+//   - corrected:     replaces `from` path with `to` path inside task.scope
+//   - added:         appends `path` (or `to` as fallback) to task.scope
+//   - dropped:       removes `path` (or `from` as fallback) from task.scope
+//   - rename-domain: rewrites `from` → `to` inside task.explorer.domains AND
+//                    propagates the rename to task.explorer.skillsFound[].domain.
+//                    Closes RETRO PR 6 §5.6 — previously, fixing a typo in a
+//                    domain string required out-of-band jq surgery on the
+//                    /tmp/reviewer-tasks.json file before append-steps.
 #FileChange: {
-	kind:    "corrected" | "added" | "dropped" @addedIn("2026-05-04T00:00:00Z")
-	from?:   string                            @addedIn("2026-05-04T00:00:00Z")
-	to?:     string                            @addedIn("2026-05-04T00:00:00Z")
-	path?:   string                            @addedIn("2026-05-04T00:00:00Z")
-	reason?: string                            @addedIn("2026-05-04T00:00:00Z")
+	kind:    "corrected" | "added" | "dropped" | "rename-domain" @addedIn("2026-05-04T00:00:00Z")
+	from?:   string                                              @addedIn("2026-05-04T00:00:00Z")
+	to?:     string                                              @addedIn("2026-05-04T00:00:00Z")
+	path?:   string                                              @addedIn("2026-05-04T00:00:00Z")
+	reason?: string                                              @addedIn("2026-05-04T00:00:00Z")
 }
 
+// #TestSpec — Reviewer-emitted green-test plan entry. RETRO PR 6 §2.3 (2026-05-06):
+//   - `type` (literal "green") was renamed to `intent` (the semantic axis: which
+//     stage of the red→green→refactor loop the spec satisfies). Adding an enum
+//     for `intent` clarifies that other plan stages exist; for now only "green"
+//     is emitted by `generate-task` — `red` and `chaos` are reserved for future
+//     reviewer passes that emit failing-first or fault-injection specs.
+//   - `scope` is a NEW required field naming the testing layer the spec belongs
+//     to. Replaces the cargo-culted `type: "unit"|"integration"|"e2e"` LLMs kept
+//     emitting because the universal testing convention overloads the word
+//     `type`. `scope` resolves the collision and is mandatory for the
+//     `write-tests` skill's per-runner dispatch logic.
+// CONTRACT BREAK: no `type:"green"` back-compat alias — schema v2 was already a
+// hard cutoff per WORKFLOW_SYNC_REDESIGN.md §5; consumers must move to `intent`
+// + `scope`.
 #TestSpec: {
-	testId:         =~"^T-[0-9]+$" @addedIn("2026-04-24T00:00:00Z")
-	file:           string         @addedIn("2026-04-24T00:00:00Z")
-	type:           "green"        @addedIn("2026-04-24T00:00:00Z")
-	description:    string         @addedIn("2026-04-24T00:00:00Z")
-	coverageTarget?: string        @addedIn("2026-04-24T00:00:00Z")
+	testId:         =~"^T-[0-9]+$"                         @addedIn("2026-04-24T00:00:00Z")
+	file:           string                                  @addedIn("2026-04-24T00:00:00Z")
+	intent:         "green" | "red" | "chaos"               @addedIn("2026-05-06T00:00:00Z")
+	scope:          "unit" | "integration" | "e2e" | "chaos" @addedIn("2026-05-06T00:00:00Z")
+	description:    string                                  @addedIn("2026-04-24T00:00:00Z")
+	coverageTarget?: string                                 @addedIn("2026-04-24T00:00:00Z")
 }
 
 #TaskExecutionResult: {

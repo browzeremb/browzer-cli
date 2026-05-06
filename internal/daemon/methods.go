@@ -164,6 +164,13 @@ type WorkflowMutateResult struct {
 	QueueDepthAhead int64  `json:"queueDepthAhead"`
 	ValidatedOk     bool   `json:"validatedOk"`
 	Durable         bool   `json:"durable"`
+	// ExplorerProjected mirrors ApplyResult.ExplorerProjected — true when
+	// the daemon-side append-step / append-steps run translated at least
+	// one TASK step's `task.explorer` payload from the rich shape to the
+	// lean shape (RETRO PR 6 §2.2). Surfaced on the CLI's audit line as
+	// `explorerProjected=true`. Suppressed when false to keep the wire
+	// frame small for the common case.
+	ExplorerProjected bool `json:"explorerProjected,omitempty"`
 }
 
 // HealthResponse is the wire shape for the Health method, exported so the
@@ -330,13 +337,14 @@ func (s *Server) handleWorkflowMutate(ctx context.Context, raw json.RawMessage) 
 		return nil, job.err
 	}
 	return WorkflowMutateResult{
-		WriteID:         p.WriteID,
-		Mode:            "daemon-sync",
-		StepID:          job.result.StepID,
-		LockHeldMs:      job.lockHeld.Milliseconds(),
-		QueueDepthAhead: int64(depthAhead),
-		ValidatedOk:     job.result.ValidatedOk,
-		Durable:         job.result.Durable,
+		WriteID:           p.WriteID,
+		Mode:              "daemon-sync",
+		StepID:            job.result.StepID,
+		LockHeldMs:        job.lockHeld.Milliseconds(),
+		QueueDepthAhead:   int64(depthAhead),
+		ValidatedOk:       job.result.ValidatedOk,
+		Durable:           job.result.Durable,
+		ExplorerProjected: job.result.ExplorerProjected,
 	}, nil
 }
 

@@ -533,16 +533,17 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 		auditMode = wf.AuditModeDaemonSync
 	}
 	line := wf.AuditLine{
-		Verb:            verb,
-		Path:            wfPath,
-		Mode:            auditMode,
-		WriteID:         res.WriteID,
-		StepID:          res.StepID,
-		LockHeldMs:      res.LockHeldMs,
-		ValidatedOk:     res.ValidatedOk,
-		Durable:         res.Durable,
-		QueueDepthAhead: res.QueueDepthAhead,
-		ElapsedMs:       time.Since(startedAt).Milliseconds(),
+		Verb:              verb,
+		Path:              wfPath,
+		Mode:              auditMode,
+		WriteID:           res.WriteID,
+		StepID:            res.StepID,
+		LockHeldMs:        res.LockHeldMs,
+		ValidatedOk:       res.ValidatedOk,
+		Durable:           res.Durable,
+		QueueDepthAhead:   res.QueueDepthAhead,
+		ElapsedMs:         time.Since(startedAt).Milliseconds(),
+		ExplorerProjected: res.ExplorerProjected,
 	}
 	emitAuditLine(cmd, stderr, line)
 	return nil
@@ -683,15 +684,16 @@ func runStandaloneAndAudit(cmd *cobra.Command, wfPath, verb string, args wf.Muta
 	}
 
 	line := wf.AuditLine{
-		Verb:        verb,
-		Path:        wfPath,
-		Mode:        mode,
-		StepID:      res.StepID,
-		LockHeldMs:  lockHeld.Milliseconds(),
-		ValidatedOk: res.ValidatedOk,
-		Durable:     res.Durable,
-		ElapsedMs:   time.Since(startedAt).Milliseconds(),
-		Reason:      auditReason,
+		Verb:              verb,
+		Path:              wfPath,
+		Mode:              mode,
+		StepID:            res.StepID,
+		LockHeldMs:        lockHeld.Milliseconds(),
+		ValidatedOk:       res.ValidatedOk,
+		Durable:           res.Durable,
+		ElapsedMs:         time.Since(startedAt).Milliseconds(),
+		Reason:            auditReason,
+		ExplorerProjected: res.ExplorerProjected,
 	}
 	emitAuditLine(cmd, stderr, line)
 	return nil
