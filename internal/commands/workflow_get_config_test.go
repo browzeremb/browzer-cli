@@ -111,3 +111,87 @@ func TestGetConfig_StdoutDoesNotContainBannerVerb(t *testing.T) {
 		t.Errorf("get-config stdout must not contain banner artifact `verb=`; got: %s", stdout.String())
 	}
 }
+
+// TestGetConfig_TopLevelStateKey_CurrentStepId verifies the fall-through
+// behavior added by FIX-1 (DOG-CONFIG-FALLTHROUGH, 2026-05-06): top-level
+// state fields like `currentStepId`, `nextStepId`, `featureId`, … are
+// readable via `get-config <key>` even though they live outside `.config`.
+//
+// Without this fall-through, the documented orchestrator pattern
+//
+//	LAST=$(browzer workflow get-config currentStepId --workflow "$WF")
+//
+// (cited in `packages/cli/CLAUDE.md` §".browzer/active-step hybrid-cache",
+// `packages/skills/skills/orchestrate-task-delivery/SKILL.md` Step 4, and
+// `packages/skills/skills/orchestrate-task-delivery/references/pipeline-phases.md`
+// "Read verbs" table) emits "field not found" because `currentStepId` is at
+// the workflow root, not under `.config`. The dogfood validation 2026-05-06
+// caught the drift; this test pins the fix.
+func TestGetConfig_TopLevelStateKey_CurrentStepId(t *testing.T) {
+	// minimalWorkflowJSON sets currentStepId to "" — patch to a real id to
+	// confirm we read the value, not the default.
+	withId := strings.ReplaceAll(minimalWorkflowJSON, `"currentStepId": ""`, `"currentStepId": "STEP_02_PRD"`)
+	wfPath := writeWorkflowFile(t, withId)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "get-config", "currentStepId", "--workflow", wfPath})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+
+	got := strings.TrimSpace(stdout.String())
+	if got != "STEP_02_PRD" {
+		t.Errorf("expected currentStepId=%q, got %q", "STEP_02_PRD", got)
+	}
+	// Top-level state keys must NOT be JSON-quoted (matches `mode` semantics).
+	if strings.HasPrefix(got, `"`) {
+		t.Errorf("currentStepId should be unquoted, got %q", got)
+	}
+}
+
+// TestGetConfig_TopLevelStateKey_AllScalarKeys exercises every key in
+// `topLevelStateKeys` to guard against a regression that drops one entry
+// from the allowlist. Each key must read without error and emit a non-empty
+// value (or empty for keys whose fixture default is "").
+func TestGetConfig_TopLevelStateKey_AllScalarKeys(t *testing.T) {
+	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
+
+	keys := []string{
+		"schemaVersion", "featureId", "featureName", "featDir", "originalRequest",
+		"startedAt", "updatedAt", "totalElapsedMin", "currentStepId", "nextStepId",
+		"totalSteps", "completedSteps",
+	}
+	for _, k := range keys {
+		t.Run(k, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			root := buildWorkflowCommandT(t, &stdout, &stderr)
+			root.SetArgs([]string{"workflow", "get-config", k, "--workflow", wfPath})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("get-config %s: unexpected error %v\nstderr: %s", k, err, stderr.String())
+			}
+			// We don't assert specific values here — the contract under test
+			// is "key resolves without 'field not found'". Empty stdout is
+			// acceptable for keys whose fixture default is "".
+		})
+	}
+}
+
+// TestGetConfig_ConfigKeyStillResolves guards against a regression that
+// would short-circuit on the top-level allowlist and miss the `.config.<key>`
+// fall-through. `mode` lives under `.config` and must continue to resolve.
+func TestGetConfig_ConfigKeyStillResolves(t *testing.T) {
+	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "get-config", "mode", "--workflow", wfPath})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "autonomous" {
+		t.Errorf("expected mode=autonomous, got %q", got)
+	}
+}
