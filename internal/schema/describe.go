@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/token"
 	"github.com/itchyny/gojq"
 )
 
@@ -46,6 +48,17 @@ type DescribeOpts struct {
 	// so the caller sees only the literal value sets it must
 	// match. Implies JSON output regardless of `JSON`.
 	InlineEnums bool
+	// IncludeBase (Phase 3.2, 2026-05-06) prepends the #StepBase
+	// wrapper fields (stepId, name, status, applicability, …) to the
+	// output. Each base field is emitted with a path PREFIXED `@base.`
+	// (e.g. `@base.stepId`, `@base.status`) so existing consumers that
+	// filter by path prefix do NOT collide with step-payload paths.
+	// Default false for backward compat — pre-Phase-3.2 callers expect
+	// only payload fields and are unaffected. Skills that need to
+	// dispatch a fully-formed step (StepBase + payload) opt in via
+	// `--include-base` to discover wrapper fields without a separate
+	// CUE-source read.
+	IncludeBase bool
 }
 
 // ValidStepNames is the canonical allowlist used both for input validation
@@ -157,6 +170,33 @@ func DescribeStepType(stepName string, opts DescribeOpts) (string, error) {
 	var fields []fieldInfo
 	walkCUEFields(defVal, "", addedInMap, &fields)
 
+	// IncludeBase (Phase 3.2, 2026-05-06): prepend #StepBase wrapper
+	// fields under the `@base.` prefix so existing callers that
+	// filter by step-payload path (e.g. `prd.…`, `task.…`) don't
+	// pick up the base rows by accident, and so an LLM agent
+	// discovering the schema in one shot sees the entire shape
+	// (wrapper + payload) without a second invocation.
+	//
+	// Skipped silently when the SSOT does not declare `#StepBase`
+	// (defensive — real builds always have it; older CUE forks
+	// without the definition still produce useful payload-only
+	// output).
+	if opts.IncludeBase {
+		baseVal, ok := lookupDefinition("#StepBase")
+		if ok {
+			var baseFields []fieldInfo
+			walkCUEFields(baseVal, "", addedInMap, &baseFields)
+			for i := range baseFields {
+				baseFields[i].Path = "@base." + baseFields[i].Path
+			}
+			// Prepend rather than append — the sort step below re-orders
+			// alphabetically anyway, but the @base. prefix sorts before
+			// payload paths under default ASCII ordering, which is the
+			// desired visual grouping.
+			fields = append(baseFields, fields...)
+		}
+	}
+
 	// Apply --required-only filter.
 	if opts.RequiredOnly {
 		fields = filterRequired(fields)
@@ -246,13 +286,25 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 
 	// Collect all field labels so we can check the count before consuming the
 	// iterator (Next() is consumed — we re-call Fields() for recursion).
+	//
+	// WF-OPTIONAL-MARKER (2026-05-06): capture `optional` per-iteration via
+	// fields.IsOptional() — CUE's `field?: T` syntax marks a field as omittable
+	// at the iterator level, NOT on the cue.Value itself. Without this the
+	// downstream `required` computation treated every `?`-suffixed field as
+	// required, contradicting the CUE SSOT and forcing skills to inline static
+	// shape docs to compensate.
 	type fieldEntry struct {
-		label string
-		child cue.Value
+		label    string
+		optional bool
+		child    cue.Value
 	}
 	var entries []fieldEntry
 	for fields.Next() {
-		entries = append(entries, fieldEntry{label: fields.Selector().Unquoted(), child: fields.Value()})
+		entries = append(entries, fieldEntry{
+			label:    fields.Selector().Unquoted(),
+			optional: fields.IsOptional(),
+			child:    fields.Value(),
+		})
 	}
 
 	if len(entries) == 0 {
@@ -282,6 +334,15 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 				subEntries = append(subEntries, fieldEntry{label: subFields.Selector().Unquoted(), child: subFields.Value()})
 			}
 			if len(subEntries) > 0 {
+				// WF-OPTIONAL-MARKER (2026-05-06): emit a parent row
+				// for the struct field so consumers can answer "is
+				// this object itself required in the payload?"
+				// independently of children's optionality. Without
+				// this, optional struct fields like `explorer?:
+				// #TaskExplorer` are invisible — only their internal
+				// fields surface, masking that the entire object can
+				// be omitted.
+				*out = append(*out, makeFieldInfo(path, e.child, addedInMap, e.optional))
 				// Recurse by calling walkCUEFields on the child (it will collect
 				// its own entries fresh).
 				walkCUEFields(e.child, path, addedInMap, out)
@@ -289,6 +350,8 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 			}
 			// No sub-entries. Check if it's a null|struct disjunction we can resolve.
 			if resolved := resolveStructFromDisjunction(e.child); resolved != nil {
+				// Same parent-row emit as the struct case above.
+				*out = append(*out, makeFieldInfo(path, e.child, addedInMap, e.optional))
 				walkCUEFields(*resolved, path, addedInMap, out)
 				continue
 			}
@@ -311,7 +374,17 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 		// resolveListElement walks past the default branch and
 		// returns the non-default list's element so the recursion
 		// surfaces `personas[].id`, `risks[].mitigation`, …
+		//
+		// WF-OPTIONAL-MARKER (2026-05-06): for ANY list-typed
+		// field, also emit the parent row (`<field>` with type
+		// `array`) so consumers can answer "is this field itself
+		// required in the payload?" — independently of element
+		// constraints. Previously only the element rows were
+		// emitted, masking parent optionality (`dependsOn?` was
+		// reported as `dependsOn[] required:true`, hiding that
+		// the array itself can be omitted).
 		if e.child.IncompleteKind() == cue.ListKind {
+			*out = append(*out, makeFieldInfo(path, e.child, addedInMap, e.optional))
 			elem := resolveListElement(e.child)
 			if elem != nil {
 				elemFields, elemErr := elem.Fields(cue.All())
@@ -334,14 +407,22 @@ func walkCUEFields(v cue.Value, prefix string, addedInMap map[string]string, out
 				// (e.g. `[...=~"^…$"]`). Emit it as a leaf
 				// under the `[]` path so the regex/enum is
 				// rendered.
+				//
+				// Array elements themselves are not optional in
+				// the iterator sense — a present element is
+				// always required, the array's optionality lives
+				// on the parent field (already emitted above).
 				if matchOperandRegex(*elem) != "" || len(extractStringEnum(*elem)) > 0 {
-					*out = append(*out, makeFieldInfo(path+"[]", *elem, addedInMap))
+					*out = append(*out, makeFieldInfo(path+"[]", *elem, addedInMap, false))
 					continue
 				}
 			}
+			// Parent row already emitted above; skip the
+			// fallback leaf emit below to avoid duplication.
+			continue
 		}
 		// Treat as leaf.
-		*out = append(*out, makeFieldInfo(path, e.child, addedInMap))
+		*out = append(*out, makeFieldInfo(path, e.child, addedInMap, e.optional))
 	}
 }
 
@@ -432,9 +513,16 @@ func resolveStructFromDisjunction(v cue.Value) *cue.Value {
 // WF-CLI-UX-4 (2026-05-04): the function now also extracts string
 // enum members, regex patterns, and closed-struct semantics so the
 // caller's markdown / JSON projection can render them.
-func makeFieldInfo(path string, v cue.Value, addedInMap map[string]string) fieldInfo {
-	_, hasDefault := v.Default()
-	required := !hasDefault && !cueValueIsNullable(v)
+//
+// WF-OPTIONAL-MARKER (2026-05-06): isOptional comes from the parent
+// iterator's IsOptional() (CUE's `field?: T` declaration). A field
+// is required ONLY when it carries no `?` marker AND has no default
+// AND is not nullable. Previously the `?` marker was ignored, so
+// every CUE-optional field was reported as required, contradicting
+// the SSOT.
+func makeFieldInfo(path string, v cue.Value, addedInMap map[string]string, isOptional bool) fieldInfo {
+	hasDefault := hasExplicitCUEDefault(v)
+	required := !isOptional && !hasDefault && !cueValueIsNullable(v)
 
 	fi := fieldInfo{
 		Path:     path,
@@ -577,11 +665,77 @@ func isStructClosed(v cue.Value) bool {
 	return v.IsClosed()
 }
 
-// cueValueIsNullable returns true when the CUE value's string representation
-// contains "null", meaning the schema allows null as a valid value.
+// cueValueIsNullable returns true when the CUE value's TOP-LEVEL type
+// admits null — i.e. the immediate kind is a disjunction containing
+// NullKind (e.g. `*null | string`).
+//
+// WF-OPTIONAL-MARKER (2026-05-06): the previous implementation did a
+// substring match on the value's full string representation, which
+// incorrectly returned true for any struct field whose nested
+// subfields happened to contain "null" anywhere. This made every
+// parent struct row report required:false. The kind-aware check
+// below restores the original intent (leaf-level nullable check)
+// without regressing on struct parents.
 func cueValueIsNullable(v cue.Value) bool {
-	repr := fmt.Sprintf("%v", v)
-	return strings.Contains(repr, "null")
+	k := v.IncompleteKind()
+	// Pure struct/list/leaf kinds without null: not nullable.
+	if k == cue.StructKind || k == cue.ListKind {
+		return false
+	}
+	// A union with NullKind set is nullable (e.g. *null | string → kind = string|null).
+	if k&cue.NullKind != 0 && k != cue.NullKind {
+		return true
+	}
+	// Pure null kind: technically nullable, though atypical for SSOT fields.
+	if k == cue.NullKind {
+		return true
+	}
+	return false
+}
+
+// hasExplicitCUEDefault reports whether the field's source CUE syntax
+// contains an explicit `*<value>` default marker.
+//
+// WF-OPTIONAL-MARKER (2026-05-06): we previously called cue.Value.Default()
+// to detect defaults, but CUE returns hasDefault=true for unconstrained
+// list types (e.g. `scope: [...string]`) because the empty list is a
+// natural minimal instance — even when the SSOT author did NOT mark a
+// default. That false-positive made required-field detection diverge from
+// `workflow-v1.schema.json`'s required[] (the OpenAPI projection of the
+// same SSOT). Walking the AST for an actual `*` UnaryExpr aligns the two
+// projections.
+func hasExplicitCUEDefault(v cue.Value) bool {
+	src := v.Source()
+	if src == nil {
+		return false
+	}
+	field, ok := src.(*ast.Field)
+	if !ok {
+		return false
+	}
+	return containsStarDefault(field.Value)
+}
+
+// containsStarDefault reports whether the AST node carries an explicit
+// `*<value>` default marker — directly (UnaryExpr with Op=MUL), in either
+// arm of a disjunction (BinaryExpr with Op=OR), or inside a parenthesised
+// expression. Helper for hasExplicitCUEDefault.
+func containsStarDefault(n ast.Node) bool {
+	switch e := n.(type) {
+	case *ast.UnaryExpr:
+		if e.Op == token.MUL {
+			return true
+		}
+		return containsStarDefault(e.X)
+	case *ast.BinaryExpr:
+		if e.Op == token.OR {
+			return containsStarDefault(e.X) || containsStarDefault(e.Y)
+		}
+		return false
+	case *ast.ParenExpr:
+		return containsStarDefault(e.X)
+	}
+	return false
 }
 
 // cueTypeString returns a human-readable type string for a CUE leaf value.

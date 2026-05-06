@@ -344,6 +344,140 @@ func TestAppendStep_ConcurrencyN8NoLostWrites(t *testing.T) {
 	}
 }
 
+// TestAppendStepScaffold_PRD_ValidJSONWithBaseAndPayload asserts the
+// `browzer workflow append-step --scaffold PRD` cobra wiring produces a
+// JSON skeleton on stdout, does NOT mutate workflow.json, and includes
+// both the StepBase wrapper fields and the per-step payload (`prd`).
+// Phase 3.1 (2026-05-06).
+func TestAppendStepScaffold_PRD_ValidJSONWithBaseAndPayload(t *testing.T) {
+	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
+	before, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "append-step",
+		"--scaffold", "PRD",
+		"--workflow", wfPath,
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("--scaffold PRD should exit 0, got: %v\nstderr: %s", err, stderr.String())
+	}
+
+	// Stdout must be valid JSON.
+	var skeleton map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &skeleton); err != nil {
+		t.Fatalf("scaffold stdout is not valid JSON: %v\nraw: %s", err, stdout.String())
+	}
+	// StepBase wrapper present.
+	for _, f := range []string{"stepId", "name", "status", "applicability", "startedAt"} {
+		if _, ok := skeleton[f]; !ok {
+			t.Errorf("scaffold missing StepBase field %q", f)
+		}
+	}
+	// Per-step payload present.
+	if _, ok := skeleton["prd"]; !ok {
+		t.Errorf("scaffold missing per-step payload field `prd`")
+	}
+	// Discriminator pinned to PRD.
+	if got, _ := skeleton["name"].(string); got != "PRD" {
+		t.Errorf("scaffold name = %q, want %q", got, "PRD")
+	}
+
+	// workflow.json must be unchanged — scaffold is preview-only.
+	after, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("--scaffold must NOT mutate workflow.json")
+	}
+}
+
+// TestAppendStepScaffold_MutuallyExclusiveWithPayload asserts that
+// passing both --scaffold and --payload fails fast with a clear
+// error message instead of silently preferring one.
+func TestAppendStepScaffold_MutuallyExclusiveWithPayload(t *testing.T) {
+	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
+
+	payloadFile := filepath.Join(t.TempDir(), "step.json")
+	if err := os.WriteFile(payloadFile, []byte(minimalStepPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "append-step",
+		"--scaffold", "PRD",
+		"--payload", payloadFile,
+		"--workflow", wfPath,
+	})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error from --scaffold + --payload, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should mention mutual exclusion; got: %v", err)
+	}
+}
+
+// TestAppendStepScaffold_SaveWritesFile asserts --save routes the
+// scaffold to disk and emits only the confirmation line on stdout
+// (mirrors describe-step-type --save behaviour).
+func TestAppendStepScaffold_SaveWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	savePath := filepath.Join(dir, "skeleton.json")
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "append-step",
+		"--scaffold", "TASK",
+		"--save", savePath,
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("--scaffold --save: %v\nstderr: %s", err, stderr.String())
+	}
+
+	// Stdout should NOT contain the JSON payload.
+	out := stdout.String()
+	if strings.Contains(out, `"stepId"`) {
+		t.Errorf("--save should not dump the skeleton to stdout; got: %s", out)
+	}
+	// File must be valid JSON containing the discriminator.
+	data, err := os.ReadFile(savePath)
+	if err != nil {
+		t.Fatalf("read save file: %v", err)
+	}
+	var skeleton map[string]any
+	if err := json.Unmarshal(data, &skeleton); err != nil {
+		t.Fatalf("save file is not valid JSON: %v\nraw: %s", err, string(data))
+	}
+	if got, _ := skeleton["name"].(string); got != "TASK" {
+		t.Errorf("save: name = %q, want TASK", got)
+	}
+}
+
+// TestAppendStepScaffold_UnknownStepType_Errors asserts the cobra
+// error path names the bad input.
+func TestAppendStepScaffold_UnknownStepType_Errors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "append-step", "--scaffold", "BOGUS"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown step type, got nil")
+	}
+	combined := stderr.String() + err.Error()
+	if !strings.Contains(combined, "BOGUS") {
+		t.Errorf("error should mention the bad name; got: %s", combined)
+	}
+}
+
 // TestAppendStep_AuditLineOnStderr verifies that a successful append-step
 // emits a structured audit line to stderr containing:
 //

@@ -607,17 +607,63 @@ func TestDescribeStepType_PRD_DescendsDefaultEmptyListDisjunctions(t *testing.T)
 		}
 	}
 
-	// Negative assertion: ensure the OLD leaf rows (just `personas`
-	// with type=array, no children) are gone. The walker must
-	// either descend into the element OR emit nothing — never emit
-	// the bare `personas` placeholder when the element type is
-	// recursable.
-	for _, leafPath := range []string{"personas", "risks", "successMetrics", "nonFunctionalRequirements"} {
-		if row, ok := byPath[leafPath]; ok {
-			if got, _ := row["type"].(string); got == "array" {
-				t.Errorf("regression: bare leaf row %q (type=array) still emitted; walker should descend", leafPath)
-			}
+	// Parent-row contract (WF-OPTIONAL-MARKER, 2026-05-06): for every
+	// list-typed field the walker now emits a parent row of
+	// type=array IN ADDITION to the descended element rows. The
+	// parent row carries the field's optionality (required:false
+	// when the SSOT marks `*[] | [...]` or `?:`) so consumers can
+	// answer "is this field itself required in the payload?"
+	// independently of element constraints. Without the parent row,
+	// optional arrays were invisible — only their element
+	// constraints surfaced, leading skill authors to assume the
+	// array itself was required.
+	//
+	// Each of the four `*[] | [...]` fields here MUST appear with
+	// type=array AND required=false.
+	for _, parentPath := range []string{"personas", "risks", "successMetrics", "nonFunctionalRequirements"} {
+		row, ok := byPath[parentPath]
+		if !ok {
+			t.Errorf("WF-OPTIONAL-MARKER: parent row %q missing — walker must emit BOTH parent and descended element rows", parentPath)
+			continue
 		}
+		if got, _ := row["type"].(string); got != "array" {
+			t.Errorf("parent %q: type = %q, want %q", parentPath, got, "array")
+		}
+		if got, _ := row["required"].(bool); got != false {
+			t.Errorf("parent %q: required = %v, want false (CUE: *[] | [...] = optional with default)", parentPath, got)
+		}
+	}
+}
+
+// TestDescribeStepType_IncludeBaseFlag_EmitsBasePrefixedRows asserts the
+// `--include-base` cobra flag plumbs through to schema.DescribeOpts so
+// the JSON output contains @base.* rows alongside the payload rows.
+// Phase 3.2 (2026-05-06).
+func TestDescribeStepType_IncludeBaseFlag_EmitsBasePrefixedRows(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "describe-step-type", "PRD",
+		"--json",
+		"--include-base",
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("describe-step-type --include-base: %v\nstderr: %s", err, stderr.String())
+	}
+	var fields []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &fields); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	hasBaseRow := false
+	for _, f := range fields {
+		path, _ := f["path"].(string)
+		if strings.HasPrefix(path, "@base.") {
+			hasBaseRow = true
+			break
+		}
+	}
+	if !hasBaseRow {
+		t.Errorf("--include-base output should contain at least one @base.* row")
 	}
 }
 

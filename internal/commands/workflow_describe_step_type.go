@@ -31,6 +31,7 @@ func registerWorkflowDescribeStepType(parent *cobra.Command) {
 	var requiredOnly bool
 	var jsonMode bool
 	var inlineEnums bool
+	var includeBase bool
 
 	allowlist := make([]string, len(schema.ValidStepNames))
 	copy(allowlist, schema.ValidStepNames)
@@ -55,16 +56,20 @@ STEP_NAME must be one of:
 The special alias "workflow" describes the top-level #WorkflowV1 fields.
 
 Output modes:
-  (default)      Markdown table: Field | Required | Type | AddedIn | Description
-  --json         JSON array of field objects (sorted by path, byte-identical)
-  --inline-enums Compact JSON array of ONLY enumerable fields, each as
-                 {path, type, values:[...]} for string disjunctions or
-                 {path, type, regex:"..."} for regex constraints.
-                 Designed for LLM consumption: lets the agent build a
-                 payload that passes CUE validation on first try.
-                 Implies --json semantics (machine-readable).
-  --field <path> jq-style path into the field projection (returns JSON)
-  --required-only  filter to fields with no CUE default (must be supplied)
+  (default)       Markdown table: Field | Required | Type | AddedIn | Description
+  --json          JSON array of field objects (sorted by path, byte-identical)
+  --inline-enums  Compact JSON array of ONLY enumerable fields, each as
+                  {path, type, values:[...]} for string disjunctions or
+                  {path, type, regex:"..."} for regex constraints.
+                  Designed for LLM consumption: lets the agent build a
+                  payload that passes CUE validation on first try.
+                  Implies --json semantics (machine-readable).
+  --field <path>  jq-style path into the field projection (returns JSON)
+  --required-only filter to fields with no CUE default (must be supplied)
+  --include-base  prepend #StepBase wrapper rows under the @base. path
+                  prefix (e.g. @base.stepId, @base.status). Default
+                  off for backward compat — opt in when you need the
+                  full step shape (wrapper + payload) in one invocation.
 
 Flags --field and --required-only can be combined.
 --json and --field are mutually exclusive (--field implies JSON output).
@@ -73,6 +78,7 @@ Flags --field and --required-only can be combined.
 Examples:
   browzer workflow describe-step-type TASK
   browzer workflow describe-step-type TASK --json
+  browzer workflow describe-step-type TASK --include-base --json
   browzer workflow describe-step-type CODE_REVIEW --inline-enums
   browzer workflow describe-step-type TASK --field task.execution.scopeAdjustments
   browzer workflow describe-step-type CODE_REVIEW --field codeReview.regressionRun --json
@@ -104,6 +110,7 @@ Examples:
 				RequiredOnly: requiredOnly,
 				JSON:         jsonMode || inlineEnums,
 				InlineEnums:  inlineEnums,
+				IncludeBase:  includeBase,
 			}
 
 			result, err := schema.DescribeStepType(stepName, opts)
@@ -128,6 +135,7 @@ Examples:
 	cmd.Flags().BoolVar(&requiredOnly, "required-only", false, "show only fields with no CUE default (required fields)")
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit a JSON array of field objects instead of a Markdown table")
 	cmd.Flags().BoolVar(&inlineEnums, "inline-enums", false, "emit only enumerable fields as {path,type,values}/{path,type,regex} JSON")
+	cmd.Flags().BoolVar(&includeBase, "include-base", false, "prepend #StepBase wrapper fields under the @base. path prefix (default false; backward-compat opt-in)")
 	cmd.Flags().String("save", "", "write the output to <path> instead of stdout (parity with get-step / get-config / query)")
 
 	parent.AddCommand(cmd)

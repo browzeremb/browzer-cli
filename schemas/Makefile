@@ -19,6 +19,7 @@ NODE         := node
 SCHEMA       := workflow-v1.cue
 EMBED_MIRROR := ../internal/schema/workflow-v1.cue
 JSON_OUT     := workflow-v1.schema.json
+JSON_EMBED   := ../internal/schema/workflow-v1.schema.json
 GO_OUT       := cue_types_workflow_gen.go
 MD_OUT       := ../../skills/references/workflow-schema.md
 MD_RENDER    := ../../../scripts/cue-to-markdown.mjs
@@ -30,10 +31,12 @@ INVALID_FIXTURES := $(wildcard fixtures/invalid/*.json)
 
 all: $(JSON_OUT) $(GO_OUT) $(MD_OUT) sync-embed
 
-# sync-embed copies the SSOT to the embed mirror used by the daemon
-# validator. Invoked by `make all` and verified by `make ci-check`.
-sync-embed: $(SCHEMA)
+# sync-embed copies the SSOTs to the embed mirrors used by the daemon
+# validator (CUE) and by the `--scaffold` skeleton emitter (JSON
+# Schema). Invoked by `make all` and verified by `make ci-check`.
+sync-embed: $(SCHEMA) $(JSON_OUT)
 	@cp $(SCHEMA) $(EMBED_MIRROR)
+	@cp $(JSON_OUT) $(JSON_EMBED)
 
 $(JSON_OUT): $(SCHEMA)
 	$(CUE) def --out openapi $(SCHEMA) > $@.tmp && mv $@.tmp $@
@@ -67,6 +70,8 @@ vet-invalid: $(SCHEMA) $(INVALID_FIXTURES)
 ci-check: vet
 	@cmp -s $(SCHEMA) $(EMBED_MIRROR) || \
 	  { echo "FAIL: embed mirror $(EMBED_MIRROR) drifted from SSOT $(SCHEMA) — run 'make sync-embed'"; exit 1; }
+	@cmp -s $(JSON_OUT) $(JSON_EMBED) || \
+	  { echo "FAIL: JSON Schema embed mirror $(JSON_EMBED) drifted from $(JSON_OUT) — run 'make sync-embed'"; exit 1; }
 	@$(CUE) def --out openapi $(SCHEMA) > $(JSON_OUT).new
 	@diff -u $(JSON_OUT) $(JSON_OUT).new || \
 	  { echo "FAIL: $(JSON_OUT) is out of date (run 'make all')"; rm $(JSON_OUT).new; exit 1; }
@@ -85,5 +90,5 @@ ci-check: vet
 	@echo "ci-check: all generated artifacts in sync"
 
 clean:
-	@rm -f $(JSON_OUT) $(GO_OUT) $(MD_OUT)
+	@rm -f $(JSON_OUT) $(GO_OUT) $(MD_OUT) $(JSON_EMBED)
 	@echo "clean: removed generated artifacts"

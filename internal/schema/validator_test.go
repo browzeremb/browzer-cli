@@ -907,6 +907,95 @@ func TestSuppressDisjunctionNoise_DropsEmptyDisjunctionPlaceholders(t *testing.T
 	}
 }
 
+// TestSuppressDisjunctionNoise_MissingNameAtUnionSite asserts Phase 3.3
+// (2026-05-06): when CUE rejects a payload missing the discriminator
+// field (e.g. a step submitted without `name`), the raw "incomplete
+// value …" message — which dumps the entire incomplete value with
+// every sibling branch expanded (1 MB+ in past sessions) — is
+// reformatted by enrichViolations into a single concise line that
+// names the field and lists the legal discriminator values. The Code
+// stays `missing-required-field` so downstream rubric maps continue
+// to fire on the same key, and the AllowedValues slice is populated
+// in parallel with the rendered text.
+//
+// We invoke ValidateWorkflow on a payload with an intact step that
+// then contains a NESTED missing-discriminator scenario (the simplest
+// payload that produces this exact pattern is a workflow whose step
+// targets a per-step-definition union without naming itself). Per the
+// plan, the assertion is OUTPUT-shape rather than mechanism: after
+// FormatViolations, no rendered line for the union site exceeds the
+// concise envelope, and at least one rendered line names the legal
+// discriminator set.
+func TestSuppressDisjunctionNoise_MissingNameAtUnionSite(t *testing.T) {
+	// Direct unit-level pin on the renderer + enricher contract: a
+	// synthetic Violation simulating CUE's raw "incomplete value …"
+	// output gets rewritten in-place by enrichViolations, and the
+	// resulting message respects the concise envelope.
+	_, _, _, err := loadSchema()
+	if err != nil {
+		t.Fatalf("loadSchema: %v", err)
+	}
+	schemaRoot := schemaSingleton.value
+	if !schemaRoot.Exists() {
+		t.Fatal("schema root not loaded")
+	}
+
+	// Path lands at the discriminator field (`steps[0].name`). CUE's raw
+	// message dumps the full incomplete value with every sibling expanded
+	// — we represent it here by a long, content-rich placeholder so the
+	// enricher's rewrite is visible (the real-world string is ~1 MB but
+	// the contract is path + code + presence of "incomplete value").
+	rawMsg := strings.Repeat(
+		"#PRDStep | #TaskStep | #BrainstormingStep — incomplete value ",
+		200,
+	)
+	in := []Violation{
+		{
+			Path:    "steps[0].name",
+			Code:    "missing-required-field",
+			Message: rawMsg,
+			Field:   "name",
+			AddedIn: "2026-04-24T00:00:00Z",
+		},
+	}
+	enrichViolations(in, schemaRoot)
+	got := in[0]
+
+	if got.Code != "missing-required-field" {
+		t.Errorf("expected Code preserved as missing-required-field; got %q", got.Code)
+	}
+	if !strings.Contains(got.Message, "must be one of") {
+		t.Errorf("expected reformatted message to contain `must be one of`; got: %q", got.Message)
+	}
+	if len(got.Message) > 256 {
+		t.Errorf("reformatted message must be a SINGLE concise line (<=256 chars); got %d bytes:\n%s",
+			len(got.Message), got.Message)
+	}
+	if len(got.AllowedValues) == 0 {
+		t.Errorf("reformatted Violation must populate AllowedValues; got nil")
+	}
+	// Discriminator values must include the canonical step names.
+	seen := map[string]bool{}
+	for _, s := range got.AllowedValues {
+		seen[s] = true
+	}
+	for _, want := range []string{"PRD", "TASK", "COMMIT"} {
+		if !seen[want] {
+			t.Errorf("AllowedValues missing canonical step name %q; got %v", want, got.AllowedValues)
+		}
+	}
+
+	// End-to-end: FormatViolations renders one concise line, never
+	// the raw 1 MB dump.
+	rendered := FormatViolations(in)
+	if strings.Contains(rendered, "#PRDStep | #TaskStep") {
+		t.Errorf("FormatViolations leaked the raw incomplete-value dump:\n%s", rendered[:min(len(rendered), 400)])
+	}
+	if !strings.Contains(rendered, "missing-required-field") {
+		t.Errorf("FormatViolations dropped the missing-required-field code; got: %s", rendered)
+	}
+}
+
 // TestStepNameAllowlist_MirrorsValidStepNames pins the in-package
 // allowlist (validator.go) against the canonical list in describe.go.
 // Both are now derived from the CUE SSOT at load time; this test

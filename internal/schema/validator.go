@@ -964,6 +964,17 @@ var incompatibleListLengthsRe = regexp.MustCompile(
 	`^incompatible list lengths\s+\((\d+)\s+and\s+(\d+)\)$`,
 )
 
+// incompleteValueRe matches CUE's "incomplete value" prefix that the
+// engine emits when a discriminated-union site (e.g. `step.name`) is
+// missing the field that drives discrimination. The raw message
+// dumps the FULL incomplete value with every sibling discriminator
+// expanded — past sessions observed >1 MB of output. Phase 3.3
+// (2026-05-06) reformats these to a single concise line via
+// `renderEnumValueMismatchMessage` ("must be one of […]"), keeping
+// the `AllowedValues` semantics already in place for
+// `invalid-enum-value`.
+var incompleteValueRe = regexp.MustCompile(`(?i)incomplete value`)
+
 // enrichViolations walks each Violation and attaches `AllowedFields` /
 // `AllowedValues` derived from the schema and from sibling-violation
 // inference. Designed so a future change to the CUE engine's message
@@ -1051,6 +1062,29 @@ func enrichViolations(vs []Violation, schemaRoot cue.Value) {
 				}
 			}
 			continue
+		}
+		// Pass 5 (Phase 3.3, 2026-05-06): missing-required-field at a
+		// union site. CUE emits an "incomplete value" message that
+		// dumps the FULL incomplete value — every sibling discriminator
+		// branch fully expanded — when a discriminated-union field
+		// (e.g. `step.name`) is missing. Past sessions observed >1 MB
+		// of error text per occurrence. Reformat to a single concise
+		// line that names the missing field and lists the legal
+		// discriminator values, mirroring the renderer used for
+		// `invalid-enum-value`.
+		//
+		// Two preconditions: the schema must resolve the path to a
+		// string disjunction (so we can populate AllowedValues), AND
+		// the message must contain the literal "incomplete value"
+		// text (so we don't rewrite genuine missing-required-field
+		// rows whose path happens to resolve to an enum-typed leaf).
+		if v.Code == "missing-required-field" &&
+			incompleteValueRe.MatchString(v.Message) {
+			values := resolveUnionFieldValues(schemaRoot, v, siblingEnums)
+			if len(values) > 0 {
+				v.AllowedValues = values
+				v.Message = renderMissingUnionFieldMessage(v.Field, values)
+			}
 		}
 	}
 }
@@ -1314,6 +1348,74 @@ func renderEnumValueMismatchMessage(field string, values []string, bad string) s
 			field, bad, strings.Join(values, ", "))
 	}
 	return fmt.Sprintf("%s must be one of [%s]", field, strings.Join(values, ", "))
+}
+
+// resolveUnionFieldValues returns the legal discriminator values for a
+// missing-required-field violation that landed at a union site.
+//
+// Strategy (best-effort, in order):
+//
+//  1. The standard schema walk via lookupEnumValuesForPathOrSibling.
+//     This works when the path resolves to a literal string disjunction
+//     directly under the resolved root (e.g. `config.mode`).
+//  2. Special-case `steps[N].name` (the most common union site): the
+//     schema walker can't follow the discriminated `steps[]` union
+//     because CUE refuses to descend a disjunction without the
+//     discriminator value. Fall back to the SSOT-derived
+//     `stepNameAllowlist()` set, which is exactly the legal value
+//     set for this field.
+//  3. Generic name fallback: if the path's trailing field is `name`
+//     and the schema-walk + step-name fallback both miss, the values
+//     remain empty — the enricher leaves the violation untouched and
+//     the original (long) message stands. We err toward "leave alone"
+//     rather than guess wrong.
+//
+// Phase 3.3 (2026-05-06).
+func resolveUnionFieldValues(schemaRoot cue.Value, v *Violation, sibling map[string][]string) []string {
+	if schemaRoot.Exists() {
+		if values := lookupEnumValuesForPathOrSibling(schemaRoot, v.Path, sibling); len(values) > 0 {
+			return values
+		}
+	}
+	// stepRootPath returns "steps[N]" when the path lives under a step
+	// subtree; combined with a `.name` trailing segment this is the
+	// canonical "missing step discriminator" pattern.
+	if v.Field == "name" && stepRootPath(v.Path) != "" {
+		allow := stepNameAllowlist()
+		if len(allow) > 0 {
+			values := make([]string, 0, len(allow))
+			for s := range allow {
+				values = append(values, s)
+			}
+			sort.Strings(values)
+			return values
+		}
+	}
+	return nil
+}
+
+// renderMissingUnionFieldMessage emits the Phase 3.3 reformatted
+// message for a missing-required-field violation that landed at a
+// discriminated-union site. The shape mirrors
+// renderEnumValueMismatchMessage's bad-set arm (en-dash separator)
+// so a downstream skill that already greps for `— must be one of`
+// catches both classes:
+//
+//	`<field>: missing-required-field — must be one of [v1, v2, v3]`
+//
+// The `missing-required-field` token in the body is intentional
+// duplication of the Code field — operators reading a single
+// rendered line need both signals (the path tells them WHERE, the
+// body tells them WHAT). FormatViolations still prefixes the path
+// + code via its standard rendering pass; nothing here is
+// rendered TWICE in the FormatViolations output (Code prefix is in
+// the line header, the body sits after the colon).
+func renderMissingUnionFieldMessage(field string, values []string) string {
+	if field == "" {
+		field = "value"
+	}
+	return fmt.Sprintf("%s: missing-required-field — must be one of [%s]",
+		field, strings.Join(values, ", "))
 }
 
 // extractBadValue returns the second operand of a `conflicting values
