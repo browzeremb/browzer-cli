@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -28,11 +27,14 @@ func registerWorkflowSchema(parent *cobra.Command) {
 			}
 
 			if jsonSchemaFlag {
-				b, err := json.MarshalIndent(schema, "", "  ")
+				// marshalReadJSON keeps `<`, `>`, `&` literal — relevant for
+				// JSON Schema's `description` and `pattern` fields which often
+				// contain operator-readable expressions.
+				b, err := marshalReadJSON(schema)
 				if err != nil {
 					return fmt.Errorf("marshal schema: %w", err)
 				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(b))
+				_, _ = cmd.OutOrStdout().Write(b)
 			} else {
 				_, _ = fmt.Fprint(cmd.OutOrStdout(), buildSchemaMarkdown())
 			}

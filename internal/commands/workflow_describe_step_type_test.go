@@ -620,3 +620,39 @@ func TestDescribeStepType_PRD_DescendsDefaultEmptyListDisjunctions(t *testing.T)
 		}
 	}
 }
+
+// TestDescribeStepType_StdoutDoesNotContainBannerVerb regression-pins the
+// stdout/stderr split: `describe-step-type` (and its `describe-step` alias)
+// stdout must contain only the schema payload, never the audit banner
+// (`verb=...`). Mirrors the pin already in place for `query` (RETRO §C2 of
+// 2026-05-05). Closes the test-asymmetry the team review surfaced — PR 1
+// only pinned `query` despite the same emitAuditLine path serving 4 read
+// verbs.
+func TestDescribeStepType_StdoutDoesNotContainBannerVerb(t *testing.T) {
+	t.Setenv("BROWZER_LLM", "")
+	t.Setenv("BROWZER_WORKFLOW_QUIET", "")
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "describe-step-type", "PRD", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "verb=") {
+		t.Errorf("describe-step-type stdout must not contain banner artifact `verb=`; got: %s", stdout.String())
+	}
+
+	// Same assertion via the `describe-step` alias — closes the alias-
+	// surface gap (cobra Aliases-driven dispatch should NOT bypass any
+	// stdout/stderr discipline of the canonical verb).
+	stdout.Reset()
+	stderr.Reset()
+	root = buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "describe-step", "PRD", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("alias Execute: %v\nstderr: %s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "verb=") {
+		t.Errorf("describe-step (alias) stdout must not contain banner; got: %s", stdout.String())
+	}
+}

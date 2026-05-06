@@ -741,18 +741,37 @@ func mutatorAppendSteps(raw map[string]any, args MutatorArgs, out *ApplyResult) 
 		return fmt.Errorf("append-steps: payload array is empty (would be a no-op)")
 	}
 
-	stepsRaw := raw["steps"]
-	stepsSlice, _ := stepsRaw.([]any)
-	var lastStepID string
+	// Pre-mutation validation: every element must be an object AND must
+	// carry a non-empty string stepId. Validating UP-FRONT (before
+	// touching raw["steps"]) means the audit-line emitted on the
+	// caller's failure path correctly reflects the rejection — without
+	// this, a missing-stepId entry in the middle of a batch would let
+	// the function set `out.StepID` from an earlier element's id,
+	// producing a misleading audit line that names a step the operator
+	// never intended to be "the last appended".
 	for i, entry := range stepsPayload {
 		stepMap, ok := entry.(map[string]any)
 		if !ok {
 			return fmt.Errorf("append-steps: payload[%d] is not a JSON object", i)
 		}
-		stepsSlice = append(stepsSlice, stepMap)
-		if id, _ := stepMap["stepId"].(string); id != "" {
-			lastStepID = id
+		id, _ := stepMap["stepId"].(string)
+		if id == "" {
+			return fmt.Errorf("append-steps: payload[%d] missing required string stepId", i)
 		}
+	}
+
+	stepsRaw := raw["steps"]
+	stepsSlice, _ := stepsRaw.([]any)
+	var lastStepID string
+	// CRITICAL: assignment of stepsSlice back into raw["steps"] happens
+	// AFTER the loop. Moving it inside the loop breaks the
+	// all-or-nothing rollback contract — a mid-batch error would leave
+	// raw["steps"] partially mutated and visible to any downstream
+	// validation that reads raw before re-marshal.
+	for _, entry := range stepsPayload {
+		stepMap := entry.(map[string]any) // safe: validated above
+		stepsSlice = append(stepsSlice, stepMap)
+		lastStepID = stepMap["stepId"].(string) // safe: validated above
 	}
 	raw["steps"] = stepsSlice
 

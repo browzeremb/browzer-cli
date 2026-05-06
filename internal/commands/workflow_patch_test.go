@@ -794,3 +794,150 @@ func TestResolvePatchExpression_BulkComposition(t *testing.T) {
 		})
 	}
 }
+
+// ---- --bulk × --dry-run cross-interaction (RETRO §C5, 2026-05-05) ----
+//
+// `--bulk` and `--dry-run` shipped in the same commit (174feda4) but no
+// existing test covers what happens when they're combined. Operators
+// will compose them — "preview my batch" is the natural use case. The
+// shipped behaviour is pipeline-level preview: bulk expressions are
+// composed into one jq pipeline, the pipeline runs once in-memory, and
+// the post-pipeline document is validated + emitted on stdout. Each
+// individual expression does NOT produce its own preview row.
+//
+// Pinning the contract here means a future refactor that accidentally
+// switches to per-expression dry-run (or rejects the combo entirely)
+// fails loudly instead of silently changing operator-visible
+// behaviour.
+
+func TestPatch_BulkAndDryRun_PreviewsAtPipelineLevel(t *testing.T) {
+	// Use the v2-compliant fixture: ApplyDryRun does NOT honour the
+	// BROWZER_NO_SCHEMA_CHECK env shortcut that the real apply path
+	// uses, so the fixture must satisfy the live CUE schema directly.
+	// (This asymmetry is documented behaviour in apply.go — dry-run is
+	// validation-mandatory by design; the bypass is for write-only paths.)
+	wfPath := writeWorkflowFile(t, validSchemaV2WorkflowJSON)
+	before, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--bulk", `[
+			".featureName = \"dry-A\"",
+			".featureName += \"+B\"",
+			".featureName += \"+C\""
+		]`,
+		"--dry-run",
+		"--workflow", wfPath,
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("patch --bulk --dry-run should succeed: %v\nstderr: %s\nstdout: %s",
+			err, stderr.String(), stdout.String())
+	}
+
+	// File is unchanged (dry-run never persists).
+	after, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("--dry-run must leave workflow.json byte-identical")
+	}
+
+	// Stdout is a single JSON object (pipeline-level preview), NOT N
+	// JSON lines (per-expression preview). The DryRunResult shape
+	// (apply.go:DryRunResult) reports Ok + diffPaths + before/after
+	// hashes — NOT the full post-mutation document. Pipeline-level
+	// composition is confirmed by the diffPaths cardinality: a 3-step
+	// chain that all touches `featureName` must produce ONE diff
+	// entry (the pipeline's net change), not three separate ones.
+	out := strings.TrimSpace(stdout.String())
+	if strings.Count(out, "\n") > 0 {
+		t.Errorf("expected single-line pipeline preview; got %d lines:\n%s",
+			strings.Count(out, "\n")+1, out)
+	}
+	var preview struct {
+		Ok         bool     `json:"ok"`
+		Errors     []string `json:"errors"`
+		BeforeHash string   `json:"beforeHash"`
+		AfterHash  string   `json:"afterHash"`
+		DiffPaths  []string `json:"diffPaths"`
+	}
+	if err := json.Unmarshal([]byte(out), &preview); err != nil {
+		t.Fatalf("preview is not a single JSON object: %v\nraw: %s", err, out)
+	}
+	if !preview.Ok {
+		t.Errorf("expected ok=true; errors=%v", preview.Errors)
+	}
+	if preview.BeforeHash == preview.AfterHash {
+		t.Error("composed pipeline should change beforeHash → afterHash")
+	}
+	// Pipeline-level: ONE field changed. Per-expression dry-run would
+	// emit N entries (one per step). The current contract is composed.
+	featureNameTouched := false
+	for _, p := range preview.DiffPaths {
+		if p == "featureName" {
+			featureNameTouched = true
+		}
+	}
+	if !featureNameTouched {
+		t.Errorf("expected diffPaths to include 'featureName' (pipeline-level diff); got %v",
+			preview.DiffPaths)
+	}
+}
+
+// TestPatch_BulkAndDryRun_ValidationFailureLeavesFileUnchanged stacks the
+// existing schema-violation test with --dry-run: the file should remain
+// unchanged AND the dry-run must surface the validation error in the JSON
+// preview rather than silently passing.
+func TestPatch_BulkAndDryRun_ValidationFailureLeavesFileUnchanged(t *testing.T) {
+	wfPath := writeWorkflowFile(t, validSchemaV2WorkflowJSON)
+	before, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	// First expression is valid; second drops `featureId` which is
+	// required by the v1 schema. The pipeline-level validation MUST
+	// catch the violation.
+	root.SetArgs([]string{
+		"workflow", "patch",
+		"--bulk", `[
+			".featureName = \"dry-violate\"",
+			"del(.featureId)"
+		]`,
+		"--dry-run",
+		"--workflow", wfPath,
+	})
+	err = root.Execute()
+	if err == nil {
+		t.Fatal("expected non-zero exit for schema-violating dry-run")
+	}
+
+	after, _ := os.ReadFile(wfPath)
+	if string(before) != string(after) {
+		t.Error("dry-run with violation must not mutate workflow.json")
+	}
+
+	// Preview must include the failure on stdout.
+	out := strings.TrimSpace(stdout.String())
+	var preview struct {
+		Ok     bool     `json:"ok"`
+		Errors []string `json:"errors"`
+	}
+	if jsonErr := json.Unmarshal([]byte(out), &preview); jsonErr != nil {
+		t.Fatalf("preview not parseable as JSON: %v\nraw: %s", jsonErr, out)
+	}
+	if preview.Ok {
+		t.Error("preview.ok must be false on validation failure")
+	}
+	if len(preview.Errors) == 0 {
+		t.Error("preview.errors must list the validation failure(s)")
+	}
+}

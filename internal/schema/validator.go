@@ -148,6 +148,14 @@ type schemaCache struct {
 
 	defsMu sync.Mutex
 	defs   map[string]cue.Value
+
+	// stepNames is the set of canonical step-name strings derived
+	// from CUE `#StepName` at load time. Populated once inside
+	// once.Do; readers do not need additional locking. Empty when
+	// the SSOT is missing the definition (treated as a fatal load
+	// error; allowlist consumers fall back to "no allowlist" — they
+	// keep all rows, sacrificing noise reduction over correctness).
+	stepNames map[string]bool
 }
 
 var schemaSingleton schemaCache
@@ -174,6 +182,18 @@ func loadSchema() (*cue.Context, cue.Value, map[string]string, error) {
 		schemaSingleton.addedIn = parseAddedInMap(embeddedCueSchema)
 		schemaSingleton.defs = map[string]cue.Value{
 			"#WorkflowV1": root,
+		}
+		// Derive the step-name allowlist from the SSOT (#StepName).
+		// This collapses the historical Go-literal mirror into a
+		// single source of truth — adding a new step name in CUE
+		// becomes the only update site. Sibling-narrowing noise
+		// suppression keys off this set.
+		stepNameDef := v.LookupPath(cue.ParsePath("#StepName"))
+		schemaSingleton.stepNames = map[string]bool{}
+		if stepNameDef.Exists() {
+			for _, s := range extractStringEnum(stepNameDef) {
+				schemaSingleton.stepNames[s] = true
+			}
 		}
 	})
 	return schemaSingleton.ctx, schemaSingleton.value, schemaSingleton.addedIn, schemaSingleton.err
@@ -665,22 +685,22 @@ var siblingNarrowingRe = regexp.MustCompile(`^conflicting values "[A-Z_]+" and "
 // actionable one. We drop these rows in pass 2.
 var nameEnumNoiseRe = regexp.MustCompile(`^name = "([A-Z_]+)" — must be one of \[`)
 
-// stepNameAllowlist is the in-package mirror of describe.go's
-// ValidStepNames, kept here so the validator package doesn't need
-// to import the cobra-attached describe-step-type surface. The
-// `TestStepNameAllowlist_MirrorsDescribeAllowlist` test in
-// describe_test.go fails if the two drift.
-var stepNameAllowlist = map[string]bool{
-	"BRAINSTORMING":         true,
-	"PRD":                   true,
-	"TASKS_MANIFEST":        true,
-	"TASK":                  true,
-	"CODE_REVIEW":           true,
-	"RECEIVING_CODE_REVIEW": true,
-	"WRITE_TESTS":           true,
-	"UPDATE_DOCS":           true,
-	"FEATURE_ACCEPTANCE":    true,
-	"COMMIT":                true,
+// stepNameAllowlist returns the set of canonical step-name strings
+// derived from CUE `#StepName` at schema load time. Replaces the
+// historical hand-maintained Go-literal mirror with a single source
+// of truth — adding a new step name in `workflow-v1.cue` is now the
+// only update site. The `TestStepNameAllowlist_MirrorsCueSSOT` test
+// pins the derivation against the CUE definition.
+//
+// Returns an empty (non-nil) map when the SSOT is missing the
+// definition (treated as a load-time fatal error elsewhere; this
+// helper just returns the cached value).
+func stepNameAllowlist() map[string]bool {
+	_, _, _, _ = loadSchema()
+	if schemaSingleton.stepNames == nil {
+		return map[string]bool{}
+	}
+	return schemaSingleton.stepNames
 }
 
 // isNameEnumNoise reports whether v is the misleading
@@ -699,7 +719,7 @@ func isNameEnumNoise(v Violation) bool {
 	if m == nil {
 		return false
 	}
-	return stepNameAllowlist[m[1]]
+	return stepNameAllowlist()[m[1]]
 }
 
 // constraintCodes is the set of violation codes that represent a
@@ -811,9 +831,18 @@ func suppressDisjunctionNoise(vs []Violation) []Violation {
 
 // stepRootPath returns the closest enclosing step subtree path for a
 // violation Path. The schema groups disjunction narrowing under
-// `…steps[N]` (or `#WorkflowV1.steps[N]` for the embedded form), so
-// we trim `path` back to that root. Returns "" when path doesn't
-// reference a steps[] element — those violations are kept as-is.
+// `…steps[N]` (or `#WorkflowV1.steps[N]` for the embedded form). Both
+// prefix forms are normalised to a SINGLE canonical key
+// (`steps[N]`) so the noise-suppression bookkeeping in
+// SuppressDisjunctionNoise can group rows from mixed-prefix violation
+// streams. Returns "" when path doesn't reference a steps[] element —
+// those violations are kept as-is.
+//
+// RETRO §I8 (2026-05-05): without normalisation, a real-failure row
+// emitted as `#WorkflowV1.steps[3].prd.personas[0]` would key under
+// `#WorkflowV1.steps[3]` while a noise row emitted as `steps[3].name`
+// would key under `steps[3]` — the lookup on the noise side would miss
+// the real-failure flag and the row would leak through.
 func stepRootPath(path string) string {
 	if path == "" {
 		return ""
@@ -826,7 +855,10 @@ func stepRootPath(path string) string {
 	if closing < 0 {
 		return ""
 	}
-	return path[:idx+closing+1]
+	// Slice from `steps[` (inclusive) so the returned key is
+	// prefix-form-agnostic: both `steps[3]` and
+	// `#WorkflowV1.steps[3]` collapse to `steps[3]`.
+	return path[idx : idx+closing+1]
 }
 
 // RecordNoSchemaCheck appends one audit line to
@@ -1054,8 +1086,18 @@ func lookupArrayElementFieldsForPath(schemaRoot cue.Value, path string) []string
 	if subpath == "" {
 		return nil
 	}
-	for _, defName := range stepNameToDefinition {
-		defVal, ok := lookupDefinition(defName)
+	// Sort step keys to make iteration deterministic. Go map iteration
+	// order is randomised; left as-is, the first matching step
+	// definition wins, and across runs the surfaced field-list could
+	// flap — violating the byte-stable-output contract documented at
+	// the top of this file.
+	stepKeys := make([]string, 0, len(stepNameToDefinition))
+	for k := range stepNameToDefinition {
+		stepKeys = append(stepKeys, k)
+	}
+	sort.Strings(stepKeys)
+	for _, k := range stepKeys {
+		defVal, ok := lookupDefinition(stepNameToDefinition[k])
 		if !ok {
 			continue
 		}

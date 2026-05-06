@@ -89,3 +89,25 @@ func TestGetConfig_UnknownKeyExitsNonZero(t *testing.T) {
 		t.Error("expected non-zero exit for unknown config key, got nil error")
 	}
 }
+
+// TestGetConfig_StdoutDoesNotContainBannerVerb regression-pins the
+// stdout/stderr split: `get-config` stdout must contain only the value
+// payload, never the audit banner (`verb=...`). Mirrors the pin already
+// in place for `query` (RETRO §C2 of 2026-05-05). Without this test, a
+// future refactor of the audit-line emit path could re-introduce the
+// banner-on-stdout bug that broke `$(cmd | jq)` pipelines.
+func TestGetConfig_StdoutDoesNotContainBannerVerb(t *testing.T) {
+	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
+	t.Setenv("BROWZER_LLM", "")
+	t.Setenv("BROWZER_WORKFLOW_QUIET", "")
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	root.SetArgs([]string{"workflow", "get-config", "mode", "--workflow", wfPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "verb=") {
+		t.Errorf("get-config stdout must not contain banner artifact `verb=`; got: %s", stdout.String())
+	}
+}

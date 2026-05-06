@@ -33,8 +33,6 @@ func (c *Client) SearchCrossWorkspace(ctx context.Context, req CrossWorkspaceSea
 	if err := c.postJSON(ctx, "search", req, &resp); err != nil {
 		return nil, err
 	}
-	for i := range resp.Results {
-		resp.Results[i].Path = resp.Results[i].DocumentName
-	}
+	PopulateSearchResultPaths(resp.Results)
 	return &resp, nil
 }

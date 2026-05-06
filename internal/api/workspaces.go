@@ -142,9 +142,7 @@ func (c *Client) SearchWorkspace(ctx context.Context, workspaceID, query string,
 	if err := c.getJSON(ctx, "api/workspaces/"+workspaceID+"/search", q, &body); err != nil {
 		return nil, err
 	}
-	for i := range body.Results {
-		body.Results[i].Path = body.Results[i].DocumentName
-	}
+	PopulateSearchResultPaths(body.Results)
 	return body.Results, nil
 }
 

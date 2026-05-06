@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -110,27 +109,34 @@ func registerWorkflowValidate(parent *cobra.Command) {
 				Violations: rendered,
 			}
 
-			// --json: marshal ValidationResult to stdout.
+			// --json: marshal ValidationResult to stdout. Use marshalReadJSON to
+			// keep `<`, `>`, and `&` literal (not HTML-escaped) so violation
+			// messages containing operator-typed acceptance criteria like
+			// `WHEN x > y` round-trip cleanly through `cmd | jq` consumers.
 			if jsonMode {
-				out, marshalErr := json.MarshalIndent(renderResult, "", "  ")
+				out, marshalErr := marshalReadJSON(renderResult)
 				if marshalErr != nil {
 					return fmt.Errorf("marshal result: %w", marshalErr)
 				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", out)
+				_, _ = cmd.OutOrStdout().Write(out)
 				if !renderResult.Valid {
 					return fmt.Errorf("%d violation(s)", len(renderResult.Violations))
 				}
 				return nil
 			}
 
-			// Human-readable output (default path, preserved verbatim).
+			// Human-readable output. Route through schema.FormatViolations so
+			// the validate-path output format matches the write-path
+			// (apply.go) byte-for-byte: both emit `<path>: <code> at
+			// @addedIn(<iso>): <msg>`. Skill rubrics that grep for the
+			// addedIn prefix now match either surface. FormatViolations
+			// itself runs the noise suppression — we keep the prior
+			// rendered/Valid computation for the JSON branch only.
 			if renderResult.Valid {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}
-			for _, v := range renderResult.Violations {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s\n", v.Path, v.Message)
-			}
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), schema.FormatViolations(rendered))
 			return fmt.Errorf("%d validation error(s)", len(renderResult.Violations))
 		},
 	}

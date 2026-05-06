@@ -49,16 +49,34 @@ type ParseWorkspaceRequest struct {
 // SearchResult is one entry from GET /api/workspaces/:id/search.
 //
 // Path mirrors DocumentName so agents can use the same `path` field across
-// explore / deps / search outputs. The wire format only carries
-// `documentName`; the SearchWorkspace and SearchCrossWorkspace client
-// methods populate Path post-decode.
+// explore / deps / search outputs. The wire format currently only carries
+// `documentName`; clients populate Path post-decode via PopulateSearchResultPaths
+// when the server didn't supply it. The `omitempty` tag means: if Path is
+// empty after decode AND the populator hasn't run yet, the field collapses
+// in re-serialised output rather than emitting `"path": ""`. If a future
+// server release starts emitting `path` directly, the populator becomes a
+// no-op for those rows (it only fills empty Paths) and old responses keep
+// working.
 type SearchResult struct {
 	Text         string  `json:"text"`
 	Position     int     `json:"position"`
 	Score        float64 `json:"score"`
 	DocumentName string  `json:"documentName"`
-	Path         string  `json:"path"`
+	Path         string  `json:"path,omitempty"`
 	WorkspaceID  string  `json:"workspaceId,omitempty"`
+}
+
+// PopulateSearchResultPaths fills SearchResult.Path with DocumentName when
+// the server-emitted Path is empty. Idempotent (re-running on already-
+// populated results is a no-op) and server-tolerant (a future server-emitted
+// `path` value is preserved instead of overwritten). Shared by
+// SearchWorkspace + SearchCrossWorkspace.
+func PopulateSearchResultPaths(rs []SearchResult) {
+	for i := range rs {
+		if rs[i].Path == "" {
+			rs[i].Path = rs[i].DocumentName
+		}
+	}
 }
 
 // CrossWorkspaceSearchRequest is the body of POST /search.

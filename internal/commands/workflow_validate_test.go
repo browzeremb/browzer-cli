@@ -520,3 +520,67 @@ func TestWorkflowValidate_JSONFlag_MalformedWorkflowFile(t *testing.T) {
 		t.Error("expected at least 1 violation describing the JSON parse error")
 	}
 }
+
+// TestWorkflowValidate_HumanOutputUsesFormatViolations regression-pins the
+// format-symmetry contract: validate-path human-readable output must include
+// the `at @addedIn(<iso>):` prefix that FormatViolations produces, matching
+// the write-path (apply.go) output byte-for-byte. RETRO 2026-05-05 §I9: the
+// validate cmd was the last surface using a manual `<path>: <message>` loop,
+// so skill rubrics greping for `at @addedIn(` only matched apply-path output.
+func TestWorkflowValidate_HumanOutputUsesFormatViolations(t *testing.T) {
+	wfPath := writeWorkflowFile(t, invalidSchemaV2WorkflowJSON)
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "")
+	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommand(&stdout, &stderr)
+	root.SetArgs([]string{"workflow", "validate", "--workflow", wfPath})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected validate to fail on tampered fixture")
+	}
+
+	got := stderr.String()
+	if !strings.Contains(got, "at @addedIn(") {
+		t.Errorf("validate stderr must contain `at @addedIn(` (FormatViolations format symmetry); got: %s", got)
+	}
+}
+
+// TestWorkflowValidate_JSONOutputDoesNotEscapeHTMLChars regression-pins that
+// `validate --json` keeps `<`, `>`, `&` literal in violation messages. RETRO
+// 2026-05-05 §I1 follow-up: validate read-path was the last surface still
+// using json.MarshalIndent (HTML-escape ON), so a CUE message containing
+// operator-typed acceptance-criteria text like `WHEN x > y` arrived as
+// `WHEN x > y` and tripped operator-side jq pipelines.
+func TestWorkflowValidate_JSONOutputDoesNotEscapeHTMLChars(t *testing.T) {
+	// Inject HTML-special chars into featureId. CUE rejects via the slug
+	// regex and the violation message embeds the offending value verbatim.
+	tampered := strings.Replace(invalidSchemaV2WorkflowJSON,
+		`"featureId": "INVALID-ID"`,
+		`"featureId": "feat>bad<id&drop"`,
+		1)
+	wfPath := writeWorkflowFile(t, tampered)
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "")
+	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommand(&stdout, &stderr)
+	root.SetArgs([]string{"workflow", "validate", "--json", "--workflow", wfPath})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected validate to fail on tampered fixture")
+	}
+
+	got := stdout.String()
+	for _, escape := range []string{"\\u003c", "\\u003e", "\\u0026"} {
+		if strings.Contains(got, escape) {
+			t.Errorf("validate --json stdout must NOT contain HTML escape %s; got: %s", escape, got)
+		}
+	}
+	// Confirm the literal chars survived (otherwise the test is vacuous —
+	// the violation message must echo the bad value to make the assertion
+	// meaningful).
+	for _, want := range []string{">", "<", "&"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("violation message did not echo literal %q from bad value; assertion vacuous; stdout: %s", want, got)
+		}
+	}
+}

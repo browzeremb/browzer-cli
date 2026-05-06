@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"cuelang.org/go/cue"
 )
 
 // findFixturesDir resolves the absolute path to the fixtures dir
@@ -559,6 +561,40 @@ func TestLookupArrayElementFieldsForPath_PRDSuccessMetrics(t *testing.T) {
 	}
 }
 
+// TestLookupArrayElementFieldsForPath_DeterministicAcrossRuns regression-pins
+// the byte-stable-output contract for the per-step fallback: when the path
+// crosses the steps[N] discriminated union, iteration over
+// stepNameToDefinition must be deterministic. RETRO 2026-05-05 §I7: Go map
+// iteration order is randomised; if two step types both expose a struct at
+// the same dotted subpath, the surfaced field-list could flap across runs.
+func TestLookupArrayElementFieldsForPath_DeterministicAcrossRuns(t *testing.T) {
+	_, schemaRoot, _, err := loadSchema()
+	if err != nil {
+		t.Fatalf("loadSchema: %v", err)
+	}
+	// successMetrics exists on multiple step types (PRD step + others
+	// downstream that mirror the same shape) — a path through steps[N]
+	// would hit the discriminated-union fallback and exercise the
+	// stepKeys ordering.
+	first := lookupArrayElementFieldsForPath(schemaRoot, "steps[0].prd.successMetrics")
+	if len(first) == 0 {
+		t.Fatalf("baseline lookup returned empty; need fields to assert ordering")
+	}
+	for i := 0; i < 50; i++ {
+		got := lookupArrayElementFieldsForPath(schemaRoot, "steps[0].prd.successMetrics")
+		if len(got) != len(first) {
+			t.Fatalf("run %d: field-count drift; got %d, want %d (%v vs %v)",
+				i, len(got), len(first), got, first)
+		}
+		for j := range first {
+			if got[j] != first[j] {
+				t.Fatalf("run %d field[%d]: got %q, want %q (full=%v vs %v)",
+					i, j, got[j], first[j], got, first)
+			}
+		}
+	}
+}
+
 // TestLookupArrayElementFieldsForPath_NonArrayPath asserts the helper
 // returns nil when the path resolves to a non-array (struct) field. We
 // use `config` (a plain `#WorkflowConfig` struct, not an array) for the
@@ -756,6 +792,71 @@ func TestSuppressDisjunctionNoise_DropsNameEnumNoise(t *testing.T) {
 	}
 }
 
+// TestSuppressDisjunctionNoise_NormalisesPrefixForms asserts §I8 fix:
+// when the real-failure row is emitted with the embedded `#WorkflowV1.`
+// prefix and the noise row is emitted without (or vice versa), the
+// suppression still groups them under one step subtree key. Without the
+// stepRootPath normalisation, the lookup misses and the noise leaks.
+func TestSuppressDisjunctionNoise_NormalisesPrefixForms(t *testing.T) {
+	cases := []struct {
+		name      string
+		realPath  string
+		noisePath string
+	}{
+		{"real-prefixed-noise-bare", "#WorkflowV1.steps[0].prd.personas[0]", "steps[0].name"},
+		{"real-bare-noise-prefixed", "steps[0].prd.personas[0]", "#WorkflowV1.steps[0].name"},
+		{"both-bare", "steps[0].prd.personas[0]", "steps[0].name"},
+		{"both-prefixed", "#WorkflowV1.steps[0].prd.personas[0]", "#WorkflowV1.steps[0].name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := []Violation{
+				{
+					Path:    tc.realPath,
+					Code:    "type-mismatch",
+					Message: `conflicting values "bad-string" and {id:string,description:string}`,
+				},
+				{
+					Path:    tc.noisePath,
+					Code:    "invalid-enum-value",
+					Message: `name = "PRD" — must be one of [BRAINSTORMING, CODE_REVIEW, COMMIT, FEATURE_ACCEPTANCE, RECEIVING_CODE_REVIEW, TASK, TASKS_MANIFEST, UPDATE_DOCS, WRITE_TESTS]`,
+				},
+			}
+			got := SuppressDisjunctionNoise(in)
+			if len(got) != 1 {
+				t.Fatalf("expected only real-failure row to survive (noise grouped via normalised stepRootPath); got %d rows:\n%+v", len(got), got)
+			}
+			if got[0].Code == "invalid-enum-value" {
+				t.Errorf("name-enum noise leaked under cross-prefix grouping: %+v", got[0])
+			}
+		})
+	}
+}
+
+// TestStepRootPath_NormalisesBothPrefixForms is a unit-level pin on the
+// helper itself: both prefix forms must collapse to a single `steps[N]`
+// key so the parent-grouping map in SuppressDisjunctionNoise treats them
+// as the same subtree.
+func TestStepRootPath_NormalisesBothPrefixForms(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"steps[0].name", "steps[0]"},
+		{"#WorkflowV1.steps[0].name", "steps[0]"},
+		{"steps[3].body.prd.personas[0]", "steps[3]"},
+		{"#WorkflowV1.steps[12].body.tasksManifest.tasks[2]", "steps[12]"},
+		{"config.mode", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := stepRootPath(tc.in)
+		if got != tc.want {
+			t.Errorf("stepRootPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestSuppressDisjunctionNoise_KeepsGenuineNameTypo asserts the
 // inverse: when the operator types a step name OUTSIDE the
 // allowlist (typo, refactor mid-flight), the `invalid-enum-value`
@@ -807,10 +908,13 @@ func TestSuppressDisjunctionNoise_DropsEmptyDisjunctionPlaceholders(t *testing.T
 }
 
 // TestStepNameAllowlist_MirrorsValidStepNames pins the in-package
-// allowlist mirror (validator.go) against the canonical list in
-// describe.go. If the SSOT gains a new step name, both sides must
-// be updated in lockstep — this test fails fast otherwise.
+// allowlist (validator.go) against the canonical list in describe.go.
+// Both are now derived from the CUE SSOT at load time; this test
+// ensures the two derivations agree (catches a drift between the
+// `extractStringEnum(#StepName)` walk and the `ValidStepNames`
+// constant in describe.go).
 func TestStepNameAllowlist_MirrorsValidStepNames(t *testing.T) {
+	allowlist := stepNameAllowlist()
 	for _, name := range ValidStepNames {
 		if name == "workflow" {
 			// `workflow` is the alias for #WorkflowV1 in describe.go;
@@ -818,11 +922,11 @@ func TestStepNameAllowlist_MirrorsValidStepNames(t *testing.T) {
 			// (cannot appear as `step.name`).
 			continue
 		}
-		if !stepNameAllowlist[name] {
+		if !allowlist[name] {
 			t.Errorf("ValidStepNames includes %q but stepNameAllowlist does not — drift between describe.go and validator.go", name)
 		}
 	}
-	for k := range stepNameAllowlist {
+	for k := range allowlist {
 		found := false
 		for _, name := range ValidStepNames {
 			if name == k {
@@ -832,6 +936,38 @@ func TestStepNameAllowlist_MirrorsValidStepNames(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("stepNameAllowlist has %q but ValidStepNames does not — drift", k)
+		}
+	}
+}
+
+// TestStepNameAllowlist_MirrorsCueSSOT pins the allowlist directly
+// against the CUE `#StepName` definition. Closes RETRO §I6: the prior
+// Go-literal mirror could be updated together with describe.go while
+// the CUE SSOT lagged, silently breaking noise suppression. With
+// derivation at loadSchema-time, this test asserts the derivation
+// captured every literal CUE accepts.
+func TestStepNameAllowlist_MirrorsCueSSOT(t *testing.T) {
+	_, _, _, err := loadSchema()
+	if err != nil {
+		t.Fatalf("loadSchema: %v", err)
+	}
+	stepNameDef := schemaSingleton.root.LookupPath(cue.ParsePath("#StepName"))
+	if !stepNameDef.Exists() {
+		t.Fatal("CUE #StepName definition missing — schema regression")
+	}
+	want := extractStringEnum(stepNameDef)
+	if len(want) == 0 {
+		t.Fatal("extractStringEnum(#StepName) returned empty — SSOT lost its disjunction shape")
+	}
+
+	got := stepNameAllowlist()
+	if len(got) != len(want) {
+		t.Fatalf("size drift: allowlist has %d entries, CUE SSOT has %d (%v vs %v)",
+			len(got), len(want), got, want)
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("CUE SSOT lists %q but stepNameAllowlist() omits it", name)
 		}
 	}
 }

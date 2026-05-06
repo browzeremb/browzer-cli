@@ -227,6 +227,75 @@ func TestAppendSteps_ElementMustBeObject(t *testing.T) {
 	}
 }
 
+// TestAppendSteps_ElementMustHaveStepId asserts pre-mutation validation
+// rejects entries that are well-typed objects but lack a non-empty string
+// stepId. Closes RETRO §I4: without this gate, the audit-line emitted on
+// failure could lie (claiming an earlier element's stepId as the "last
+// appended" when in fact a later element with no stepId is what failed CUE).
+func TestAppendSteps_ElementMustHaveStepId(t *testing.T) {
+	wfPath := writeWorkflowFile(t, minimalWorkflowJSON)
+	before, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		payload string
+		wantIdx string
+	}{
+		{
+			name: "missing-stepid-field",
+			payload: `[
+				{"stepId":"STEP_OK","name":"PRD","status":"PENDING"},
+				{"name":"TASK","status":"PENDING"}
+			]`,
+			wantIdx: "[1]",
+		},
+		{
+			name: "empty-stepid-string",
+			payload: `[
+				{"stepId":"","name":"PRD","status":"PENDING"}
+			]`,
+			wantIdx: "[0]",
+		},
+		{
+			name: "non-string-stepid",
+			payload: `[
+				{"stepId":42,"name":"PRD","status":"PENDING"}
+			]`,
+			wantIdx: "[0]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payloadFile := filepath.Join(t.TempDir(), "p.json")
+			if err := os.WriteFile(payloadFile, []byte(tc.payload), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			root := buildWorkflowCommandT(t, &stdout, &stderr)
+			root.SetArgs([]string{"workflow", "append-steps", "--payload", payloadFile, "--workflow", wfPath})
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("expected error when payload entry lacks valid stepId")
+			}
+			combined := stdout.String() + stderr.String() + err.Error()
+			if !strings.Contains(combined, tc.wantIdx) {
+				t.Errorf("expected error to reference offending index %s, got: %s", tc.wantIdx, combined)
+			}
+			if !strings.Contains(combined, "stepId") {
+				t.Errorf("expected error to mention 'stepId', got: %s", combined)
+			}
+			after, _ := os.ReadFile(wfPath)
+			if string(before) != string(after) {
+				t.Error("invalid batch must not mutate workflow.json (atomic rollback)")
+			}
+		})
+	}
+}
+
 // TestAppendSteps_SingleAuditLineEmitted asserts the batch produces ONE
 // audit line on success — confirming the advisory lock is acquired once,
 // the CUE validator runs once, and the persistence is one tmp+rename.

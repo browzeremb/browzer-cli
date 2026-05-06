@@ -653,3 +653,30 @@ func TestGetStep_FieldScalarJSONMode(t *testing.T) {
 		}
 	})
 }
+
+// TestGetStep_StdoutDoesNotContainBannerVerb regression-pins the
+// stdout/stderr split for the get-step read verb: stdout must contain only
+// the JSON payload, never the audit banner (`verb=...`). Mirrors the
+// regression test for `query` (workflow_query_test.go:307) — RETRO §C2 of
+// the 2026-05-05 token-economy session: the original blocker was banner-
+// in-stdout breaking $(cmd | jq) consumers; PR 1 fixed `query` and pinned
+// it. This closes the symmetry gap by pinning the same contract for
+// get-step (and the other read verbs are pinned in their own files).
+func TestGetStep_StdoutDoesNotContainBannerVerb(t *testing.T) {
+	wfPath := writeWorkflowFile(t, workflowWithStepsJSON)
+
+	var stdout, stderr bytes.Buffer
+	root := buildWorkflowCommandT(t, &stdout, &stderr)
+	// Disable BROWZER_LLM so the audit banner WOULD have been emitted on
+	// stderr if anything was wired wrong — without this env, the helper's
+	// quiet-by-default-under-LLM heuristic could mask the bug.
+	t.Setenv("BROWZER_LLM", "")
+	t.Setenv("BROWZER_WORKFLOW_QUIET", "")
+	root.SetArgs([]string{"workflow", "get-step", "STEP_01_BRAINSTORMING", "--workflow", wfPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "verb=") {
+		t.Errorf("get-step stdout must not contain banner artifact `verb=`; got: %s", stdout.String())
+	}
+}

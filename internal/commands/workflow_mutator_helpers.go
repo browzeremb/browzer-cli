@@ -93,9 +93,12 @@ func acquireMutatorLock(cmd *cobra.Command, wfPath string, noLock bool, timeout 
 // dispatch helper landed in 2026-04-29; the daemon goroutine and the
 // standalone fallback now share that single source of truth.)
 
-// readPayload reads JSON payload from --payload flag file or stdin (when flag is "").
+// readPayload reads JSON payload from --payload flag file or stdin (when flag
+// is empty or the literal "-"). The dash convention matches Unix tooling
+// idiom and lets cheat-sheet examples document `--payload -` for stdin
+// without diverging from default behaviour.
 func readPayload(cmd *cobra.Command, payloadFlag string) ([]byte, error) {
-	if payloadFlag != "" {
+	if payloadFlag != "" && payloadFlag != "-" {
 		return os.ReadFile(payloadFlag)
 	}
 	return io.ReadAll(cmd.InOrStdin())
