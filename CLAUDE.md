@@ -1,191 +1,173 @@
-# packages/cli — CLAUDE.md
+# CLAUDE.md
 
-Browzer CLI. **Written in Go, not Node.** Read the root `CLAUDE.md` first.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Not part of the pnpm monorepo
+## Authoritative references (read first)
 
-- No `package.json`, no `node_modules`, does NOT participate in `pnpm turbo lint typecheck test`.
-- Has its own `go.mod` (module `github.com/browzeremb/browzer-cli`, Go 1.25+) and goreleaser pipeline.
-- Run its tests with `cd packages/cli && go test ./...`.
-- Build locally with `cd packages/cli && go build -o "$HOME/.local/bin/browzer" ./cmd/browzer`.
-- Latest release tag: `cli-v1.13.0`. Notable shipped capabilities: `--workspace-ids` on `ask`, `search`, `explore`, `deps` for cross-workspace queries (since v1.3.x); `internal/format/score.go` normalizes `score` via `(2/π)·atan(raw)` — the same arctan transform used by the TS pipeline, so scores are comparable across surfaces; `browzer mentions` graph traversal (`File ← RELEVANT_TO ← Entity ← MENTIONS ← Chunk ← HAS_CHUNK ← Document`) consumed by the `update-docs` skill; `--anchors` flag on `explore` with a stable `anchor` field; a `staleness` block in `status --json`; `--no-wait` on `workspace sync`; the v0.8.0 token-economy subsystem (daemon + tracker + telemetry + hooks + `read`/`gain`/`plugin`/`config` commands); the v1.0.0 marketplace-based plugin flow (`/plugin marketplace add browzeremb/skills`); v1.6.0 jq-bind-vars + `--quiet`/`--save`; v1.7.0 WF-SYNC-1 fix-pack; v1.8.0/1.9.0 follow-ups (validate `--json`/`--since-version`, FormatViolations rewrite, daemon `status` exit codes, `describe-step-type` enrichment); v1.10.0 skill↔CLI schema-drift sweep — 7 new optional CUE fields closing 20 drift hits; v1.11.0: skills+cli autoresearch sweep — 3 new named workflow queries (`tasks-manifest`, `steps-by-name`, `steps-by-owner`) closing every raw `jq … "$WORKFLOW"` pattern in skill bodies (audit metric `skill-no-raw-jq-workflow.mjs` baseline 33 → final 0); v1.12.0: RETRO §9 follow-up sweep — three new mutator-helper APIs (`enrichSetCurrentStepError`, `isParseError`+`emitParseErrorAudit`, `quietByDefaultUnderLLM`) in `internal/commands/workflow_mutator_helpers.go`; **v1.13.0**: rides alongside `skills-v4.12.0` (eval pipeline schema unification + on-behalf-of org-attribution trailer). CLI Go code itself unchanged in this cut — bumps in lockstep with the skills package; the only packages/cli/ artefacts touched are six CUE fixtures (3 valid + 3 invalid) for RETRO §2 drift classes added in `f1734147`. See `git tag -l 'cli-v*'` for the complete version history.
+- **`docs/CLAUDE_CODE_PLUGIN.md`** — single source of truth for the broader Browzer plugin/CLI consolidation: layout, invariants, CI gates, version trajectory, session-log fixes. Always consult before any non-trivial change here.
+- **`packages/skills/`** — the Claude Code plugin that consumes this CLI. Skills are markdown wrappers around `browzer` subcommands. This CLI MUST stay synchronized with that plugin: any change to a subcommand surface (flags, JSON shape, exit codes, named queries, mutator verbs, `--render` templates) requires patching every skill body that invokes it in the same change. Skill-side audits (`scripts/audit/skill-cli-references.mjs`, `skill-cli-sync-drift.mjs`, `skill-no-unknown-named-query.mjs`, `skill-cobra-arg-syntax.mjs`) gate that drift in the monorepo `quality` job. See `packages/skills/CLAUDE.md`.
 
-## Workflow CLI flag surface (post WF-OPTIONAL-MARKER, 2026-05-06)
+## What this package is
 
-`browzer workflow describe-step-type <NAME> [--json] [--field <jq>] [--required-only] [--inline-enums] [--include-base] [--save <path>]` — runtime introspection over `internal/schema/workflow-v1.cue`. Two contracts the skill ecosystem now relies on:
+`@browzer/cli` is a single-binary Go CLI (`browzer`, current version `2.2.0` — `VERSION`, requires Go **≥ 1.25**) that talks to the Browzer server over HTTPS and to a local Unix-socket daemon over JSON-RPC. It is the runtime side of the Browzer plugin: skills are thin markdown contracts; this CLI is what they actually invoke.
 
-1. **`?` optional marker contract** (Phase 1.1): every CUE field declared `field?: T` returns `required: false` in the JSON output. Default detection uses AST inspection (`internal/schema/describe.go::hasExplicitCUEDefault`) for explicit `*default` markers, ignoring CUE's overly-permissive `Default()` heuristic that mis-flagged `[...string]`. `cueValueIsNullable` is immediate-kind only — never recurses into struct contents. Walker emits parent rows for arrays AND structs so consumers see field-level optionality independent of children. Pinned by `internal/schema/describe_test.go::TestDescribeStepType_OptionalMarkerContract` (35+ field expectations) and the audit `scripts/audit/cli-describe-step-type-respects-optional-marker.mjs` (with `--self-test` against a buggy fixture).
-2. **`--include-base`** (Phase 3.2): prepends `#StepBase` wrapper rows under the path prefix `@base.` (e.g. `@base.stepId`, `@base.status`). Default off for backward compat. Use when a skill needs to dispatch a fully-formed step (StepBase + payload) without a separate CUE-source read.
+Two surfaces:
 
-`browzer workflow append-step --scaffold <STEP_NAME> [--save <path>]` (Phase 3.1) — preview-only emit of a JSON skeleton with the StepBase wrapper + empty-but-type-correct payload placeholders. Mutually exclusive with `--payload`. Doesn't write to `workflow.json`. Use to bootstrap a payload before piping it back through `--payload`. Skeleton fields are derived from the CUE SSOT — emitting required-only fields with empty values (`""`, `[]`, `{}`, `false`, `0`).
+1. **RAG / token-economy** — `login`, `workspace {init,sync,index,docs,list,...}`, `explore`, `search`, `deps`, `read`, `gain`, `daemon`, `ask`, `job`. The `read`/`glob`/`grep` rewrites driven by the plugin's hooks land here.
+2. **Workflow state mutator** — the `workflow {append-step,append-steps,update-step,complete-step,set-status,set-config,set-current-step,patch,query,get-step,get-config,append-review-history,reapply-additional-context,audit-model-override,truncation-audit,validate,describe-step-type,scaffold,...}` verbs are the **only** sanctioned writers of `docs/browzer/<feat>/workflow.json`. Every mutator acquires an advisory flock, validates the post-mutation shape against the CUE schema, and writes atomically (tmp + rename + optional fsync).
 
-`internal/schema/validator.go::FormatViolations` (Phase 3.3) emits a single concise line for `missing-required-field` errors at union sites — naming the missing field and listing the legal discriminator values via `renderMissingUnionFieldMessage`, instead of dumping the full incomplete value with all sibling discriminators expanded. Pinned by `TestSuppressDisjunctionNoise_MissingNameAtUnionSite`.
+## Commands
 
-## Default-ignored files (walker)
-
-`CLAUDE.md` is excluded by default from `browzer sync --skip-code` (and the legacy `browzer workspace docs` path). The walker treats it as a basename match — any `CLAUDE.md` at any directory depth is silently skipped. This prevents rogue rows from appearing in `/dashboard/documents` on workspaces that don't intentionally publish their agent-context file (dogfood finding F-15 / DOG-CLI-1, 2026-04-29). The same default applies to `AGENTS.md`. To re-include `CLAUDE.md` in a workspace, add `!CLAUDE.md` to `.browzerignore` at the repo root — the browzerignore negation rule takes precedence over the default-ignore list and the file will be indexed on the next `browzer sync`.
-
-## Canonical reconciliation command
-
-`browzer sync` is the single canonical command to bring the server-side
-index into match with the local working tree. It re-indexes code
-structure AND reconciles documents (ADD + UPDATE + DELETE) driven by
-`.gitignore ∩ .browzerignore`. Partial runs: `--skip-code` or
-`--skip-docs`. For the legacy interactive huh TUI, use
-`browzer workspace docs --interactive`.
-
-Non-interactive curation (scripting / CI / agents) stays on
-`browzer workspace docs --add <spec>` / `--remove <spec>` /
-`--replace <spec>` exactly as before RAG-UX-1 — those flag paths did not
-change. (`--replace` accepts the `all` and `none` sentinels; the
-existing `--i-know-what-im-doing` confirmation gate still applies.)
-
-`browzer workspace index` (no flags) is a thin alias for
-`browzer sync --skip-docs`; `browzer workspace docs` (no flags) is a
-thin alias for `browzer sync --skip-code`. The legacy `workspace docs`
-default-flow TUI is no longer the default — pass `--interactive` to
-open it explicitly.
-
-## Local verification (REQUIRED before pushing CLI changes)
-
-The CLI's CI runs **four independent checks** that a plain `go test ./...` does NOT cover: `go vet`, `go test -race`, cross-compile for 5 targets (darwin/linux arm64+amd64, windows/amd64), and `golangci-lint v2.5.0`. Each of these has blocked past CI runs because the dev cycle never exercised them locally.
-
-**Always run `make ci` before pushing** — it mirrors the public `browzeremb/browzer-cli` CI exactly:
+Run from this package directory (`packages/cli/`).
 
 ```bash
-cd packages/cli && make ci
+# Full CI parity — run before every push touching this package.
+# vet + race tests + 5 cross-compiles (darwin/linux/windows × arm64/amd64) + golangci-lint v2.5.0
+make ci
+
+# Fast inner loop
+make test            # go test -race -count=1 ./...
+make vet             # go vet ./...
+make lint            # golangci-lint run --timeout=5m  (pin: v2.5.0)
+make build           # builds to $HOME/.local/bin/browzer
+
+# Single-package / single-test
+go test -race ./internal/schema/...
+go test -race -run TestValidator_Mutation ./internal/schema/...
+go test -race -run TestWorkflowQuery_StepsByName ./internal/commands/...
+
+# Mutation testing (validator + dispatch scope, 30–60min)
+make mutate          # writes packages/cli/mutate-out/report.txt
 ```
 
-On first run the script auto-installs `golangci-lint v2.5.0` into `$(go env GOPATH)/bin`. If `make ci` passes locally, `.github/workflows/ci.yml` on the public repo will pass too (same commands, same versions). Skipping this step is how you end up pushing a commit that only reveals its problem once it hits the remote runner. The script itself is at `packages/cli/scripts/ci-local.sh` and is the source of truth; the `Makefile` target is just an ergonomic entry point.
+### CUE schema codegen (`schemas/`)
 
-The monorepo CI has a `cli-ci` job that runs the same script, and the `mirror-cli.yml` workflow only fires via `workflow_run` after CI succeeds — so a commit that would break the public CLI can't reach the public repo in the first place. The `make ci` gate is the fast pre-push check; the monorepo `cli-ci` job is the last-resort fallback.
-
-## Cross-platform discipline
-
-`cmd/browzer` is built for 5 GOOS/GOARCH combos. Anything Unix-specific (`syscall.SysProcAttr.Setsid`, `os.Getuid()`-derived paths, `/tmp` hardcoding, `unix.*`) MUST be isolated behind `//go:build !windows` / `//go:build windows` file pairs. Pattern: helper file `foo_unix.go` (`//go:build !windows`) exports the function; `foo_windows.go` (`//go:build windows`) provides a no-op or Windows-equivalent stub. Example: `internal/commands/daemon_detach_unix.go` / `daemon_detach_windows.go`. `make ci` catches violations via the windows cross-compile step.
-
-The daemon subsystem (Unix socket, uid-derived paths) is structurally Unix-first — Windows builds link but the daemon is not a usable runtime there (see Known limitations in README). Don't add new daemon features behind Windows build tags unless you implement the Windows-native equivalent (named pipes + `CREATE_NEW_PROCESS_GROUP`); a no-op stub is fine for anything that currently falls back to Unix-only behavior.
-
-## Shape
-
-- `cmd/browzer/` — entrypoint (cobra root + subcommand wiring).
-- `internal/commands/` — one file per subcommand. `root.go` is the single source of truth for which commands exist.
-- `internal/api/` — HTTP client against `apps/api` + `apps/auth`.
-- `internal/auth/` — device flow client, token storage (`~/.browzer/credentials`), `Credentials.TelemetryConsentAt` LGPD consent timestamp populated on `login` via `/api/auth/me`.
-- `internal/config/` — `env.go` (`DefaultServer` honors `BROWZER_SERVER` env var), `keys.go` (socket path, PID path, history DB path — all uid-derived), `config.go` (persisted settings in `~/.browzer/config.json`).
-- `internal/daemon/` — Unix-socket JSON-RPC server. `server.go` (accept loop, method dispatch), `client.go` (RPC caller), `filter.go` (AST rewriter: minimal/aggressive/auto — `auto` uses manifest), `manifest_cache.go` (workspace manifest cache, reads `.browzer/manifest.json` lazy), `session_cache.go` (extracts model from transcript jsonl on SessionRegister). Post-2026-04-28 (feat-20260428-web-dashboard-improvements): `server.go` exposes a cumulative org-scoped `tokensEconomized` counter via the daemon's HTTP surface, consumed by the dashboard KPI card through `apps/api`'s `GET /api/telemetry/tokens-economized`. Counter resets on daemon restart by design.
-- `internal/cache/manifest.go` (NEW 2026-04-28) — file-backed `WorkspaceManifest` for tracking known workspaces between `browzer sync` runs, JSON at `os.UserCacheDir()/browzer/workspace-manifest.json` keyed by orgId. Supports last-writer-wins reconciliation when the dashboard mutates a workspace remotely (the `workspace_sync.go` reconciliation extension issues `client.UpdateWorkspace` / `client.DeleteWorkspace` against the apps/api workspace CRUD routes for entries marked `locallyModified`).
-- `internal/workflow/` (NEW 2026-04-29) — schema v1 types + read/write primitives for `docs/browzer/<feat>/workflow.json`. `file_resolution.go` (`ResolveWorkflowPath`: `--workflow` flag > `BROWZER_WORKFLOW` env > git-style walk-up), `lock.go` + `lock_unix.go` (`syscall.Flock` LOCK_EX|LOCK_NB) + `lock_windows.go` (`windows.LockFileEx`) — advisory file lock with per-path `sync.Mutex` in-process serialization (Unix `flock` is reentrant within a single process; the dual-layer guard catches the N=8 concurrency contract `TestAppendStep_ConcurrencyN8NoLostWrites`) and PID-based stale-lock recovery. `schema.go` mirrors `packages/skills/references/workflow-schema.md` v1 (`Workflow`, `Step`, `WorkflowConfig`, `StepName`/`StepStatus` aliases; allowed names: BRAINSTORMING, PRD, TASKS_MANIFEST, TASK, CODE_REVIEW, UPDATE_DOCS, FEATURE_ACCEPTANCE, COMMIT, FIX_FINDINGS). `validate.go` (`Validate(wf) []ValidationError`) is the structural-only checker; lifecycle transition validation lives in the cobra `set-status` command. `io.go` (`AtomicWrite`: `os.CreateTemp` + `os.Rename`, defensive against fixed-name collisions). `jqx.go` (`GetField`, `ApplyJQ`) wraps `github.com/itchyny/gojq` with `WithEnvironLoader(nil)` blocking the `env`/`$ENV` builtins to prevent secret exfiltration into workflow.json. `render.go` (`Render(step, template)`) emits prompt-embed-ready text blocks for 9 named templates (`execute-task`, `code-review`, `brainstorming`, `update-docs`, `generate-task`, `task-context`, `task-evidence`, `task-agent`, `finding`) — replaces multi-line context blocks in subagent dispatch prompts with a single CLI invocation; templates validate that the step's `name` matches the template's expected step type and error otherwise.
-- `internal/commands/workflow*.go` (NEW 2026-04-29) — `browzer workflow` command group. Read verbs: `get-step <stepId> [--field <jq-path>] [--json] [--render <template>] [--bash-vars]`, `get-config <key>`, `validate`, `schema [--json-schema] [--field <path>]`, `query <named>` (registry of 8 pre-baked cross-step aggregations: `reused-gates`, `failed-findings`, `open-deferred-actions`, `task-gates-baseline`, `changed-files`, `deferred-scope-adjustments`, `open-findings`, `next-step-id` — each implemented in pure Go with audit-line emit `verb=query name=<n> elapsedMs=<ms> lockHeldMs=0 validatedOk=true`; `--help` enumerates the registry). Mutator verbs (each acquires the advisory lock for the read-modify-write window, validates schema v1 post-mutation, writes via `AtomicWrite`, emits stderr audit `verb=<v> stepId=<id> lockHeldMs=<n> validatedOk=<b>`): `append-step`, `update-step`, `complete-step`, `set-status`, `set-config`, `append-review-history`, `set-current-step`, `patch --jq <expr>`. Lock contention timeout exits code 16 (`errLockTimeoutExitCode` sentinel); `--no-lock` flag bypasses with stderr warning. The 9 workflow skills (`orchestrate-task-delivery`, `brainstorming`, `generate-prd`, `generate-task`, `execute-task`, `code-review`, `update-docs`, `feature-acceptance`, `commit`) consume this CLI exclusively; raw `jq | mv` mutations are deprecated. `--render` and `--bash-vars` flags on `get-step` are mutually exclusive with `--field` and `--json`; they collapse the legacy `TASK_STEP=$(jq …)` + 7 `echo $TASK_STEP | jq -r …` extraction pattern into a single invocation (consumed today by `execute-task/SKILL.md` Phase 0; `generate-task/SKILL.md` Step 1 + `orchestrate-task-delivery/SKILL.md` §3.5 fix-findings dispatch also consume `--render` post-`543d84e1`). The `schema` command emits a Draft 2020-12 JSON Schema describing the top-level `Workflow` object + `Step` + lifecycle enum (9 step names, 7 status values) — hand-authored as a Go map embedded in the binary, NOT generated from struct tags via reflection. The frontmatter validator's Rule 6 accepts `Bash(browzer workflow *)` declaration alongside the legacy `Bash(jq *)` + `Bash(mv *)` pair during the migration window.
-- `internal/tracker/` — SQLite history DB (`modernc.org/sqlite`, pure Go, no CGO). `Record(Event)` for daemon-side writes, `UnsentBuckets()` + `MarkFlushed()` for the batcher, `Cleanup()` 90-day retention.
-- `internal/telemetry/` — `batcher.go` (periodic flush of unsent buckets), `sender.go` (POSTs to `${server}/api/telemetry/usage` with `Authorization: Bearer`). Consent-gated by `consentGatedSend` wrapper in `daemon_cmd.go` — short-circuits to no-op when `creds.TelemetryConsentAt == nil`.
-- `internal/walker/` — filesystem walker with gitignore + `isSensitive` filtering.
-- `internal/upload/` — multipart upload helpers.
-- `internal/urlvalidate/`, `internal/git/` (includes `RealPath` — macOS case-insensitive path canonicalization), `internal/cache/`, `internal/output/`, `internal/ui/`, `internal/errors/`, `internal/prompts/` — support packages.
-- `internal/schema/` (NEW 2026-05-04, WF-SYNC-1) — CUE-derived write-time validator + `describe-step-type` helper + audit-log helpers. `Validate(wf *Workflow) []ValidationError` is called post-mutation by every mutator verb; a non-empty error list exits 1 with a structured diagnostic. `DescribeStepType(name) StepTypeSpec` returns the field spec for a named step type (consumed by skills + judge via `browzer workflow describe-step-type`). `BROWZER_NO_SCHEMA_CHECK=1` bypasses validation for emergency use.
-- `schemas/` (NEW 2026-05-04, WF-SYNC-1) — CUE SSOT for `workflow.json`. Hand-edit `workflow-v1.cue` only; all other artifacts are generated by `make all`. Layout: `workflow-v1.cue` (SSOT), `workflow-v1.schema.json` (OpenAPI 3.0 projection), `cue_types_workflow_gen.go` (Go structs, `package=workflow`), `Makefile` (`make all` = codegen; `make ci-check` = freshness gate used in CI), `fixtures/valid/*.json` (6 fixtures that MUST validate), `fixtures/invalid/*.json` (10 fixtures that MUST be rejected), `README.md` (codegen pipeline docs). The markdown reference at `packages/skills/references/workflow-schema.md` is also generated from `workflow-v1.cue` via `scripts/cue-to-markdown.mjs` — do not hand-edit it.
-
-## Subsystems (v0.8.0 token-economy umbrella)
-
-The token-economy feature set is a single spec (delivery log at `docs/CHANGELOG.md §2026-04-15 "CLI token economy"`; original detailed spec archived in git history) — implemented across four subsystems that MUST stay decoupled:
-
-1. **Tracker** (`internal/tracker/`): SQLite store at `~/.browzer/history.db`. Append-only `events` table, one row per tool invocation. Used by `gain` for aggregation, by the daemon's `Track` RPC for writes, and by the batcher for flush.
-2. **Daemon** (`internal/daemon/`): Unix-socket JSON-RPC server. Serves `Read`, `Track`, `SessionRegister`, `Health`, `Shutdown`. Idle-watches itself and exits after `daemon.idle_timeout_seconds` of no traffic. Started manually (`daemon start --background`) or via the plugin's SessionStart hook.
-3. **Telemetry** (`internal/telemetry/`): Batcher + sender. Flushes unsent tracker rows to `POST /api/telemetry/usage` every 5 min. Consent-gated — if `creds.TelemetryConsentAt == nil`, the batcher runs but `send()` is a no-op.
-4. **Hooks + plugin** (`packages/skills/hooks/guards/*.mjs`): PreToolUse hooks that hit the daemon via client RPC to rewrite `Read`/`Glob`/`Grep`/`Bash` tool_inputs. The plugin is installed **from inside Claude Code** via `/plugin marketplace add browzeremb/skills` + `/plugin install browzer@browzer-marketplace` (the public mirror of `packages/skills/` maintained by `.github/workflows/mirror-skills.yml`). An older `browzer plugin install` command copied files into `.claude/plugins/browzer/` — Claude Code does not auto-discover plugins from that path, so the command is now a printer of marketplace instructions (`browzer plugin`).
-
-Subsystem isolation matters: a broken daemon MUST NOT break `browzer search`; a broken batcher MUST NOT lose tracker data (batcher reads from the DB, it doesn't own it); a broken telemetry sender MUST NOT block `read` (track is fire-and-forget from the hook's POV).
-
-## Release flow
-
-1. `git tag cli-v<semver> && git push origin cli-v<semver>` in this monorepo.
-2. `.github/workflows/mirror-cli.yml` mirrors source to public `github.com/browzeremb/browzer-cli` and creates a stripped `v<semver>` tag there. Main-branch pushes fire via `workflow_run` gated on the monorepo `CI` workflow (incl. `cli-ci` job) succeeding; tags fire via direct `push` trigger because tag pushes don't re-run main-branch CI.
-3. The public repo's `release.yml` runs goreleaser → GitHub Releases + `browzeremb/homebrew-tap` (cask) + `browzeremb/scoop-bucket` (manifest).
-4. Watch the public-side run with `gh run watch <id> --repo browzeremb/browzer-cli`. Verify with `gh release view v<semver> --repo browzeremb/browzer-cli` — confirm `prerelease: false` for stable cuts.
-
-### Secrets
-
-- `MIRROR_SSH_PRIVATE_KEY` (this repo) — matches a write-enabled deploy key on `browzer-cli`.
-- `HOMEBREW_TAP_TOKEN` (on the public `browzer-cli` repo) — fine-grained PAT with Contents:write on all three release repos (`browzer-cli`, `homebrew-tap`, `scoop-bucket`).
-
-## Install script
-
-`packages/cli/install.sh` is the source of `https://browzeremb.com/install.sh`. That URL is a 302 redirect configured in `apps/web/next.config.ts` → raw `install.sh` on the public mirror.
-
-## Wire-format compatibility
-
-The Go CLI replaced an earlier Node CLI. **Wire format (HTTP routes, JSON shapes, exit codes, file formats) is byte-compatible** with the Node version — changing any of these requires a coordinated server change.
-
-### Server endpoints the CLI depends on
-
-| Endpoint | Used by | Since |
-| --- | --- | --- |
-| `POST /api/auth/api-key/verify` (via `apps/api`) | every authenticated call | v0.1.0 |
-| `GET /api/auth/me` | `login` (populates `TelemetryConsentAt`) | v0.8.0 |
-| `GET /api/workspaces` + `/:id/*` | workspace commands | v0.1.0 |
-| `GET /api/workspaces/:id/explore` | `explore` (adds `exports`, `imports`, `importedBy`, `lines`, `score`, `type`) | v0.5.0 |
-| `GET /api/workspaces/:id/deps` | `deps` — flags `--reverse`, `--limit`, `--json`, `--save`, `--schema` | v0.6.0 |
-| `POST /api/ask` | `ask` — 3-tier `workspaceId` fallback, never sends empty; supports `--workspace-ids` flag for cross-workspace | v0.6.0 |
-| `POST /api/workspaces/ask` | `ask --workspace-ids id1,id2` — cross-workspace ask (§16) | v1.3.0 |
-| `POST /api/workspaces/search` | `search --workspace-ids id1,id2` — cross-workspace search (§16) | v1.3.0 |
-| `POST /api/telemetry/usage` | daemon telemetry batcher | v0.8.0 |
-
-Older CLI versions ignore newer response fields (Go decoder drops unknown keys). New response fields can ship CLI-first; new request fields require CLI + server coordination.
-
-### Daemon protocol v2 handshake (ADR-0001, since WF-SYNC-1 2026-05-04)
-
-The daemon now exposes a `Daemon.Version` JSON-RPC method returning `{daemonVersion, schemaVersion, protocolFeatures, protocolVersion}` (struct declaration order — pinned byte-stable by `TestDaemonVersion_ReturnsDeterministicJSON`). `WorkflowMutateParams` carries `protocolVersion: 2`. Every CLI that mutates workflow state runs one preflight RPC per `daemon.Client` lifetime (cached); two skew paths trigger fallback to in-process standalone-sync, with **distinct audit-reason strings**: (1) preflight error (e.g. `method_not_found` from a pre-v2 daemon) emits `mode=fallback-sync reason=daemon_version_unavailable`; (2) preflight succeeds but returns a mismatched `protocolVersion` emits `mode=fallback-sync reason=daemon_protocol_mismatch`. See [`docs/adr/0001-daemon-protocol-version.md`](../../docs/adr/0001-daemon-protocol-version.md) §"Wire flow" + §"Future evolution" for the full decision record + bump-to-vN runbook (lists every touchpoint to update when bumping `CurrentProtocolVersion`).
-
-**When to bump `CurrentProtocolVersion`** (in `internal/daemon/methods.go` + walk §"Future evolution"):
-
-- ✅ **Bump** if you add or rename a field in `WorkflowMutateParams` (old daemons silently drop unknown fields → silent corruption).
-- ✅ **Bump** if you change the wire-shape of an existing field (e.g. `string` → `[]string`).
-- ✅ **Bump** if you rely on a verb being available daemon-side for correctness (e.g. an audit-line invariant a new verb introduces).
-- ❌ **Do NOT bump** for an additive new mutator verb whose absence on an old daemon is acceptable. The dispatcher returns `unknown_verb` and the CLI falls back to in-process standalone-sync transparently for that single call. Bumping would force ALL mutation traffic to standalone-sync until daemon restart, regressing `daemon-async` for working verbs to "protect" one verb that already gracefully degrades. Document the additive verb in the cheat-sheet (`packages/skills/skills/orchestrate-task-delivery/references/pipeline-phases.md`) and add it to `TRACKED_VERBS` in `packages/skills/scripts/test-skill-samples.mjs` instead.
-
-### macOS case-sensitivity
-
-`git.RealPath(path)` in `internal/git/git.go` resolves paths to their canonical filesystem casing by walking each component via `os.ReadDir`. Use this before `filepath.Rel(gitRoot, abs)` to avoid mismatches between `os.Getwd` (may return `desktop`) and git (returns `Desktop`). `FindGitRoot` applies it automatically.
-
-## Auth
-
-- `browzer login` triggers the device flow against `apps/auth`. Credentials land in `~/.browzer/credentials` as JSON keyed by profile name (default: `default`). As of v0.8.0 the payload also includes `TelemetryConsentAt *string` — populated from `GET /api/auth/me`, used to gate the telemetry batcher.
-- Smoke-test bearer: `jq -r .default.access_token ~/.browzer/credentials`.
-- `PollForToken` accepts a `Clock` interface (`internal/auth/clock.go`). Production callers pass `auth.RealClock{}`; tests inject `FakeClock` (defined in `device_flow_test.go`) to advance virtual time via `Advance(d)` — zero real sleeps, suite runs in <5s.
-
-## Config persistence
-
-`~/.browzer/config.json` holds user-settable keys managed by `browzer config`. Known keys:
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `tracking` | `on` | Whether the daemon records to SQLite |
-| `hook` | `on` | Whether Claude Code hooks in the plugin are active |
-| `telemetry` | `on` (gated by consent) | Whether the batcher flushes to the server |
-| `daemon.idle_timeout_seconds` | `900` | How long the daemon waits before self-exit |
-| `daemon.socket_path` | auto (`/tmp/browzer-daemon.<uid>.sock`) | Override for tests |
-
-When a key is absent, `isHookEnabled()` / `isTrackingEnabled()` / `isTelemetryEnabled()` return `true` — defaults are "on". Setting `off` persists explicit opt-out.
-
-## .browzer/active-step hybrid-cache
-
-The `.browzer/active-step` file is a **derived write-through cache** of `workflow.json.currentStepId`. The CUE-canonical SSOT remains `workflow.json` — the cache is regenerable at any time via:
+`schemas/workflow-v1.cue` is the SSOT for `workflow.json`. Everything downstream is generated. **Never** hand-edit `workflow-v1.schema.json`, `cue_types_workflow_gen.go`, the embed mirrors under `internal/schema/`, or `packages/skills/references/workflow-schema.md`.
 
 ```bash
-browzer workflow get-config currentStepId > .browzer/active-step
+make -C schemas all          # regenerate every artifact (after editing the .cue)
+make -C schemas ci-check     # assert no drift between checked-in artifacts and fresh codegen
+make -C schemas vet          # cue vet schema + valid/invalid fixtures
+make -C schemas clean        # remove generated artifacts
+
+# After codegen, mirror to per-skill copies (run from monorepo root):
+node packages/skills/scripts/sync-shared-refs.mjs
+node packages/skills/scripts/sync-shared-refs.mjs --check    # CI drift gate
 ```
 
-**Lifecycle**:
-- Written by `set-current-step` mutator (atomic temp+rename via `internal/workflow.AtomicWrite`).
-- Cleared by `complete-step` / `set-status` when the workflow's final step transitions to a terminal status (COMPLETED, SKIPPED, STOPPED).
-- Consumed by `.claude/hooks/langfuse_hook.py` to attribute Langfuse traces to the active workflow step (emits `step:<id>` tag).
+`make ci` calls `make -C schemas ci-check` as step 1b — codegen drift fails CI before vet/test/cross-compile run.
 
-**Out-of-band staleness**: if an operator edits `workflow.json` directly (e.g. via `$EDITOR`) without going through `browzer workflow *` mutators, the cache becomes stale. Re-run `browzer workflow set-current-step <stepId>` to regenerate, OR delete the cache file (the hook gracefully falls back to no `step:*` tag).
+## Architecture — big picture
 
-## Daemon WorkflowDir contract
+### Layered composition
 
-`MutatorArgs.WorkflowDir` is auto-populated by `ApplyAndPersist` from `filepath.Dir(workflow_path)`. Daemon callers do NOT plumb `WorkflowDir` explicitly through `WorkflowMutateParams` — the drainer's call to `wf.ApplyAndPersist(job.path, ...)` triggers the same auto-populate path as the standalone-sync path. Direct `ApplyToRaw` callers (test code) MAY set `WorkflowDir` explicitly; an empty value silently disables side-channel cache writes.
+```
+cmd/browzer/main.go
+       │
+       ▼
+internal/commands/        ← Cobra command tree (≈110 files, ≈51 prefixed `workflow_`)
+       │
+       ├── internal/api/         HTTPS client to the Browzer server (workspaces, search, ask, jobs, billing, org, github_releases, preflight)
+       ├── internal/auth/        Device-flow OAuth + API-key login + revoke; credentials at ~/.browzer/credentials
+       ├── internal/daemon/      Unix-socket JSON-RPC daemon: filter pipeline, manifest cache, session cache, workflow_queue
+       ├── internal/schema/      CUE validator + scaffold emitter + describe-step-type; embeds workflow-v1.cue + workflow-v1.schema.json
+       ├── internal/workflow/    Workflow mutators (append/update/complete/...), audit log, render templates
+       ├── internal/tracker/     SQLite tracker (savedTokens, per-language coefficients) for `browzer gain`
+       ├── internal/cache/       Manifest + session caches consumed by the daemon
+       ├── internal/format/      JSON / table / ultra / llm output rendering
+       ├── internal/flags/       Shared cobra flag wiring (--json, --save, --ultra, --llm, -v..-vvv, --schema)
+       ├── internal/config/      ~/.browzer/config.json + .browzer/config.json (workspace) + .browzer/skills.config.json
+       └── internal/{walker,git,upload,urlvalidate,ui,errors,version,output,telemetry}
+```
 
-## State-machine soft-label note
+`cmd/browzer/main.go` is a thin entrypoint; everything testable lives in `internal/commands/` and the supporting packages.
 
-`AWAITING_REVIEW` is a soft label representing the operator's intent to gate human approval before progression. The state machine (`apply.go::setStatusLegalTransitions`) allows AWAITING_REVIEW → {PENDING, RUNNING, COMPLETED, SKIPPED, STOPPED} unconditionally. The contract that AWAITING_REVIEW requires explicit operator approval is enforced by the **skill orchestrator layer** (e.g. `orchestrate-task-delivery`'s review-gate prompt + `reviewHistory[].operatorAction == "approve"`), NOT by the state machine. Do not rely on state-machine refusal to enforce the review gate; rely on the upstream skill's flow control.
+### Workflow schema is the SSOT contract
+
+The single most important invariant: **`packages/cli/schemas/workflow-v1.cue` is the only authoritative description of `workflow.json`.** All consumable artefacts are codegen output. The generated chain:
+
+```
+workflow-v1.cue
+   ├── (cue def --out openapi + scripts/enrich-openapi-projection.mjs)        →  workflow-v1.schema.json
+   │                                                                          →  internal/schema/workflow-v1.schema.json (embed mirror)
+   ├── (cue exp gengotypes)                                                   →  cue_types_workflow_gen.go
+   ├── (scripts/cue-to-markdown.mjs)                                          →  packages/skills/references/workflow-schema.md
+   └── (cp)                                                                   →  internal/schema/workflow-v1.cue (embed mirror)
+```
+
+Why two enrichment passes on the JSON Schema:
+
+1. Carry `time.Format(time.RFC3339)` through as `format: "date-time"` so `scaffold.go` can emit RFC3339 placeholders rather than empty strings (otherwise scaffolds fail CUE validation immediately).
+2. Align `*default | T` fields with the WF-OPTIONAL-MARKER contract — fields with explicit defaults are not required from operator POV, even though OpenAPI projection marks them required.
+
+`internal/schema/describe.go` honours `cue.Iterator.IsOptional()` (the `?` marker) — audited from the skills side by `scripts/audit/cli-describe-step-type-respects-optional-marker.mjs`.
+
+Schema v2 is the current contract (since 2026-05-04). Workflows tagged `schemaVersion: 1` are read-only legacy; mutator verbs reject writes to them.
+
+### Daemon vs standalone write modes
+
+Every workflow mutator honours three execution modes:
+
+| Mode      | Path                       | Cost                                          |
+| --------- | -------------------------- | --------------------------------------------- |
+| `--sync`  | in-process standalone      | ~500ms (full read/validate/write)             |
+| `--async` | daemon FIFO (default)      | <50ms — daemon completes durably in background |
+| `--await` | daemon + fsync wait        | ~50–120ms — durable when the call returns     |
+
+Override via `BROWZER_WORKFLOW_MODE=sync|async|await`. CI/test paths force standalone (`--sync`) when a long-running daemon binary may be stale.
+
+The daemon (`internal/daemon/`) speaks JSON-RPC over a Unix socket, hosts the read-filter pipeline (AST trimming for `browzer read --filter auto`), the manifest + session caches, and the `workflow_queue` for `--async` writes. Lifecycle: `browzer daemon start --background`, `browzer daemon status --json`, `browzer daemon stop`.
+
+### LLM/agent-friendly conventions
+
+Every read command supports:
+
+- `--json` — compact JSON to stdout, no banners.
+- `--save <file>` — write JSON to a file (implies `--json`, stdout silent — receipts pattern used heavily by skills).
+- `--schema` — print the response JSON Schema without hitting the server (discovery without payload).
+- `--ultra` — ultra-compact output (smaller payloads, fewer fields).
+- `--llm` — LLM mode: suppresses banners, disables colors + spinners.
+- `-v`/`-vv`/`-vvv` — verbosity (decisions / subprocess / raw I/O).
+
+Mutators add `--quiet` (default-on under `BROWZER_LLM=1` for all 16 mutators via `quietByDefaultUnderLLM()` at `internal/commands/workflow_mutator_helpers.go:47`).
+
+`describe-step-type` accepts `--include-base` (merge base step fields), `--field <jq-path>` (project a sub-tree), and `--save <path>` (cache the schema slice; skills use `/tmp/<feat>/.schema-cache/<NAME>.json`).
+
+### `--render` templates
+
+`browzer workflow get-step <id> --render <template>` emits compressed prompt-embed projections. The `.jq` renderer files live on the skills side under `packages/skills/scripts/renderers/` (9 files: `brainstorm`, `code-review`, `commit`, `feature-acceptance`, `prd`, `receiving-code-review`, `task`, `tasks-manifest`, `update-docs`). One additional template — `task-agent` — is implemented natively in Go at `internal/workflow/render.go:31`. When adding/renaming a template here, update both sides plus `scripts/audit/render-coverage.mjs` on the skills side.
+
+### Named queries
+
+`browzer workflow query <name>` is the only allowed mechanism for cross-step aggregations. Current catalogue (10): `reused-gates`, `failed-findings`, `open-deferred-actions`, `task-gates-baseline`, `changed-files`, `deferred-scope-adjustments`, `open-findings`, `next-step-id`, `cache-warm-deps`, `cache-warm-mentions`. Skills side enforces "no unknown named query" via audit. New queries land here AND in the catalogued list — never in skill-side `jq`.
+
+### Tracker / `gain`
+
+`internal/tracker/` is a SQLite store. `savedTokens` is estimated per-language (`tracker/schema.sql` carries per-language coefficients calibrated against Anthropic `count_tokens`; mean absolute error ~14% vs the previous flat `÷4` heuristic at ~35%). When the calibration corpus changes, regenerate coefficients — Family-4 models share the tokenizer so one model suffices.
+
+### Exit codes
+
+| Code | Meaning                                 |
+| ---- | --------------------------------------- |
+| 0    | Success                                 |
+| 1    | Generic error                           |
+| 2    | Not authenticated → `browzer login`     |
+| 3    | No Browzer project → `browzer init`     |
+| 4    | Not found (workspace / document)        |
+| 10   | CLI outdated → `browzer upgrade`        |
+| 130  | SIGINT                                  |
+| 143  | SIGTERM                                 |
+
+These are part of the contract — skills branch on them. Don't repurpose.
+
+## Conventions when editing this package
+
+- **Go version**: `go.mod` requires **1.25.0+**. `make ci` enforces this in step 0.
+- **Lint**: `golangci-lint v2.5.0` exactly. `make ci` auto-installs the pinned version into `$(go env GOPATH)/bin` if missing — do not float to a newer version locally.
+- **CUE edits → run `make -C schemas all`** before committing. CI's `make ci-check` will fail otherwise. Then run the skills-side `sync-shared-refs.mjs` to mirror the markdown into per-skill references.
+- **Adding a new mutator verb**: wire it under `internal/commands/workflow_*.go`, register validation against the post-mutation CUE shape, default `--quiet` on under `BROWZER_LLM=1`, and document it in the README's "Workflow state" table. Skills cannot consume it until skill bodies + `skill-cli-references.mjs` audit allowlists are updated in the same change.
+- **Adding a CLI flag visible to skills**: update the README, audit `skill-cobra-arg-syntax.mjs` examples, and rerun `skill-cli-sync-drift.mjs`.
+- **JSON output stability**: every read command's `--json` payload is consumed by skills as a contract. Field renames are breaking changes; gate behind a major bump (cli-v2.0.0 was the last BREAKING — `#TestSpec.type → intent`, Explorer rich→lean projection, `--quiet` parity on `explore`/`search`).
+- **Banners go to stderr** (regression-pin test exists). Stdout is reserved for command output.
+- **JSON encoding**: read paths that re-encode workflow JSON use `marshalNoHTMLEscape` (`json.Encoder` with `SetEscapeHTML(false)`) — needed because earlier versions hit a parse race on PRDs ~35 KB. There's a 50-iter regression test (`TestWorkflowQuery_StepsByName_AfterRecentAppendStep_ProducesValidJSON`); keep it green.
+- **Daemon detach**: platform-split between `daemon_detach_unix.go` and `daemon_detach_windows.go`. Don't merge.
