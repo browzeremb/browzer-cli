@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -541,9 +542,16 @@ func TestSaveStepBatch_ConcurrentBatches_NoInterleave(t *testing.T) {
 
 	const n = 5
 	errs := make(chan error, n)
+	// cobra v1.10's command tree construction isn't safe for concurrent
+	// NewRootCommand calls (shared lazy-init state inside cobra itself).
+	// Serialize NewRootCommand under a mutex so the test exercises what it
+	// actually targets — the batch advisory flock — not a cobra race.
+	var newCmdMu sync.Mutex
 	for i := 0; i < n; i++ {
 		go func() {
+			newCmdMu.Lock()
 			cmd := NewRootCommand("test")
+			newCmdMu.Unlock()
 			cmd.SetArgs([]string{
 				"save-step-batch",
 				"--id", "feat-20260507-r5-test",

@@ -261,13 +261,21 @@ func TestValidate_StableOrdering(t *testing.T) {
 // path. 50ms gives ~10ms headroom over the post-addition floor (~38ms
 // observed under -race) and absorbs typical CI jitter without masking
 // regressions. Bump again — don't lower — when adding more types.
+//
+// QA-006 (2026-05-07, retro2): budget raised 50ms → 75ms after the
+// null-admissibility sweep added *null|<type> on assignedSkill +
+// backfillSha + (downstream) several other fields. CUE expands
+// disjunctions during validation and the extra null-arm pushes the
+// warm-path average to ~60ms under -race on the same hardware that
+// previously measured ~38ms. 75ms preserves the original ~12ms
+// headroom over observed mean.
 func TestValidate_OverheadBudget(t *testing.T) {
 	root := findFixturesDir(t)
 	payload := readFixture(t, root, "valid", "minimal-workflow.json")
 	// Warm the cache (first call compiles the embedded CUE; cached
 	// thereafter via sync.Once).
 	_ = ValidateWorkflow(payload)
-	const budget = 50 * time.Millisecond
+	const budget = 75 * time.Millisecond
 	start := time.Now()
 	const iters = 50
 	for range iters {
