@@ -274,6 +274,21 @@ type TasksManifest struct {
 	Parallelizable []any/* CUE closed list */ `json:"parallelizable"`
 
 	Tasks []TaskBrief `json:"tasks,omitempty"`
+
+	// suppressedRedundantTasks records candidate TASKs the Reviewer pass dropped
+	// because their scope is a strict subset of a canonical pipeline phase
+	// (write-tests, update-docs, code-review, commit, feature-acceptance,
+	// receiving-code-review). Captured for retro auditability — the canonical
+	// phase still runs at the end of the pipeline, so duplicating it as a TASK
+	// is wasted dispatch. Added 2026-05-07 (RETRO §14 + §17).
+	SuppressedRedundantTasks []SuppressedRedundantTask `json:"suppressedRedundantTasks,omitempty"`
+
+	// granularityWarnings records the output of the tertiary granularity-review
+	// pass in `generate-task` (R-15 / RETRO §15). Each entry flags a task that
+	// is too small (recommend collapse) or too large (recommend split). The
+	// operator sees these before `execute-task` runs so the plan can be
+	// adjusted without a full re-decomposition cycle. Added 2026-05-07.
+	GranularityWarnings []GranularityWarning `json:"granularityWarnings,omitempty"`
 }
 
 type TaskBrief struct {
@@ -290,6 +305,33 @@ type TaskBrief struct {
 	Scope []any/* CUE closed list */ `json:"scope"`
 
 	DependsOn []string `json:"dependsOn,omitempty"`
+}
+
+// #SuppressedRedundantTask — one entry per candidate TASK dropped by the
+// Reviewer-pass canonical-phase filter. `reason` MUST follow the form
+// `duplicates-canonical-phase-<phase>` so retros can group by phase.
+type SuppressedRedundantTask struct {
+	CandidateTitle string `json:"candidateTitle"`
+
+	CandidateScope []string `json:"candidateScope"`
+
+	Reason string `json:"reason"`
+
+	DetectedBy string `json:"detectedBy,omitempty"`
+}
+
+// #GranularityWarning — one entry per task flagged by the tertiary
+// granularity-review pass in `generate-task` (R-15 / RETRO §15).
+// `verdict` is "collapse" when the task has <2 files in scope (recommend
+// merging with a sibling), or "split" when it has >10 files (recommend
+// decomposing further). `reason` is the free-form prose from the haiku
+// granularity reviewer. Added 2026-05-07.
+type GranularityWarning struct {
+	TaskId string `json:"taskId"`
+
+	Verdict string `json:"verdict"`
+
+	Reason string `json:"reason"`
 }
 
 // =============================================================
@@ -794,7 +836,7 @@ type Finding struct {
 
 	SuggestedFix string `json:"suggestedFix"`
 
-	AssignedSkill string `json:"assignedSkill"`
+	AssignedSkill any/* CUE disjunction: (null|string) */ `json:"assignedSkill"`
 
 	Status string `json:"status"`
 
@@ -1116,6 +1158,8 @@ type CommitStep map[string]any /* CUE top */
 type CommitDescriptor struct {
 	Sha string `json:"sha,omitempty"`
 
+	BackfillSha any/* CUE disjunction: (null|string) */ `json:"backfillSha"`
+
 	ConventionalType string `json:"conventionalType"`
 
 	Scope string `json:"scope"`
@@ -1163,6 +1207,42 @@ type PrePushAudit struct {
 	DurationMs int64 `json:"durationMs"`
 
 	Output string `json:"output,omitempty"`
+}
+
+// =============================================================
+// #StepView — JSON shape returned by `browzer get-step <PHASE> --json`.
+// Consolidated, LLM-context-friendly projection of a single step.
+// Only `stepId`, `phase`, and `status` are required; everything else is
+// optional and depends on the phase.
+// =============================================================
+type StepView struct {
+	StepId string `json:"stepId"`
+
+	Phase string `json:"phase"`
+
+	Status StepStatus `json:"status"`
+
+	Role string `json:"role,omitempty"`
+
+	SkillsToInvoke []string `json:"skillsToInvoke,omitempty"`
+
+	Scope map[string]any/* CUE top */ `json:"scope,omitempty"`
+
+	PrdContext map[string]any/* CUE top */ `json:"prdContext,omitempty"`
+
+	Deps map[string]any/* CUE top */ `json:"deps,omitempty"`
+
+	Invariants []string `json:"invariants,omitempty"`
+
+	DoneWhen []string `json:"doneWhen,omitempty"`
+
+	Body map[string]any/* CUE top */ `json:"body,omitempty"`
+
+	Tasks []map[string]any/* CUE top */ `json:"tasks,omitempty"`
+
+	OriginalRequest string `json:"originalRequest,omitempty"`
+
+	BrainstormSummary string `json:"brainstormSummary,omitempty"`
 }
 
 // =============================================================

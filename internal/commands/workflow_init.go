@@ -10,11 +10,13 @@ import (
 
 func registerWorkflowInit(parent *cobra.Command) {
 	var (
-		featureID       string
-		featureName     string
-		originalRequest string
-		operatorLocale  string
-		force           bool
+		featureID         string
+		featureName       string
+		originalRequest   string
+		operatorLocale    string
+		executionStrategy string
+		mode              string
+		force             bool
 	)
 
 	cmd := &cobra.Command{
@@ -33,11 +35,27 @@ seeded file and run through the daemon FIFO + standalone fallback as usual.`,
 			if err != nil {
 				return err
 			}
+			switch executionStrategy {
+			case "", "serial", "parallel", "parallel-worktrees", "agent-teams":
+			default:
+				return fmt.Errorf("workflow init: invalid --execution-strategy %q (want serial|parallel|parallel-worktrees|agent-teams)", executionStrategy)
+			}
+			// F-8: validate --mode flag.
+			switch mode {
+			case "", "autonomous", "review":
+			default:
+				return fmt.Errorf("workflow init: invalid --mode %q (want autonomous|review)", mode)
+			}
+			if mode == "" {
+				mode = "autonomous"
+			}
 			opts := wf.BootstrapOptions{
-				FeatureID:       featureID,
-				FeatureName:     featureName,
-				OriginalRequest: originalRequest,
-				OperatorLocale:  operatorLocale,
+				FeatureID:         featureID,
+				FeatureName:       featureName,
+				OriginalRequest:   originalRequest,
+				OperatorLocale:    operatorLocale,
+				ExecutionStrategy: executionStrategy,
+				Mode:              mode,
 			}
 			err = wf.BootstrapSkeleton(wfPath, opts)
 			if err != nil {
@@ -71,6 +89,8 @@ seeded file and run through the daemon FIFO + standalone fallback as usual.`,
 	cmd.Flags().StringVar(&featureName, "feature-name", "", "human-readable feature label")
 	cmd.Flags().StringVar(&originalRequest, "original-request", "", "operator's verbatim ask")
 	cmd.Flags().StringVar(&operatorLocale, "operator-locale", "en-US", "operator locale (e.g. en-US, pt-BR)")
+	cmd.Flags().StringVar(&executionStrategy, "execution-strategy", "", "seed config.executionStrategy (serial|parallel|parallel-worktrees|agent-teams)")
+	cmd.Flags().StringVar(&mode, "mode", "autonomous", "seed config.mode (autonomous|review)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing workflow.json (currently rejected — keep this safe by default)")
 	parent.AddCommand(cmd)
 }

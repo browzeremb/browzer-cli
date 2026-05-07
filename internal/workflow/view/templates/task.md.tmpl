@@ -1,0 +1,31 @@
+# {{.StepID}}{{if .Role}} — {{.Role}}{{end}}
+
+Status: `{{.Status}}`
+{{if .Scope}}
+## Scope
+
+```json
+{{json .Scope}}
+```
+{{end}}{{if .SkillsToInvoke}}
+## Skills to invoke
+{{range .SkillsToInvoke}}- `{{.}}`
+{{end}}{{end}}{{if .PRDContext}}
+## PRD slice (linked acceptance criteria)
+
+```json
+{{json .PRDContext}}
+```
+{{end}}{{if .DoneWhen}}
+## Done when
+{{range .DoneWhen}}- {{.}}
+{{end}}{{end}}{{if .Invariants}}
+## Invariants (from CLAUDE.md)
+{{range .Invariants}}- {{.}}
+{{end}}{{end}}{{if .Body}}
+## Task body
+
+```json
+{{json .Body}}
+```
+{{end}}

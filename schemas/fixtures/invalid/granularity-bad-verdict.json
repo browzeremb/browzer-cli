@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260507-granularity-bad-verdict",
+  "featureName": "Invalid: granularityWarnings with bad verdict enum",
+  "featDir": "docs/browzer/feat-20260507-granularity-bad-verdict",
+  "originalRequest": "fixture for F-10: verdict must be collapse|split",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-07T00:00:00Z" },
+  "startedAt": "2026-05-07T00:00:00Z",
+  "updatedAt": "2026-05-07T00:00:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_TASKS_MANIFEST",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_TASKS_MANIFEST",
+      "name": "TASKS_MANIFEST",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-07T00:00:00Z",
+      "completedAt": "2026-05-07T00:01:00Z",
+      "elapsedMin": 1,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["generate-task"],
+      "skillsInvoked": ["generate-task"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "tasksManifest": {
+        "totalTasks": 1,
+        "tasksOrder": ["TASK_01"],
+        "dependencyGraph": {},
+        "parallelizable": [],
+        "tasks": [
+          {
+            "taskId": "TASK_01",
+            "title": "Single task",
+            "suggestedModel": "sonnet",
+            "trivial": false,
+            "skillsFound": [],
+            "scope": ["packages/cli/internal/commands/workflow_save_step.go"]
+          }
+        ],
+        "granularityWarnings": [
+          {
+            "taskId": "TASK_01",
+            "verdict": "merge",
+            "reason": "merge is not a valid verdict; only collapse|split are allowed"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -412,6 +412,11 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 		}
 	}
 
+	// FR-3: --no-backup skips rotateWorkflowBackups on the standalone path.
+	if flagBoolEither(cmd, "no-backup") {
+		args.NoBackup = true
+	}
+
 	if noLock && mode != writeModeStandalone {
 		// User explicitly asked to bypass the lock — the daemon path can't
 		// honor it (would defeat the per-path FIFO). Silently downgrade so

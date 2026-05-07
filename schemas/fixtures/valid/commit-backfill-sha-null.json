@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260507-commit-backfill-sha-null",
+  "featureName": "Commit backfillSha null fixture",
+  "featDir": "docs/browzer/feat-20260507-commit-backfill-sha-null",
+  "originalRequest": "fixture for FR-1 null-admissibility: backfillSha: null",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-07T00:00:00Z" },
+  "startedAt": "2026-05-07T00:00:00Z",
+  "updatedAt": "2026-05-07T00:05:00Z",
+  "completedAt": "2026-05-07T00:05:00Z",
+  "totalElapsedMin": 5,
+  "currentStepId": "",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_COMMIT",
+      "name": "COMMIT",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-07T00:00:00Z",
+      "completedAt": "2026-05-07T00:05:00Z",
+      "elapsedMin": 5,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": [],
+      "skillsInvoked": [],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "commit": {
+        "conventionalType": "feat",
+        "scope": "cli",
+        "subject": "FR-1: backfillSha null admissibility fixture",
+        "body": "",
+        "backfillSha": null,
+        "trailers": [],
+        "prePushAuditsRun": [],
+        "pushAttempts": [],
+        "prePushAudits": []
+      }
+    }
+  ]
+}

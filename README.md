@@ -205,27 +205,25 @@ Introduced in v0.8.0 to reduce token burn when Claude Code reads files, globs, o
 
 ### Workflow state (`docs/browzer/<feat>/workflow.json`)
 
-The `browzer workflow *` surface is the canonical I/O for the skills plugin's workflow.json (schema v1). Every mutation acquires an advisory flock, validates the post-mutation shape, and writes atomically (tmp+rename + optional fsync). Skills no longer roll their own `jq | mv` blocks.
+The workflow surface is intentionally narrow in v3.0.0: read with `get-step`, persist with `save-step`, plus a small set of structured helpers. Every persist call acquires an advisory flock, validates the payload against the CUE schema (`packages/cli/schemas/workflow-v1.cue`), and writes atomically (tmp+rename + optional fsync). Skills no longer roll their own `jq | mv` blocks.
 
 | Command                                                              | Purpose                                                                                  |
 | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `browzer get-step <ID> --id <feat>`                                  | Read a step. Default emits a rich markdown view formatted for LLM context (role + scope + skills + PRD slice + deps + invariants + done-when); `--json` emits the `#StepView` payload. Accepted IDs: `PRD`, `TASKS`, `TASK_NN`, `CODE_REVIEW`, `RECEIVING_CODE_REVIEW`, `WRITE_TESTS`, `UPDATE_DOCS`, `FEATURE_ACCEPTANCE`, `COMMIT`, `BRAINSTORM`, plus two virtual phases — `ORIGINAL_REQUEST` (verbatim operator ask captured at `workflow init`) and `CONFIG` (carries `executionStrategy`, `mode`, `setAt`). Also exposed under `browzer workflow get-step`. |
+| `browzer save-step <PHASE> --id <feat> [--from <file>] [--stdin]`    | Validate a phase payload against CUE and persist it into `workflow.json`. Accepts a markdown PRD via the markdown parser or a JSON payload. Flags: `--validate-only`, `--quiet`, `--hint-fixes` (emit `expected one of [...]; example: "<key>": "<value>"` on enum / unknown-field violations). Exits silent on success. |
+| `browzer save-step-batch --from PHASE=PATH ...`                      | Persist multiple phase payloads atomically. All `--from` entries are CUE-validated against the in-memory mutated document under a single advisory flock; on any individual failure the batch rolls back without writing. Duplicate phase names exit `2`. Flags: `--validate-only`, `--quiet`, `--hint-fixes`. |
 | `browzer workflow append-step --workflow <p>`                        | Append a new step JSON (stdin or `--payload`); recomputes counters                       |
-| `browzer workflow update-step <stepId> --workflow <p>`               | Patch fields on an existing step                                                         |
-| `browzer workflow complete-step <stepId> --workflow <p>`             | Flip status → `COMPLETED`; auto-stamps `completedAt` AND auto-computes `elapsedMin`      |
-| `browzer workflow set-status <stepId> <STATUS> --workflow <p>`       | Lifecycle transition; auto-stamps `startedAt` on the FIRST `RUNNING` (re-entry-safe)     |
-| `browzer workflow set-config <key> <value> --workflow <p>`           | Set `.config.<key>` (e.g. `mode`, `setAt`, `executionStrategy`)                          |
-| `browzer workflow get-step <stepId> [--field jq] [--render T]`       | Read a step or sub-field; `--render` emits compressed prompt-embed templates (8 templates: `execute-task`, `code-review`, `update-docs`, `brainstorming`, `generate-task`, `task-context`, `task-evidence`, `finding`) |
-| `browzer workflow get-config <key>`                                  | Print a scalar config field unquoted                                                     |
-| `browzer workflow query <name> --workflow <p>`                       | Pre-baked cross-step aggregations (10 queries: `reused-gates`, `failed-findings`, `open-deferred-actions`, `task-gates-baseline`, `changed-files`, `deferred-scope-adjustments`, `open-findings`, `next-step-id`, `cache-warm-deps`, `cache-warm-mentions`) |
-| `browzer workflow patch --jq '<expr>' --workflow <p>`                | Arbitrary jq mutation (escape hatch when no semantic verb fits)                          |
-| `browzer workflow append-review-history <stepId> --workflow <p>`     | Append review-mode operator decision                                                     |
-| `browzer workflow set-current-step <stepId> --workflow <p>`          | Set `currentStepId` and propagate `nextStepId`                                           |
+| `browzer workflow append-steps --workflow <p>`                       | Bulk append (single lock + write)                                                         |
+| `browzer workflow set-finding-statuses --batch '<json>' --workflow <p>` | Bulk-update finding statuses inside one lock + write                                  |
+| `browzer workflow describe-step-type <NAME> --json [--include-base] [--field <jq>] [--inline-enums]` | Print the live CUE-derived payload shape — skills' sole route to discover the shape of a phase before staging output (cache to `/tmp/<feat>/.schema-cache/<NAME>.json`) |
 | `browzer workflow validate --workflow <p>`                           | Structural integrity check; exits non-zero on schema violations                          |
-| `browzer workflow reapply-additional-context <stepId> --workflow <p>` | Walk `task.reviewer.additionalContext.changes[]` and apply `corrected`/`added`/`dropped` to `task.scope` |
-| `browzer workflow audit-model-override <stepId> <from> <to> <reason> --workflow <p>` | Record a model-tier override under `task.execution.modelOverride`                        |
-| `browzer workflow truncation-audit <stepId> --last-checkpoint <s> --workflow <p>` | Record a suspected mid-stream truncation (subagent stopped without Step-4 atomic write)  |
+| `browzer workflow backfill-elapsed --workflow <p>`                   | Backfill `elapsedMin` on every step where both `startedAt` and `completedAt` are set (post-hoc elapsed-time correction) |
+| `browzer workflow schema [--field <jq>]`                             | Print the workflow JSON Schema (Draft 2020-12)                                           |
+| `browzer workflow init [--execution-strategy <serial\|parallel\|parallel-worktrees\|agent-teams>] [--mode <autonomous\|review>]` | Scaffold an empty `workflow.json` for a new feature. `--execution-strategy` and `--mode` seed the CONFIG virtual phase consumed by `generate-task` / orchestrator skills. Defaults: strategy `serial`, mode `autonomous`. |
 
-**Write modes**: every mutating verb honors `--sync` (in-process standalone), `--async` (daemon FIFO, default), `--await` (daemon + fsync). The env-var `BROWZER_WORKFLOW_MODE=sync|async|await` overrides config defaults — useful in CI / tests to force standalone path when a long-running daemon binary may be stale.
+**State-mutation contract (v3.0.0)**: a phase skill writes its output to `docs/browzer/<feat>/staging/<PHASE>.{md,json}` via the `Write` tool; the Browzer Claude Code plugin's `PostToolUse(Write)` autosave hook (`hooks/_auto-save-step.mjs`, matched on `docs/browzer/*/staging/**`) then calls `browzer save-step <PHASE> --id <feat> --from <staged-file>`, which CUE-validates and atomically rewrites `workflow.json`. Skills never call retired mutator verbs (`workflow patch`, `workflow save`, `workflow complete-step`, `workflow append-dispatch{,es}`, `workflow append-review-history`, `workflow audit-model-override`, `workflow reapply-additional-context`, `workflow get-config`, `workflow query`) and must not edit `workflow.json` directly. Operators rarely invoke `save-step` themselves — the hook handles it.
+
+**Write modes**: persisting verbs honor `--sync` (in-process standalone), `--async` (daemon FIFO, default), `--await` (daemon + fsync). The env-var `BROWZER_WORKFLOW_MODE=sync|async|await` overrides config defaults — useful in CI / tests to force standalone path when a long-running daemon binary may be stale.
 
 ### Organization / RBAC
 
@@ -260,6 +258,7 @@ Global flags:
 
 - `--ultra` — ultra-compact output (smaller payloads, fewer fields — ideal for agent context windows)
 - `--llm` — LLM mode: suppresses banner, disables colors + spinners
+- `--quiet` — suppress decorative output (cross-cutting on `status`, `explore`, `search`, `deps`, `mentions`, `workspace sync`, and every workflow mutator; default-on under `BROWZER_LLM=1`)
 - `-v`/`-vv`/`-vvv` — increase verbosity (decisions / subprocess / raw I/O)
 
 Schema discovery:

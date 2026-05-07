@@ -150,6 +150,11 @@ Examples:
 	}
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON on stdout")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
+	// Cross-cutting --quiet (RETRO §16 #1): accepted as a no-op so a
+	// `browzer status --quiet` call inside a parallel batch never breaks
+	// with "unknown flag: --quiet". `status` has no info-level stderr
+	// output to silence today, but the flag is part of the contract.
+	output.RegisterQuietFlag(cmd)
 	parent.AddCommand(cmd)
 }
 

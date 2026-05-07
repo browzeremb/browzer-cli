@@ -650,7 +650,11 @@ func ValidateStep(stepJSON []byte, stepType string) ValidationResult {
 // it appears immediately after the code as `[scope=patch|existing]` so
 // callers can grep `[scope=patch]` to isolate violations introduced by
 // the current write.
-func FormatViolations(vs []Violation) string {
+// formatViolationsCore is the shared rendering core for FormatViolations and
+// FormatViolationsWithHints. It writes one line per violation (path: code
+// [scope=…] at @addedIn(…): message). When emitHints=true, enum / unknown-field
+// violations with AllowedValues / AllowedFields also append a worked example.
+func formatViolationsCore(vs []Violation, emitHints bool) string {
 	if len(vs) == 0 {
 		return ""
 	}
@@ -672,8 +676,53 @@ func FormatViolations(vs []Violation) string {
 		} else {
 			fmt.Fprintf(&b, "%s: %s at @addedIn(%s): %s", path, v.Code, v.AddedIn, v.Message)
 		}
+		if emitHints {
+			fieldName := v.Field
+			if fieldName == "" {
+				if idx := strings.LastIndexAny(path, ".["); idx >= 0 {
+					fieldName = strings.Trim(path[idx+1:], "]\"")
+				} else {
+					fieldName = path
+				}
+			}
+			switch v.Code {
+			case "invalid-enum-value":
+				if len(v.AllowedValues) > 0 {
+					example := v.AllowedValues[0]
+					fmt.Fprintf(&b, "; expected one of [%s]; example: %q: %q",
+						strings.Join(v.AllowedValues, ", "), fieldName, example)
+				}
+			case "unknown-field":
+				if len(v.AllowedFields) > 0 {
+					example := v.AllowedFields[0]
+					fmt.Fprintf(&b, "; unknown field %q — allowed: %s; example: %q: \"...\"",
+						fieldName, strings.Join(v.AllowedFields, ", "), example)
+				}
+			}
+		}
 	}
 	return b.String()
+}
+
+func FormatViolations(vs []Violation) string {
+	return formatViolationsCore(vs, false)
+}
+
+// FormatViolationsWithHints renders violations like FormatViolations but,
+// for every "invalid-enum-value" or "unknown-field" entry that carries a
+// non-empty AllowedValues / AllowedFields slice, appends a concrete worked
+// example of the form:
+//
+//	expected one of [a, b, c]; example: "<field>": "<a>"
+//
+// The hint line is appended on the SAME output line (semicolon-separated)
+// so existing grep patterns on the path/code prefix keep working.
+//
+// This function is the richer renderer activated by `save-step --hint-fixes`.
+// Default behaviour (no flag) uses FormatViolations (no hints) so existing
+// callers are unaffected.
+func FormatViolationsWithHints(vs []Violation) string {
+	return formatViolationsCore(vs, true)
 }
 
 // TagViolationScopes annotates each violation in `after` with

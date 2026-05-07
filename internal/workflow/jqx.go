@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/itchyny/gojq"
@@ -32,8 +33,102 @@ func marshalNoHTMLEscape(v any) ([]byte, error) {
 	return out, nil
 }
 
+// pathSegment is one resolved hop on a GetField path: either an object key
+// lookup ("foo") or an array index lookup ("[3]" / "[-1]"). The two forms are
+// mutually exclusive — exactly one of key/index is meaningful per segment.
+type pathSegment struct {
+	isIndex bool
+	key     string // when !isIndex
+	index   int    // when isIndex; may be negative
+}
+
+// parseFieldPath splits a GetField path string into a sequence of segments,
+// supporting both dot-separated object keys ("config.mode") and bracketed
+// array indices ("steps[0]", "steps[-1]", "task.execution.agents[-1].notes").
+//
+// Negative indices match gojq semantics: ".arr[-1]" is the last element,
+// ".arr[-2]" is the second-to-last, etc. Out-of-range indices (positive or
+// negative) are not rejected at parse time — resolution returns null
+// downstream, mirroring jq.
+//
+// Errors are returned only for genuinely malformed paths: unclosed `[`,
+// empty `[]`, non-integer index ("[a]"), or `..` (empty segment).
+//
+// F-6: this is INTENTIONALLY a restricted dialect — only dot-separated
+// keys and bracketed integer indices are supported. Quoted keys
+// (`["foo bar"]`), array slices (`[2:5]`), pipes, filters, and any other
+// gojq construct are NOT recognised and are rejected as malformed paths.
+// We deliberately do not delegate to gojq.Parse here: the surface this
+// verb exposes via `--field` is contractually narrower than full jq, and
+// keeping the parser hand-rolled pins that contract. Callers that need
+// the full dialect should use `--jq` instead.
+func parseFieldPath(path string) ([]pathSegment, error) {
+	if path == "" {
+		return nil, fmt.Errorf("empty path")
+	}
+	var segs []pathSegment
+	var cur strings.Builder
+	// F-11: flushKey has no failure mode; previously it returned an unused
+	// error sentinel that inflated branch count at every call site.
+	flushKey := func() {
+		s := cur.String()
+		cur.Reset()
+		if s == "" {
+			return
+		}
+		segs = append(segs, pathSegment{key: s})
+	}
+	runes := []rune(path)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		switch ch {
+		case '.':
+			flushKey()
+		case '[':
+			// Flush any pending key segment before consuming the index.
+			flushKey()
+			// Find matching ']'.
+			end := -1
+			for j := i + 1; j < len(runes); j++ {
+				if runes[j] == ']' {
+					end = j
+					break
+				}
+			}
+			if end == -1 {
+				return nil, fmt.Errorf("unclosed '[' in path %q", path)
+			}
+			body := string(runes[i+1 : end])
+			if body == "" {
+				return nil, fmt.Errorf("empty '[]' in path %q", path)
+			}
+			n, err := strconv.Atoi(body)
+			if err != nil {
+				return nil, fmt.Errorf("invalid array index %q in path %q", body, path)
+			}
+			segs = append(segs, pathSegment{isIndex: true, index: n})
+			i = end
+		case ']':
+			return nil, fmt.Errorf("unexpected ']' in path %q", path)
+		default:
+			cur.WriteRune(ch)
+		}
+	}
+	flushKey()
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("empty path %q", path)
+	}
+	return segs, nil
+}
+
 // GetField extracts a value from a parsed JSON document (any) using a
-// dot-separated path expression (e.g. "config.mode", "steps").
+// path expression that supports object keys and bracketed array indices.
+//
+// Path syntax:
+//   - "config.mode"                     — nested object key
+//   - "steps[0]"                        — positive array index
+//   - "steps[-1]"                       — negative array index (last element)
+//   - "task.execution.agents[-1].notes" — chained
 //
 // Return conventions:
 //   - Scalar string/number/bool/null values are returned as their plain %v
@@ -42,17 +137,44 @@ func marshalNoHTMLEscape(v any) ([]byte, error) {
 //     JSON encoding.
 //   - Objects and arrays are always returned as compact JSON regardless of
 //     asJSON.
-//   - A missing or null-terminated intermediate key returns an error.
+//   - A missing intermediate key, an out-of-range array index (positive or
+//     negative), or indexing into a non-array returns an error consistent
+//     with the previous "not found" contract — callers above branch on error,
+//     not on null-string.
+//   - F-9: a JSON null SCALAR at the resolved path returns the bare string
+//     "null" (asJSON=false) or "null" (asJSON=true) — both intentional, both
+//     pinned by tests. Indexing INTO a JSON null intermediate (e.g. agents
+//     is null) returns an "expected array" error, NOT "null". `[-1]` on a
+//     length-0 array is an out-of-range error, NOT "null".
 func GetField(data any, path string, asJSON bool) (string, error) {
-	parts := strings.Split(path, ".")
+	segs, err := parseFieldPath(path)
+	if err != nil {
+		return "", err
+	}
 	cur := data
 
-	for _, part := range parts {
+	for _, seg := range segs {
+		if seg.isIndex {
+			arr, ok := cur.([]any)
+			if !ok {
+				return "", fmt.Errorf("field %q not found: expected array for index [%d], got %T", path, seg.index, cur)
+			}
+			n := len(arr)
+			idx := seg.index
+			if idx < 0 {
+				idx = n + idx
+			}
+			if idx < 0 || idx >= n {
+				return "", fmt.Errorf("field %q not found: index [%d] out of range (array length %d)", path, seg.index, n)
+			}
+			cur = arr[idx]
+			continue
+		}
 		m, ok := cur.(map[string]any)
 		if !ok {
-			return "", fmt.Errorf("field %q not found: expected object at %q, got %T", path, part, cur)
+			return "", fmt.Errorf("field %q not found: expected object at %q, got %T", path, seg.key, cur)
 		}
-		val, exists := m[part]
+		val, exists := m[seg.key]
 		if !exists {
 			return "", fmt.Errorf("field %q not found in document", path)
 		}

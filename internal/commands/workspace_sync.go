@@ -48,6 +48,10 @@ type syncFlowOptions struct {
 	// Output
 	JSON bool
 	Save string
+	// Quiet folds onto the internal "quiet" derivation in runSyncFlow:
+	// suppresses progress spinners + the cold-start hint without
+	// flipping the output path to JSON. RETRO §16 #1.
+	Quiet bool
 	// JSONMode is the value emitted as "mode" in the machine-readable
 	// payload. "sync" for browzer sync; "index" for browzer workspace
 	// index (backward-compat). workspace docs default path uses "sync".
@@ -67,7 +71,7 @@ var runSyncFlowHook = runSyncFlow
 func runSyncFlow(ctx context.Context, opts syncFlowOptions) error {
 	jsonFlag := opts.JSON
 	saveFlag := opts.Save
-	quiet := jsonFlag || saveFlag != ""
+	quiet := jsonFlag || saveFlag != "" || opts.Quiet
 
 	gitRoot, err := requireGitRoot()
 	if err != nil {
@@ -516,11 +520,16 @@ func registerWorkspaceSync(parent *cobra.Command) {
 			if saveFlag != "" {
 				jsonFlag = true
 			}
+			// RETRO §16 #1: --quiet folds onto the internal "quiet"
+			// derivation runSyncFlow uses, suppressing spinners + the
+			// cold-start hint without flipping the output path to JSON.
+			quietFlag := output.QuietRequested(cmd)
 			return runSyncFlowHook(rootContext(cmd), syncFlowOptions{
 				DryRun: dryRun, SkipCode: skipCode, SkipDocs: skipDocs,
 				Force: force, NoWait: noWait, Yes: yes,
 				ConfirmAdds: confirmAdds, ConfirmDeletes: confirmDeletes,
 				JSON: jsonFlag, Save: saveFlag, JSONMode: "sync",
+				Quiet: quietFlag,
 			})
 		},
 	}
@@ -535,6 +544,11 @@ func registerWorkspaceSync(parent *cobra.Command) {
 	cmd.Flags().IntVar(&confirmDeletes, "confirm-deletes", 50, "Abort when the planned DELETE set exceeds N files unless --yes is passed.")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of progress text")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
+	// Cross-cutting --quiet (RETRO §16 #1): accepted as a no-op alias —
+	// `sync` already auto-quiets progress output when --json or --save
+	// is set (see runSyncFlow). Acceptance keeps `sync --quiet` from
+	// breaking parallel agent batches.
+	output.RegisterQuietFlag(cmd)
 
 	parent.AddCommand(cmd)
 }

@@ -156,7 +156,7 @@ import "time"
 	renderTemplateUsed:    *null | string                      @addedIn("2026-05-04T00:00:00Z")
 	dispatchedAt:          time.Format(time.RFC3339)           @addedIn("2026-05-04T00:00:00Z")
 	model:                 *null | "haiku" | "sonnet" | "opus" @addedIn("2026-04-24T00:00:00Z")
-	status:                *"in_progress" | "in_progress" | "completed" | "failed" | "skipped" @addedIn("2026-04-24T00:00:00Z")
+	status:                *"in_progress" | "completed" | "failed" | "skipped" @addedIn("2026-04-24T00:00:00Z")
 	findingsAddressed:     *[] | [...string]                   @addedIn("2026-04-24T00:00:00Z")
 	filesModified:         *[] | [...string]                   @addedIn("2026-04-24T00:00:00Z")
 	filesCreated:          *[] | [...string]                   @addedIn("2026-04-24T00:00:00Z")
@@ -215,6 +215,41 @@ import "time"
 	dependencyGraph: [string]: [...=~"^TASK_[0-9]{2}$"]
 	parallelizable:  *[] | [...[...=~"^TASK_[0-9]{2}$"]] @addedIn("2026-04-24T00:00:00Z")
 	tasks?:          [...#TaskBrief]                     @addedIn("2026-04-24T00:00:00Z")
+	// suppressedRedundantTasks records candidate TASKs the Reviewer pass dropped
+	// because their scope is a strict subset of a canonical pipeline phase
+	// (write-tests, update-docs, code-review, commit, feature-acceptance,
+	// receiving-code-review). Captured for retro auditability — the canonical
+	// phase still runs at the end of the pipeline, so duplicating it as a TASK
+	// is wasted dispatch. Added 2026-05-07 (RETRO §14 + §17).
+	suppressedRedundantTasks?: [...#SuppressedRedundantTask] @addedIn("2026-05-07T00:00:00Z")
+	// granularityWarnings records the output of the tertiary granularity-review
+	// pass in `generate-task` (R-15 / RETRO §15). Each entry flags a task that
+	// is too small (recommend collapse) or too large (recommend split). The
+	// operator sees these before `execute-task` runs so the plan can be
+	// adjusted without a full re-decomposition cycle. Added 2026-05-07.
+	granularityWarnings?: [...#GranularityWarning] @addedIn("2026-05-07T00:00:00Z")
+}
+
+// #SuppressedRedundantTask — one entry per candidate TASK dropped by the
+// Reviewer-pass canonical-phase filter. `reason` MUST follow the form
+// `duplicates-canonical-phase-<phase>` so retros can group by phase.
+#SuppressedRedundantTask: {
+	candidateTitle: string                                    @addedIn("2026-05-07T00:00:00Z")
+	candidateScope: [...string]                               @addedIn("2026-05-07T00:00:00Z")
+	reason:         =~"^duplicates-canonical-phase-(write-tests|update-docs|code-review|commit|feature-acceptance|receiving-code-review)$" @addedIn("2026-05-07T00:00:00Z")
+	detectedBy?:    *"reviewer-pass" | "operational-audit-pass" @addedIn("2026-05-07T00:00:00Z")
+}
+
+// #GranularityWarning — one entry per task flagged by the tertiary
+// granularity-review pass in `generate-task` (R-15 / RETRO §15).
+// `verdict` is "collapse" when the task has <2 files in scope (recommend
+// merging with a sibling), or "split" when it has >10 files (recommend
+// decomposing further). `reason` is the free-form prose from the haiku
+// granularity reviewer. Added 2026-05-07.
+#GranularityWarning: {
+	taskId:  =~"^TASK_[0-9]{2}$" @addedIn("2026-05-07T00:00:00Z")
+	verdict: "collapse" | "split" @addedIn("2026-05-07T00:00:00Z")
+	reason:  string               @addedIn("2026-05-07T00:00:00Z")
 }
 
 #TaskBrief: {
@@ -273,7 +308,7 @@ import "time"
 #SkillFound: {
 	domain:    string                                                         @addedIn("2026-04-24T00:00:00Z")
 	skill:     string                                                         @addedIn("2026-04-24T00:00:00Z")
-	relevance: *"med" | "high" | "med" | "low"                                @addedIn("2026-04-24T00:00:00Z")
+	relevance: *"med" | "high" | "low"                                        @addedIn("2026-04-24T00:00:00Z")
 }
 
 #TaskReviewer: {
@@ -580,7 +615,7 @@ import "time"
 	line?:         int & >=1                                  @addedIn("2026-04-24T00:00:00Z")
 	description:   string                                     @addedIn("2026-04-24T00:00:00Z")
 	suggestedFix:  *"" | string                               @addedIn("2026-04-24T00:00:00Z")
-	assignedSkill: *"" | string                               @addedIn("2026-04-24T00:00:00Z")
+	assignedSkill: *null | string                              @addedIn("2026-04-24T00:00:00Z")
 	status:        "open" | "fixing" | "fixed" | "wontfix"    @addedIn("2026-04-24T00:00:00Z")
 	// Set to true when the same finding was raised by an off-lane reviewer
 	// (cross-domain duplicate). The off-lane copies become advisory and the
@@ -819,6 +854,7 @@ import "time"
 
 #CommitDescriptor: {
 	sha?:              =~"^[a-f0-9]{7,40}$"                                       @addedIn("2026-04-24T00:00:00Z")
+	backfillSha:       *null | =~"^[a-f0-9]{7,40}$"                               @addedIn("2026-05-07T00:00:00Z")
 	conventionalType:  "feat" | "fix" | "chore" | "docs" | "refactor" | "test" |
 		"perf" | "ci" | "build" | "style" | "revert"                              @addedIn("2026-04-24T00:00:00Z")
 	scope:             *"" | string                                                @addedIn("2026-04-24T00:00:00Z")
@@ -848,6 +884,29 @@ import "time"
 	exitCode: int                              @addedIn("2026-04-24T00:00:00Z")
 	durationMs: *0 | (int & >=0)               @addedIn("2026-04-24T00:00:00Z")
 	output?:  string                           @addedIn("2026-04-24T00:00:00Z")
+}
+
+// =============================================================
+// #StepView — JSON shape returned by `browzer get-step <PHASE> --json`.
+// Consolidated, LLM-context-friendly projection of a single step.
+// Only `stepId`, `phase`, and `status` are required; everything else is
+// optional and depends on the phase.
+// =============================================================
+#StepView: {
+	stepId:           =~"^STEP_[0-9]{2}_[A-Z0-9_]+$" @addedIn("2026-05-07T00:00:00Z")
+	phase:            string                          @addedIn("2026-05-07T00:00:00Z")
+	status:           #StepStatus                     @addedIn("2026-05-07T00:00:00Z")
+	role?:            string                          @addedIn("2026-05-07T00:00:00Z")
+	skillsToInvoke?:  [...string]                     @addedIn("2026-05-07T00:00:00Z")
+	scope?:           {...}                           @addedIn("2026-05-07T00:00:00Z")
+	prdContext?:      {...}                           @addedIn("2026-05-07T00:00:00Z")
+	deps?:            {...}                           @addedIn("2026-05-07T00:00:00Z")
+	invariants?:      [...string]                     @addedIn("2026-05-07T00:00:00Z")
+	doneWhen?:        [...string]                     @addedIn("2026-05-07T00:00:00Z")
+	body?:            {...}                           @addedIn("2026-05-07T00:00:00Z")
+	tasks?: [...{...}]                                @addedIn("2026-05-07T00:00:00Z")
+	originalRequest?:   string                        @addedIn("2026-05-07T00:00:00Z")
+	brainstormSummary?: string                        @addedIn("2026-05-07T00:00:00Z")
 }
 
 // =============================================================

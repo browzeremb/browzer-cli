@@ -19,8 +19,9 @@ var workflowCmd = &cobra.Command{
 		"Mutator verbs (acquire advisory lock + validate post-mutation):\n" +
 		"  append-step, append-steps (plural / single-lock batch),\n" +
 		"  update-step, complete-step, set-status, set-config,\n" +
-		"  set-current-step, append-review-history, append-dispatch,\n" +
+		"  set-current-step, append-review-history, append-dispatch, append-agent,\n" +
 		"  audit-model-override, truncation-audit, reapply-additional-context,\n" +
+		"  backfill-elapsed (idempotent recovery verb for elapsedMin),\n" +
 		"  patch --jq <expr> (generic; supports --arg KEY=VAL / --argjson KEY=<json>).\n" +
 		"\n" +
 		"Read verbs (no lock):\n" +
@@ -88,27 +89,14 @@ func registerWorkflow(parent *cobra.Command) {
 	// always validates today; TASK_06 plumbs the bypass through the JSON-RPC
 	// surface.
 	cmd.PersistentFlags().Bool("no-schema-check", false, "bypass CUE schema validation (writes audit line to .browzer/audit/no-schema-check.log)")
-	registerWorkflowAppendDispatch(cmd)
-	registerWorkflowAppendDispatches(cmd)
-	registerWorkflowAppendReviewHistory(cmd)
 	registerWorkflowAppendStep(cmd)
 	registerWorkflowAppendSteps(cmd)
-	registerWorkflowAuditModelOverride(cmd)
-	registerWorkflowCompleteStep(cmd)
+	registerWorkflowBackfillElapsed(cmd)
 	registerWorkflowDescribeStepType(cmd)
-	registerWorkflowGetConfig(cmd)
 	registerWorkflowGetStep(cmd)
 	registerWorkflowInit(cmd)
-	registerWorkflowPatch(cmd)
-	registerWorkflowQuery(cmd)
-	registerWorkflowReapplyAdditionalContext(cmd)
 	registerWorkflowSchema(cmd)
-	registerWorkflowSetConfig(cmd)
-	registerWorkflowSetCurrentStep(cmd)
 	registerWorkflowSetFindingStatuses(cmd)
-	registerWorkflowSetStatus(cmd)
-	registerWorkflowTruncationAudit(cmd)
-	registerWorkflowUpdateStep(cmd)
 	registerWorkflowValidate(cmd)
 
 	parent.AddCommand(cmd)

@@ -65,25 +65,3 @@ func TestSetFindingStatuses_RejectsBadInputBeforeLock(t *testing.T) {
 	}
 }
 
-// TestAppendDispatches_BatchExpressionShape (A3.2, 2026-05-05):
-// the bulk dispatch verb composes ONE jq pipeline that appends
-// every prepared #DispatchRecord onto the matching step.
-func TestAppendDispatches_BatchExpressionShape(t *testing.T) {
-	prepares := []preparedDispatchRecord{
-		{stepID: "STEP_05_CR", recordJSON: []byte(`{"agentId":"a1"}`)},
-		{stepID: "STEP_06_RCR", recordJSON: []byte(`{"agentId":"a2"}`)},
-	}
-	expr := buildAppendDispatchesBatchJQ(prepares)
-	if !strings.Contains(expr, `select(.stepId == "STEP_05_CR")`) {
-		t.Errorf("expected STEP_05_CR selector: %s", expr)
-	}
-	if !strings.Contains(expr, `select(.stepId == "STEP_06_RCR")`) {
-		t.Errorf("expected STEP_06_RCR selector: %s", expr)
-	}
-	if !strings.Contains(expr, `.dispatches += [`) {
-		t.Errorf("expected dispatches += [...] update: %s", expr)
-	}
-	if !strings.Contains(expr, `"agentId":"a1"`) {
-		t.Errorf("expected first record literal: %s", expr)
-	}
-}

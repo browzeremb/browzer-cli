@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260507-commit-bad-name",
+  "featureName": "Commit bad name fixture",
+  "featDir": "docs/browzer/feat-20260507-commit-bad-name",
+  "originalRequest": "invalid fixture — name typo",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-07T00:00:00Z" },
+  "startedAt": "2026-05-07T00:00:00Z",
+  "updatedAt": "2026-05-07T00:05:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_COMMIT",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 0,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_COMMIT",
+      "name": "COMMITT",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-07T00:00:00Z",
+      "completedAt": "2026-05-07T00:05:00Z",
+      "elapsedMin": 5,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": [],
+      "skillsInvoked": [],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "commit": {
+        "conventionalType": "feat",
+        "scope": "cli",
+        "subject": "this has a typo in the step name: COMMITT instead of COMMIT",
+        "body": "",
+        "trailers": [],
+        "prePushAuditsRun": [],
+        "pushAttempts": [],
+        "prePushAudits": []
+      }
+    }
+  ]
+}

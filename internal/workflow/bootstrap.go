@@ -44,6 +44,12 @@ type BootstrapOptions struct {
 	OriginalRequest string
 	// OperatorLocale defaults to "en-US".
 	OperatorLocale string
+	// ExecutionStrategy seeds config.executionStrategy. When empty, the
+	// field is omitted (orchestrator may fall back to "serial").
+	ExecutionStrategy string
+	// Mode seeds config.mode (autonomous|review). Defaults to "autonomous"
+	// when empty. F-8: AC-1 requires --mode flag surfaced via workflow init.
+	Mode string
 }
 
 // BootstrapSkeleton creates a minimal valid schema v2 workflow.json at path.
@@ -99,10 +105,20 @@ func BootstrapSkeleton(path string, opts BootstrapOptions) error {
 		// config must include `mode` and `setAt` to satisfy the CUE
 		// #WorkflowConfig definition (mode defaults to "autonomous" but the
 		// payload-extractor still expects a concrete object on the wire).
-		"config": map[string]any{
-			"mode":  "autonomous",
-			"setAt": now,
-		},
+		"config": func() map[string]any {
+			cfgMode := opts.Mode
+			if cfgMode == "" {
+				cfgMode = "autonomous"
+			}
+			c := map[string]any{
+				"mode":  cfgMode,
+				"setAt": now,
+			}
+			if opts.ExecutionStrategy != "" {
+				c["executionStrategy"] = opts.ExecutionStrategy
+			}
+			return c
+		}(),
 		"startedAt":       now,
 		"updatedAt":       now,
 		"completedAt":     nil,

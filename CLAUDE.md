@@ -5,16 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Authoritative references (read first)
 
 - **`docs/CLAUDE_CODE_PLUGIN.md`** — single source of truth for the broader Browzer plugin/CLI consolidation: layout, invariants, CI gates, version trajectory, session-log fixes. Always consult before any non-trivial change here.
-- **`packages/skills/`** — the Claude Code plugin that consumes this CLI. Skills are markdown wrappers around `browzer` subcommands. This CLI MUST stay synchronized with that plugin: any change to a subcommand surface (flags, JSON shape, exit codes, named queries, mutator verbs, `--render` templates) requires patching every skill body that invokes it in the same change. Skill-side audits (`scripts/audit/skill-cli-references.mjs`, `skill-cli-sync-drift.mjs`, `skill-no-unknown-named-query.mjs`, `skill-cobra-arg-syntax.mjs`) gate that drift in the monorepo `quality` job. See `packages/skills/CLAUDE.md`.
+- **`packages/skills/`** — the Claude Code plugin that consumes this CLI. Skills are markdown wrappers around `browzer` subcommands. This CLI MUST stay synchronized with that plugin: any change to a subcommand surface (flags, JSON shape, exit codes, named queries, the `get-step` view templates, the `save-step` payload contract) requires patching every skill body that invokes it in the same change. Skill-side audits (`scripts/audit/skill-cli-references.mjs`, `skill-cli-sync-drift.mjs`, `skill-no-unknown-named-query.mjs`, `skill-cobra-arg-syntax.mjs`) gate that drift in the monorepo `quality` job. See `packages/skills/CLAUDE.md`.
 
 ## What this package is
 
-`@browzer/cli` is a single-binary Go CLI (`browzer`, current version `2.2.0` — `VERSION`, requires Go **≥ 1.25**) that talks to the Browzer server over HTTPS and to a local Unix-socket daemon over JSON-RPC. It is the runtime side of the Browzer plugin: skills are thin markdown contracts; this CLI is what they actually invoke.
+`@browzer/cli` is a single-binary Go CLI (`browzer`, current version `3.0.0` — `VERSION`, requires Go **≥ 1.25**) that talks to the Browzer server over HTTPS and to a local Unix-socket daemon over JSON-RPC. It is the runtime side of the Browzer plugin: skills are thin markdown contracts; this CLI is what they actually invoke.
 
 Two surfaces:
 
 1. **RAG / token-economy** — `login`, `workspace {init,sync,index,docs,list,...}`, `explore`, `search`, `deps`, `read`, `gain`, `daemon`, `ask`, `job`. The `read`/`glob`/`grep` rewrites driven by the plugin's hooks land here.
-2. **Workflow state mutator** — the `workflow {append-step,append-steps,update-step,complete-step,set-status,set-config,set-current-step,patch,query,get-step,get-config,append-review-history,reapply-additional-context,audit-model-override,truncation-audit,validate,describe-step-type,scaffold,...}` verbs are the **only** sanctioned writers of `docs/browzer/<feat>/workflow.json`. Every mutator acquires an advisory flock, validates the post-mutation shape against the CUE schema, and writes atomically (tmp + rename + optional fsync).
+2. **Workflow read + persist** — the surviving workflow surface is intentionally narrow: **reads** via `browzer get-step <ID> --id <feat>` (top-level, also exposed under `browzer workflow get-step`) which by default emits a rich markdown view assembled from embedded `view/templates/*.md.tmpl` (one per phase) and `--json` for the raw `#StepView`; **persists** via `browzer save-step <PHASE> --id <feat> [--from <file>] [--stdin] [--hint-fixes]` which validates the payload against the CUE schema and writes atomically (tmp + rename + optional fsync). `--hint-fixes` makes enum / unknown-field violations emit a worked example (`expected one of [...]; example: "<key>": "<value>"`) — opt-in, off by default. A sibling **`save-step-batch --from PHASE=PATH ...`** persists multiple phases atomically under a single advisory flock + single CUE pass against the in-memory mutated document; failure rolls back without writing. A small set of structured mutators remains for batch / bookkeeping use cases — `workflow {append-step,append-steps,backfill-elapsed,set-finding-statuses,validate,describe-step-type,schema,init}` — each acquiring an advisory flock and CUE-validating before commit. Every other historical mutator verb (`patch`, `query`, `set-config`, `set-status`, `set-current-step`, `complete-step`, `update-step`, `audit-model-override`, `reapply-additional-context`, `truncation-audit`, `append-dispatch{,es}`, `append-agent`, `append-review-history`, `save`, `get-config`) was deleted in CLI v3.0.0; skill bodies that authored those payloads now stage a markdown / JSON file under `docs/browzer/<feat>/staging/<PHASE>.{md,json}` and let the plugin's autosave Write hook call `save-step`.
 
 ## Commands
 
@@ -42,20 +42,16 @@ make mutate          # writes packages/cli/mutate-out/report.txt
 
 ### CUE schema codegen (`schemas/`)
 
-`schemas/workflow-v1.cue` is the SSOT for `workflow.json`. Everything downstream is generated. **Never** hand-edit `workflow-v1.schema.json`, `cue_types_workflow_gen.go`, the embed mirrors under `internal/schema/`, or `packages/skills/references/workflow-schema.md`.
+`schemas/workflow-v1.cue` is the SSOT for `workflow.json`. Everything downstream is generated. **Never** hand-edit `workflow-v1.schema.json`, `cue_types_workflow_gen.go`, or the embed mirrors under `internal/schema/`. The schema also defines `#StepView`, the projection consumed by `browzer get-step --json` and rendered by the embedded `internal/workflow/view/templates/*.md.tmpl` set (one template per phase).
 
 ```bash
 make -C schemas all          # regenerate every artifact (after editing the .cue)
 make -C schemas ci-check     # assert no drift between checked-in artifacts and fresh codegen
 make -C schemas vet          # cue vet schema + valid/invalid fixtures
 make -C schemas clean        # remove generated artifacts
-
-# After codegen, mirror to per-skill copies (run from monorepo root):
-node packages/skills/scripts/sync-shared-refs.mjs
-node packages/skills/scripts/sync-shared-refs.mjs --check    # CI drift gate
 ```
 
-`make ci` calls `make -C schemas ci-check` as step 1b — codegen drift fails CI before vet/test/cross-compile run.
+`make ci` calls `make -C schemas ci-check` as step 1b — codegen drift fails CI before vet/test/cross-compile run. The Markdown reference that used to be generated alongside (`packages/skills/references/workflow-schema.md`) was retired in the v3.0.0 refactor — skills consume the schema at runtime via `browzer workflow describe-step-type <NAME> --json` instead of static prose.
 
 ## Architecture — big picture
 
@@ -91,7 +87,6 @@ workflow-v1.cue
    ├── (cue def --out openapi + scripts/enrich-openapi-projection.mjs)        →  workflow-v1.schema.json
    │                                                                          →  internal/schema/workflow-v1.schema.json (embed mirror)
    ├── (cue exp gengotypes)                                                   →  cue_types_workflow_gen.go
-   ├── (scripts/cue-to-markdown.mjs)                                          →  packages/skills/references/workflow-schema.md
    └── (cp)                                                                   →  internal/schema/workflow-v1.cue (embed mirror)
 ```
 
@@ -129,17 +124,17 @@ Every read command supports:
 - `--llm` — LLM mode: suppresses banners, disables colors + spinners.
 - `-v`/`-vv`/`-vvv` — verbosity (decisions / subprocess / raw I/O).
 
-Mutators add `--quiet` (default-on under `BROWZER_LLM=1` for all 16 mutators via `quietByDefaultUnderLLM()` at `internal/commands/workflow_mutator_helpers.go:47`).
+Mutators add `--quiet` (default-on under `BROWZER_LLM=1` for every workflow mutator via `quietByDefaultUnderLLM()` at `internal/commands/workflow_mutator_helpers.go:47`). `--quiet` is also wired cross-cutting on the read verbs `status`, `explore`, `search`, `deps`, `mentions`, and `workspace sync` via the shared `output.RegisterQuietFlag()` helper in `internal/output/verbosity.go` so skill bodies can suppress decorative output uniformly.
 
 `describe-step-type` accepts `--include-base` (merge base step fields), `--field <jq-path>` (project a sub-tree), and `--save <path>` (cache the schema slice; skills use `/tmp/<feat>/.schema-cache/<NAME>.json`).
 
-### `--render` templates
+### Step views (markdown + JSON)
 
-`browzer workflow get-step <id> --render <template>` emits compressed prompt-embed projections. The `.jq` renderer files live on the skills side under `packages/skills/scripts/renderers/` (9 files: `brainstorm`, `code-review`, `commit`, `feature-acceptance`, `prd`, `receiving-code-review`, `task`, `tasks-manifest`, `update-docs`). One additional template — `task-agent` — is implemented natively in Go at `internal/workflow/render.go:31`. When adding/renaming a template here, update both sides plus `scripts/audit/render-coverage.mjs` on the skills side.
+`browzer get-step <ID> --id <feat>` is the canonical read surface. Default output is a rich markdown view formatted for LLM context (role + scope + skills + PRD slice + deps + invariants + done-when), assembled by templates embedded at `internal/workflow/view/templates/*.md.tmpl` (11 templates — one per phase plus a `generic` fallback). `--json` emits the underlying `#StepView` payload defined in `schemas/workflow-v1.cue`. Accepted IDs: `PRD`, `TASKS`, `TASK_NN`, `CODE_REVIEW`, `RECEIVING_CODE_REVIEW`, `WRITE_TESTS`, `UPDATE_DOCS`, `FEATURE_ACCEPTANCE`, `COMMIT`, `BRAINSTORM`, plus two virtual phases: `ORIGINAL_REQUEST` (returns `metadata.originalRequest` — the verbatim operator ask captured at `workflow init` time, used as a fallback when a phase like BRAINSTORM was skipped) and `CONFIG` (carries `executionStrategy`, `mode`, `setAt` from `metadata.config` — seeded by `workflow init --execution-strategy <serial|parallel|parallel-worktrees|agent-teams>` and consumed by `generate-task` / orchestrator skills). Neither virtual phase has an underlying `steps[]` entry. Adding a new phase = add a `.md.tmpl` here AND extend `#StepView` in the CUE.
 
-### Named queries
+### Cross-step aggregations
 
-`browzer workflow query <name>` is the only allowed mechanism for cross-step aggregations. Current catalogue (10): `reused-gates`, `failed-findings`, `open-deferred-actions`, `task-gates-baseline`, `changed-files`, `deferred-scope-adjustments`, `open-findings`, `next-step-id`, `cache-warm-deps`, `cache-warm-mentions`. Skills side enforces "no unknown named query" via audit. New queries land here AND in the catalogued list — never in skill-side `jq`.
+The historical `browzer workflow query` verb (and its 13-name catalogue — `tasks-manifest`, `steps-by-name`, `steps-by-owner`, plus the deprecated `reused-gates`, `failed-findings`, `open-deferred-actions`, `task-gates-baseline`, `changed-files`, `deferred-scope-adjustments`, `open-findings`, `next-step-id`, `cache-warm-deps`, `cache-warm-mentions`) was deleted in CLI v3.0.0. The data those queries projected now flows through `get-step` markdown / `#StepView` JSON and the `save-step` write path. Skills no longer call `jq` over `workflow.json` directly.
 
 ### Tracker / `gain`
 
@@ -164,8 +159,9 @@ These are part of the contract — skills branch on them. Don't repurpose.
 
 - **Go version**: `go.mod` requires **1.25.0+**. `make ci` enforces this in step 0.
 - **Lint**: `golangci-lint v2.5.0` exactly. `make ci` auto-installs the pinned version into `$(go env GOPATH)/bin` if missing — do not float to a newer version locally.
-- **CUE edits → run `make -C schemas all`** before committing. CI's `make ci-check` will fail otherwise. Then run the skills-side `sync-shared-refs.mjs` to mirror the markdown into per-skill references.
-- **Adding a new mutator verb**: wire it under `internal/commands/workflow_*.go`, register validation against the post-mutation CUE shape, default `--quiet` on under `BROWZER_LLM=1`, and document it in the README's "Workflow state" table. Skills cannot consume it until skill bodies + `skill-cli-references.mjs` audit allowlists are updated in the same change.
+- **CUE edits → run `make -C schemas all`** before committing. CI's `make ci-check` will fail otherwise. No skill-side mirror sync is needed — schema-describing prose was removed from skill bodies in v3.0.0.
+- **Adding a new step phase**: extend `#StepView` in `schemas/workflow-v1.cue`, add a sibling `.md.tmpl` under `internal/workflow/view/templates/` (consumed by the embedded templates in `get-step`), add the parser branch in `workflow_save_step.go`, and document the ID in the `get-step` table. Skills cannot consume it until skill bodies + `skill-cli-references.mjs` audit allowlists are updated in the same change.
+- **Adding a new mutator verb** (rare — prefer extending `save-step` / `get-step`): wire it under `internal/commands/workflow_*.go`, register validation against the post-mutation CUE shape, default `--quiet` on under `BROWZER_LLM=1`, and document it in the README's "Workflow state" table.
 - **Adding a CLI flag visible to skills**: update the README, audit `skill-cobra-arg-syntax.mjs` examples, and rerun `skill-cli-sync-drift.mjs`.
 - **JSON output stability**: every read command's `--json` payload is consumed by skills as a contract. Field renames are breaking changes; gate behind a major bump (cli-v2.0.0 was the last BREAKING — `#TestSpec.type → intent`, Explorer rich→lean projection, `--quiet` parity on `explore`/`search`).
 - **Banners go to stderr** (regression-pin test exists). Stdout is reserved for command output.

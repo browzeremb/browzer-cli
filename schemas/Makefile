@@ -6,7 +6,7 @@
 #
 # Requirements:
 #   - cue v0.15.0+ on PATH (`go install cuelang.org/go/cmd/cue@v0.15.0`)
-#   - node v22+ on PATH (used by ../../scripts/cue-to-markdown.mjs)
+#   - node v22+ on PATH (used by ../../../scripts/enrich-openapi-projection.mjs)
 #
 # Targets:
 #   all       — regenerate every artifact (run after editing workflow-v1.cue)
@@ -21,8 +21,6 @@ EMBED_MIRROR := ../internal/schema/workflow-v1.cue
 JSON_OUT     := workflow-v1.schema.json
 JSON_EMBED   := ../internal/schema/workflow-v1.schema.json
 GO_OUT       := cue_types_workflow_gen.go
-MD_OUT       := ../../skills/references/workflow-schema.md
-MD_RENDER    := ../../../scripts/cue-to-markdown.mjs
 # DOG-DESCRIBE-2 (2026-05-06): post-processes the OpenAPI output to
 # carry through `time.Format(time.RFC3339)` as `format: "date-time"`
 # AND to align `*default | T` fields with the WF-OPTIONAL-MARKER
@@ -38,7 +36,7 @@ INVALID_FIXTURES := $(wildcard fixtures/invalid/*.json)
 
 .PHONY: all ci-check sync-embed vet vet-valid vet-invalid clean
 
-all: $(JSON_OUT) $(GO_OUT) $(MD_OUT) sync-embed
+all: $(JSON_OUT) $(GO_OUT) sync-embed
 
 # sync-embed copies the SSOTs to the embed mirrors used by the daemon
 # validator (CUE) and by the `--scaffold` skeleton emitter (JSON
@@ -54,9 +52,6 @@ $(JSON_OUT): $(SCHEMA) $(ENRICH_JSON)
 
 $(GO_OUT): $(SCHEMA)
 	$(CUE) exp gengotypes . && [ -f $(GO_OUT) ] && touch $(GO_OUT)
-
-$(MD_OUT): $(SCHEMA) $(MD_RENDER)
-	$(NODE) $(MD_RENDER) $(SCHEMA) > $@.tmp && mv $@.tmp $@
 
 vet: vet-valid vet-invalid
 	@echo "vet: schema + all fixtures OK"
@@ -95,12 +90,8 @@ ci-check: vet
 	    { echo "FAIL: $(GO_OUT) is out of date (run 'make all')"; mv $(GO_OUT).backup $(GO_OUT); exit 1; }; \
 	  rm -f $(GO_OUT).backup; \
 	fi
-	@$(NODE) $(MD_RENDER) $(SCHEMA) > $(MD_OUT).new
-	@diff -u $(MD_OUT) $(MD_OUT).new || \
-	  { echo "FAIL: $(MD_OUT) is out of date (run 'make all')"; rm $(MD_OUT).new; exit 1; }
-	@rm $(MD_OUT).new
 	@echo "ci-check: all generated artifacts in sync"
 
 clean:
-	@rm -f $(JSON_OUT) $(GO_OUT) $(MD_OUT) $(JSON_EMBED)
+	@rm -f $(JSON_OUT) $(GO_OUT) $(JSON_EMBED)
 	@echo "clean: removed generated artifacts"

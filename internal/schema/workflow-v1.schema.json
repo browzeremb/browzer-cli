@@ -491,6 +491,12 @@
                         "type": "string",
                         "pattern": "^[a-f0-9]{7,40}$"
                     },
+                    "backfillSha": {
+                        "type": "string",
+                        "default": null,
+                        "nullable": true,
+                        "pattern": "^[a-f0-9]{7,40}$"
+                    },
                     "conventionalType": {
                         "type": "string",
                         "enum": [
@@ -1110,7 +1116,8 @@
                     },
                     "assignedSkill": {
                         "type": "string",
-                        "default": ""
+                        "default": null,
+                        "nullable": true
                     },
                     "status": {
                         "type": "string",
@@ -1163,6 +1170,31 @@
                         "pattern": "^STEP_[0-9]{2}_[A-Z0-9_]+$"
                     },
                     "message": {
+                        "type": "string"
+                    }
+                }
+            },
+            "GranularityWarning": {
+                "description": "#GranularityWarning — one entry per task flagged by the tertiary\ngranularity-review pass in `generate-task` (R-15 / RETRO §15).\n`verdict` is \"collapse\" when the task has <2 files in scope (recommend\nmerging with a sibling), or \"split\" when it has >10 files (recommend\ndecomposing further). `reason` is the free-form prose from the haiku\ngranularity reviewer. Added 2026-05-07.",
+                "type": "object",
+                "required": [
+                    "taskId",
+                    "verdict",
+                    "reason"
+                ],
+                "properties": {
+                    "taskId": {
+                        "type": "string",
+                        "pattern": "^TASK_[0-9]{2}$"
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "enum": [
+                            "collapse",
+                            "split"
+                        ]
+                    },
+                    "reason": {
                         "type": "string"
                     }
                 }
@@ -2382,6 +2414,72 @@
                     "FAILED"
                 ]
             },
+            "StepView": {
+                "description": "=============================================================\n#StepView — JSON shape returned by `browzer get-step <PHASE> --json`.\nConsolidated, LLM-context-friendly projection of a single step.\nOnly `stepId`, `phase`, and `status` are required; everything else is\noptional and depends on the phase.\n=============================================================",
+                "type": "object",
+                "required": [
+                    "stepId",
+                    "phase",
+                    "status"
+                ],
+                "properties": {
+                    "stepId": {
+                        "type": "string",
+                        "pattern": "^STEP_[0-9]{2}_[A-Z0-9_]+$"
+                    },
+                    "phase": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/StepStatus"
+                    },
+                    "role": {
+                        "type": "string"
+                    },
+                    "skillsToInvoke": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "scope": {
+                        "type": "object"
+                    },
+                    "prdContext": {
+                        "type": "object"
+                    },
+                    "deps": {
+                        "type": "object"
+                    },
+                    "invariants": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "doneWhen": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "body": {
+                        "type": "object"
+                    },
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "originalRequest": {
+                        "type": "string"
+                    },
+                    "brainstormSummary": {
+                        "type": "string"
+                    }
+                }
+            },
             "StepWorktrees": {
                 "type": "object",
                 "required": [
@@ -2420,6 +2518,38 @@
                     },
                     "method": {
                         "type": "string"
+                    }
+                }
+            },
+            "SuppressedRedundantTask": {
+                "description": "#SuppressedRedundantTask — one entry per candidate TASK dropped by the\nReviewer-pass canonical-phase filter. `reason` MUST follow the form\n`duplicates-canonical-phase-<phase>` so retros can group by phase.",
+                "type": "object",
+                "required": [
+                    "candidateTitle",
+                    "candidateScope",
+                    "reason"
+                ],
+                "properties": {
+                    "candidateTitle": {
+                        "type": "string"
+                    },
+                    "candidateScope": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "reason": {
+                        "type": "string",
+                        "pattern": "^duplicates-canonical-phase-(write-tests|update-docs|code-review|commit|feature-acceptance|receiving-code-review)$"
+                    },
+                    "detectedBy": {
+                        "type": "string",
+                        "enum": [
+                            "reviewer-pass",
+                            "operational-audit-pass"
+                        ],
+                        "default": "reviewer-pass"
                     }
                 }
             },
@@ -2917,6 +3047,20 @@
                         "type": "array",
                         "items": {
                             "$ref": "#/components/schemas/TaskBrief"
+                        }
+                    },
+                    "suppressedRedundantTasks": {
+                        "description": "suppressedRedundantTasks records candidate TASKs the Reviewer pass dropped\nbecause their scope is a strict subset of a canonical pipeline phase\n(write-tests, update-docs, code-review, commit, feature-acceptance,\nreceiving-code-review). Captured for retro auditability — the canonical\nphase still runs at the end of the pipeline, so duplicating it as a TASK\nis wasted dispatch. Added 2026-05-07 (RETRO §14 + §17).",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SuppressedRedundantTask"
+                        }
+                    },
+                    "granularityWarnings": {
+                        "description": "granularityWarnings records the output of the tertiary granularity-review\npass in `generate-task` (R-15 / RETRO §15). Each entry flags a task that\nis too small (recommend collapse) or too large (recommend split). The\noperator sees these before `execute-task` runs so the plan can be\nadjusted without a full re-decomposition cycle. Added 2026-05-07.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/GranularityWarning"
                         }
                     }
                 }

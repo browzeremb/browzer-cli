@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// TestRotateWorkflowBackups_ProducesNumericChain (B6, 2026-05-05):
+// TestRotateWorkflowBackups_ProducesNumericChain (B6 / FR-3, 2026-05-07):
 // after K mutations against the same workflow.json, the directory
-// contains at most workflowBackupCount numbered backups, each
+// contains at most workflowBackupCount (now 2) numbered backups, each
 // holding the SAME contents as the workflow had K-i mutations ago.
 func TestRotateWorkflowBackups_ProducesNumericChain(t *testing.T) {
 	dir := t.TempDir()
@@ -21,9 +21,9 @@ func TestRotateWorkflowBackups_ProducesNumericChain(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Apply 7 distinct mutations so rotation passes the workflowBackupCount
-	// cap and we can prove the oldest entries are dropped, not retained.
-	for i := 0; i < 7; i++ {
+	// Apply 3 distinct mutations so rotation passes the workflowBackupCount
+	// cap (2) and we can prove only .bak.1 and .bak.2 survive, not .bak.3.
+	for i := 0; i < 3; i++ {
 		_, err := ApplyAndPersist(path, "patch", MutatorArgs{
 			JQExpr: fmt.Sprintf(`.featureName = "tag-%d"`, i),
 		}, false)
@@ -32,7 +32,7 @@ func TestRotateWorkflowBackups_ProducesNumericChain(t *testing.T) {
 		}
 	}
 
-	// .bak.1 … .bak.5 must exist; .bak.6 must NOT.
+	// .bak.1 and .bak.2 must exist; .bak.3 must NOT (cap=2).
 	for i := 1; i <= workflowBackupCount; i++ {
 		bak := fmt.Sprintf("%s.bak.%d", path, i)
 		if _, err := os.Stat(bak); err != nil {
@@ -45,20 +45,15 @@ func TestRotateWorkflowBackups_ProducesNumericChain(t *testing.T) {
 	}
 
 	// .bak.1 must contain the document one mutation behind the current
-	// state ("tag-5"), and .bak.5 must contain the document five
-	// mutations behind ("tag-1"). The rotation walks from oldest →
+	// state ("tag-1"), and .bak.2 must contain the document two
+	// mutations behind ("tag-0"). The rotation walks from oldest →
 	// newest before copying current → .bak.1, so:
-	//   current        = tag-6
-	//   .bak.1         = tag-5
-	//   .bak.2         = tag-4
-	//   …
-	//   .bak.5         = tag-1
+	//   current  = tag-2
+	//   .bak.1   = tag-1
+	//   .bak.2   = tag-0
 	expectations := map[string]string{
-		path + ".bak.1": `"tag-5"`,
-		path + ".bak.2": `"tag-4"`,
-		path + ".bak.3": `"tag-3"`,
-		path + ".bak.4": `"tag-2"`,
-		path + ".bak.5": `"tag-1"`,
+		path + ".bak.1": `"tag-1"`,
+		path + ".bak.2": `"tag-0"`,
 	}
 	for fp, marker := range expectations {
 		data, err := os.ReadFile(fp)

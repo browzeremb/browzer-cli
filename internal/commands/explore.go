@@ -100,11 +100,8 @@ Examples:
 			// honors extends to `explore --quiet` and `search --quiet`. The
 			// underlying staleness state is unchanged; only the stderr noise
 			// is suppressed.
-			if !quietFlag {
-				if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
-					output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
-				}
-			}
+			s := git.CheckStaleness(gitRoot, project.LastSyncCommit)
+			output.EmitStalenessWarningTo(os.Stderr, quietFlag, s.Stale, s.CommitsBehind)
 
 			ac, err := requireAuth(0)
 			if err != nil {
@@ -168,8 +165,10 @@ Examples:
 	// RETRO PR 6 §2.1: parity with `workflow * --quiet`. Suppresses the
 	// staleness banner emitted to stderr when the workspace index is
 	// behind HEAD. Does NOT silence the actual JSON / formatted result on
-	// stdout — that would break the contract.
-	cmd.Flags().Bool("quiet", false, "suppress the staleness warning (parity with workflow read verbs)")
+	// stdout — that would break the contract. Routed through the shared
+	// helper so future evolution (BROWZER_QUIET=1 env, default-on under
+	// BROWZER_LLM) lives in one place.
+	output.RegisterQuietFlag(cmd)
 	parent.AddCommand(cmd)
 }
 

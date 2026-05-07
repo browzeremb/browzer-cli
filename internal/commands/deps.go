@@ -79,9 +79,10 @@ Examples:
 			}
 
 			// Staleness warning to stderr (never stdout — would pollute --json).
-			if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
-				output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
-			}
+			// RETRO §16 #1: --quiet suppresses the staleness banner for
+			// parity with explore/search/workflow read verbs.
+			s := git.CheckStaleness(gitRoot, project.LastSyncCommit)
+			output.EmitStalenessWarningTo(os.Stderr, output.QuietRequested(cmd), s.Stale, s.CommitsBehind)
 
 			ac, err := requireAuth(0)
 			if err != nil {
@@ -152,5 +153,9 @@ Examples:
 	cmd.Flags().BoolVar(&schema, "schema", false, "Print the JSON schema of the deps response and exit")
 	cmd.Flags().Bool("json", false, "emit JSON")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
+	// Cross-cutting --quiet (RETRO §16 #1): suppresses the staleness
+	// stderr banner so a parallel batch mixing `deps --quiet` with
+	// other --quiet verbs won't spam stderr.
+	output.RegisterQuietFlag(cmd)
 	parent.AddCommand(cmd)
 }

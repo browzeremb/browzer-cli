@@ -109,9 +109,12 @@ Examples:
 			// `update-docs` can branch deterministically when the
 			// API returns mentions=null.
 			staleness := git.CheckStaleness(gitRoot, project.LastSyncCommit)
-			if staleness.Stale {
-				output.Errf("%s", output.FormatStalenessWarning(staleness.CommitsBehind))
-			}
+			// RETRO §16 #5: route via EmitStalenessWarningTo so the
+			// warning ALWAYS lands on stderr (never stdout — would
+			// pollute --json/--save). RETRO §16 #1: --quiet suppresses
+			// the banner. The structured `meta` block in the JSON
+			// payload is unaffected.
+			output.EmitStalenessWarningTo(os.Stderr, output.QuietRequested(cmd), staleness.Stale, staleness.CommitsBehind)
 
 			ac, err := requireAuth(0)
 			if err != nil {
@@ -204,5 +207,9 @@ Examples:
 	cmd.Flags().Bool("json", false, "emit JSON")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
 	cmd.Flags().StringVar(&workspaceID, "workspace", "", "Override workspace (default: current project)")
+	// Cross-cutting --quiet (RETRO §16 #1): suppresses the staleness
+	// stderr banner. The structured `meta.stale` boolean in --json
+	// output is unaffected.
+	output.RegisterQuietFlag(cmd)
 	parent.AddCommand(cmd)
 }

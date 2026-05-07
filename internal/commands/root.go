@@ -104,6 +104,10 @@ func NewRootCommand(version string) *cobra.Command {
 	// `workflow` subcommand group.
 	registerWorkflow(root)
 
+	// Top-level `get-step` / `save-step` aliases (LLM-first surface).
+	registerGetStep(root)
+	registerSaveStep(root)
+
 	// `org` subcommand group.
 	registerOrg(root)
 

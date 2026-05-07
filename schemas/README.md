@@ -2,10 +2,12 @@
 
 Single source of truth for `docs/browzer/<feat>/workflow.json` (schema v2).
 
-Edit `workflow-v1.cue` only. Everything else under this directory and the
-markdown reference at `packages/skills/references/workflow-schema.md` is
+Edit `workflow-v1.cue` only. Everything else under this directory is
 **generated** by `make all` — hand-edits are reverted by `make ci-check` in
-CI.
+CI. The markdown reference that used to be generated alongside
+(`packages/skills/references/workflow-schema.md`) was retired in CLI v3.0.0;
+skills now discover shapes at runtime via
+`browzer workflow describe-step-type <NAME> --json`.
 
 ## Layout
 
@@ -21,25 +23,20 @@ packages/cli/schemas/
 └── README.md                    # this file
 ```
 
-The markdown reference (`packages/skills/references/workflow-schema.md`) is
-also generated from `workflow-v1.cue` via
-`scripts/cue-to-markdown.mjs`.
-
 ## Codegen pipeline
 
 ```
                  workflow-v1.cue (hand-edited SSOT)
                             │
                             ▼
-           ┌────────────────┼────────────────┐
+           ┌────────────────┴────────────────┐
            ▼                ▼                ▼
-    cue def --out      cue exp gengotypes  node scripts/
-    openapi             .                  cue-to-markdown.mjs
-           │                │                │
-           ▼                ▼                ▼
-    workflow-v1.    cue_types_workflow_  packages/skills/
-    schema.json     gen.go               references/
-                                         workflow-schema.md
+    cue def --out      cue exp gengotypes  cp embed mirrors
+    openapi             .                  (internal/schema/)
+           │                │
+           ▼                ▼
+    workflow-v1.    cue_types_workflow_
+    schema.json     gen.go
 ```
 
 `make all` regenerates every artifact. `make ci-check` asserts no drift
@@ -51,7 +48,7 @@ between the checked-in artifacts and a fresh codegen — fatal in CI.
 2. Add or modify fields. Every leaf field MUST carry an `@addedIn("<ISO>")`
    attribute — the date its enforcement starts. Without `@addedIn` the
    field is invisible to `browzer workflow validate --since-version`.
-3. Run `make all` — regenerates JSON Schema + Go + Markdown.
+3. Run `make all` — regenerates JSON Schema + Go + embed mirrors.
 4. Run `make ci-check` — asserts everything is in sync.
 5. If you added a new mandatory field, add a fixture under
    `fixtures/invalid/` that demonstrates the missing-field diagnostic.
@@ -63,7 +60,7 @@ between the checked-in artifacts and a fresh codegen — fatal in CI.
 |---|---|---|
 | `cue def --out openapi` | `workflow-v1.cue` | `workflow-v1.schema.json` (OpenAPI 3.0) |
 | `cue exp gengotypes` | `workflow-v1.cue` | `cue_types_workflow_gen.go` (Go structs) |
-| `scripts/cue-to-markdown.mjs` | `workflow-v1.cue` | `packages/skills/references/workflow-schema.md` |
+| `cp` (embed mirror) | `workflow-v1.{cue,schema.json}` | `internal/schema/workflow-v1.{cue,schema.json}` |
 
 `cue` v0.15.0+ is required (`go install cuelang.org/go/cmd/cue@v0.15.0`).
 The Go generator output ships with the package so consumers don't need
@@ -81,7 +78,7 @@ After saving:
 
 ```bash
 cd packages/cli/schemas
-make all          # regenerate JSON Schema + Go + Markdown
+make all          # regenerate JSON Schema + Go + embed mirrors
 make ci-check     # verify everything is in sync
 ```
 

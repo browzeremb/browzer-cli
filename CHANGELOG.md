@@ -6,6 +6,38 @@ CUE schema are documented in this file. The CLI follows semantic versioning
 
 ## Unreleased
 
+### Added
+
+- **`browzer save-step --hint-fixes`** (R-5): on validation failure, emits a worked example for each enum / unknown-field violation in the form `expected one of [a, b, c]; example: "<field>": "<a>"`. Default behaviour (no flag) is unchanged. Driven by the new `FormatViolationsWithHints` helper in `internal/schema/validator.go` and a shared `formatViolationsCore(emitHints bool)` private renderer.
+- **`browzer save-step-batch --from PHASE=PATH ...`** (R-6): persists multiple phase payloads atomically. All `--from` entries are CUE-validated against the in-memory mutated document under a single advisory flock; on any individual failure the batch rolls back without writing. Duplicate phase names emit `cliExitErr(2)`. Backed by a new `wf.ApplyBatchAndPersist` helper in `internal/workflow/apply.go`.
+- **`browzer workflow init --mode <autonomous|review>`** (R-1 / R-8): seeds `config.mode` directly at workflow init time. Default `autonomous`. The `BootstrapOptions.Mode` field is enum-validated against `{autonomous, review}`; bogus values exit non-zero.
+- **CUE schema — `granularityWarnings[]` on `#TasksManifest`** (R-15): optional array of `{taskId, verdict (collapse|split), reason}` entries emitted by `generate-task` when a task carries `<2 files` (collapse) or `>10 files` (split). Backward-compatible — existing fixtures continue to validate.
+- **COMMIT regression fixtures** (R-14): `schemas/fixtures/valid/commit-min.json` and `schemas/fixtures/invalid/commit-bad-name.json`. Exercised by `internal/schema/commit_roundtrip_test.go` (CUE round-trip) and `internal/commands/workflow_save_step_r5_r6_test.go::TestSaveStep_CommitRoundtrip_PersistsAndReads` (command-level round-trip via `save-step` + `get-step`).
+- **Granularity negative fixture** (`schemas/fixtures/invalid/granularity-bad-verdict.json`): exercises `verdict = "merge"` (rejected by the `collapse|split` enum). Schema vet now reports 13 valid + 19 invalid fixtures.
+
+### Changed
+
+- **`save-step` validator**: `DryRunViolations` and `ApplyDryRun` now share a `runMutatorInMemory` helper (no more 30-line preamble duplication). `DryRunViolations` returns `(nil, mErr)` on mutator error instead of silently swallowing it as `(nil, nil)`.
+- **`save-step` cobra surface**: removed dead `fromStdin bool` parameter from `readSaveInput`; the function infers stdin mode from `fromFile == ""`. Resolves `unusedparams` lint.
+
+## cli-v3.0.0 — 2026-05-07 — Collapse workflow surface to `get-step` + `save-step` (BREAKING)
+
+### BREAKING
+
+- **Deleted workflow mutator verbs (16)**: `workflow {patch, query (legacy 10-name catalogue), get-config, set-config, set-status, set-current-step, complete-step, update-step, audit-model-override, reapply-additional-context, truncation-audit, append-dispatch, append-dispatches, append-agent, append-review-history, save}`. Migration: skill bodies stage their phase output to `docs/browzer/<feat>/staging/<PHASE>.{md,json}` via `Write`; the Browzer plugin's `PostToolUse(Write)` autosave hook calls `browzer save-step <PHASE> --id <feat> --from <file>`, which CUE-validates and persists atomically.
+- **Deleted named queries (10)**: `reused-gates`, `failed-findings`, `open-deferred-actions`, `task-gates-baseline`, `changed-files`, `deferred-scope-adjustments`, `open-findings`, `next-step-id`, `cache-warm-deps`, `cache-warm-mentions`. Survivors (3): `tasks-manifest`, `steps-by-name`, `steps-by-owner`.
+- **`browzer get-step` flag surface change**: removed `--field`, `--render`, `--bash-vars`, `--finding`. Default output is now rich markdown rendered from one of 11 embedded `view/templates/*.md.tmpl` files (one per phase + a `generic` fallback). `--json` returns the new `#StepView` payload defined in `packages/cli/schemas/workflow-v1.cue`.
+- **Schema codegen**: `make -C packages/cli/schemas all` no longer generates `packages/skills/references/workflow-schema.md` — that target and the `MD_OUT` / `MD_RENDER` Make variables are gone. The skills-side mirror file and the `sync-shared-refs.mjs` script were deleted; skills now query the schema at runtime via `browzer workflow describe-step-type <NAME> --json`.
+
+### Added
+
+- **`browzer get-step <ID> --id <feat>`** (top-level + `browzer workflow get-step`): rich markdown view formatted for LLM context (role + scope + skills + PRD slice + deps + invariants + done-when), `--json` for the `#StepView` payload. Accepted IDs: `PRD`, `TASKS`, `TASK_NN`, `CODE_REVIEW`, `RECEIVING_CODE_REVIEW`, `WRITE_TESTS`, `UPDATE_DOCS`, `FEATURE_ACCEPTANCE`, `COMMIT`, `BRAINSTORM`.
+- **`browzer save-step <PHASE> --id <feat> [--from <file>] [--stdin]`** (NEW top-level): CUE-validates and persists a phase payload into `workflow.json`. Accepts a markdown PRD via the markdown parser or a JSON payload. Flags: `--validate-only`, `--quiet`. Exits silent on success.
+- **CUE additions**: `#StepView` definition in `packages/cli/schemas/workflow-v1.cue`.
+- **Embedded view templates**: 11 new `internal/workflow/view/templates/*.md.tmpl` files (one per phase plus `generic`), embedded into the Go binary and rendered by `get-step`.
+
+## Unreleased — pre-3.0.0 entries
+
 ### BREAKING
 
 - **workflow-v1 schema (B8)**: removed `twoPassRun.mentionsFallback` legacy
@@ -22,6 +54,20 @@ CUE schema are documented in this file. The CLI follows semantic versioning
 
 ### Added
 
+- **`browzer workflow append-agent <stepId>`**: appends a TaskAgent record
+  to a TASK step's `task.execution.agents[]` inside the standard advisory-lock
+  + post-mutation CUE-validate window. Replaces ad-hoc `workflow patch --jq`
+  splicing in the `execute-task` skill so each specialist result lands as a
+  single atomic write. Accepts the record on stdin or via `--payload <file>`.
+- **`browzer workflow backfill-elapsed`**: walks every step and computes
+  `elapsedMin = (completedAt - startedAt) / 60` when both timestamps are set
+  and `elapsedMin` is missing or zero. One-shot recovery for workflows that
+  predate `complete-step`'s auto-stamp; safe to re-run.
+- **`--quiet` parity on read verbs**: cross-cutting `--quiet` is now wired on
+  `status`, `explore`, `search`, `deps`, `mentions`, and `workspace sync` via
+  the shared `output.RegisterQuietFlag()` helper (`internal/output/verbosity.go`).
+  Default-on under `BROWZER_LLM=1`; previously only the workflow mutators
+  honoured the flag.
 - **`browzer workflow describe-step-type --inline-enums` (A1.3)**: emits one
   JSON record per enumerable field with `{path, type, values}` (string
   disjunction) or `{path, type, regex}` (regex constraint) so an LLM-driven

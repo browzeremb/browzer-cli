@@ -124,11 +124,18 @@ type MutatorArgs struct {
 	// mutators that maintain side-channel cache files like
 	// .browzer/active-step (TASK_05 hybrid-cache).
 	WorkflowDir string
+
+	// NoBackup skips the rotateWorkflowBackups call before the atomic write.
+	// Intended for the autosave hook path (BROWZER_LLM=1 / --no-backup) where
+	// a rapid series of saves would fill the .bak slots with near-identical
+	// snapshots. Default false (rotate up to workflowBackupCount copies).
+	NoBackup bool
 }
 
 // Mutators is the verb registry. Keep keys in sync with the cobra subcommand
 // names — daemon and skills both call by verb string.
 var Mutators = map[string]Mutator{
+	"append-agent":              mutatorAppendAgent,
 	"append-dispatch":            mutatorAppendDispatch,
 	"append-step":               mutatorAppendStep,
 	"append-steps":              mutatorAppendSteps,
@@ -142,6 +149,7 @@ var Mutators = map[string]Mutator{
 	"reapply-additional-context": mutatorReapplyAdditionalContext,
 	"audit-model-override":      mutatorAuditModelOverride,
 	"truncation-audit":          mutatorTruncationAudit,
+	"backfill-elapsed":          mutatorBackfillElapsed,
 }
 
 // ErrUnknownVerb is returned by ApplyAndPersist when verb is not in Mutators.
@@ -176,35 +184,65 @@ type DryRunResult struct {
 	StepID     string   `json:"stepId,omitempty"`
 }
 
+// runMutatorInMemory loads the workflow at path, applies verb's mutator with
+// args, and returns the mutated raw map plus the indented JSON-encoded bytes.
+// It does NOT write to disk and does NOT acquire any lock — the caller owns
+// both concerns.
+//
+// Used as the shared preamble by ApplyDryRun and DryRunViolations so both
+// functions share identical load/apply/encode logic without duplication.
+func runMutatorInMemory(path, verb string, args MutatorArgs) (raw map[string]any, encoded []byte, err error) {
+	mut, ok := Mutators[verb]
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: %q", ErrUnknownVerb, verb)
+	}
+	rawBytes, rdErr := os.ReadFile(path)
+	if rdErr != nil {
+		return nil, nil, fmt.Errorf("read workflow: %w", rdErr)
+	}
+	if unmErr := json.Unmarshal(rawBytes, &raw); unmErr != nil {
+		return nil, nil, fmt.Errorf("parse workflow map: %w", unmErr)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	if args.WorkflowDir == "" {
+		args.WorkflowDir = filepath.Dir(path)
+	}
+	var result ApplyResult
+	if mErr := mut(raw, args, &result); mErr != nil {
+		return nil, nil, mErr
+	}
+	encoded, err = json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal workflow: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	return raw, encoded, nil
+}
+
 // ApplyDryRun runs the mutate-and-validate pipeline WITHOUT writing
 // the result back to disk. Designed for `--dry-run` callers: the
 // operator (or LLM) gets a structured preview of the validation
 // outcome and the field paths that would change.
 //
 // Pipeline (no lock — caller decides whether to acquire):
-//   1. Read the file from disk.
-//   2. Run the verb's Mutator on the raw map.
-//   3. Marshal the mutated map back to JSON.
-//   4. Run schema.ValidateWorkflow + the legacy structural validator
-//      against the marshalled bytes. Both errors are captured into
-//      DryRunResult.Errors; the function NEVER returns a Go error
-//      for validation failures (so the caller can serialise the
-//      result to JSON cleanly).
-//   5. Compute (beforeHash, afterHash, diffPaths) for the response.
+//  1. Read the file from disk.
+//  2. Run the verb's Mutator on the raw map.
+//  3. Marshal the mutated map back to JSON.
+//  4. Run schema.ValidateWorkflow + the legacy structural validator
+//     against the marshalled bytes. Both errors are captured into
+//     DryRunResult.Errors; the function NEVER returns a Go error
+//     for validation failures (so the caller can serialise the
+//     result to JSON cleanly).
+//  5. Compute (beforeHash, afterHash, diffPaths) for the response.
 //
 // File contents are not touched.
 //
 // `args` is the same MutatorArgs passed to ApplyAndPersist. The
 // `verb` MUST be in `Mutators` — unknown verbs return an error.
-//
-// Bulk variant: callers building a `--bulk` patch can run multiple
-// jq expressions sequentially against the SAME raw map by keeping
-// the mutator-side state (raw + pending args) in memory; this
-// function only knows how to apply ONE verb invocation. Bulk
-// orchestration lives in the cobra layer where it owns the lock.
 func ApplyDryRun(path, verb string, args MutatorArgs) (DryRunResult, error) {
-	mut, ok := Mutators[verb]
-	if !ok {
+	if _, ok := Mutators[verb]; !ok {
 		return DryRunResult{}, fmt.Errorf("%w: %q", ErrUnknownVerb, verb)
 	}
 	beforeBytes, err := os.ReadFile(path)
@@ -213,26 +251,14 @@ func ApplyDryRun(path, verb string, args MutatorArgs) (DryRunResult, error) {
 	}
 	beforeHash := sha256Hex(beforeBytes)
 
-	var raw map[string]any
-	if err := json.Unmarshal(beforeBytes, &raw); err != nil {
-		return DryRunResult{}, fmt.Errorf("parse workflow map: %w", err)
-	}
-	if raw == nil {
-		raw = map[string]any{}
-	}
-	if args.WorkflowDir == "" {
-		args.WorkflowDir = filepath.Dir(path)
-	}
-
-	// Snapshot the pre-mutation map for diff comparison. json round-trip
-	// gives us a deep clone without sharing slice/map references.
-	beforeSnap, err := cloneMapViaJSON(raw)
-	if err != nil {
+	// Snapshot the pre-mutation map for diff comparison.
+	var beforeSnap map[string]any
+	if err := json.Unmarshal(beforeBytes, &beforeSnap); err != nil {
 		return DryRunResult{}, fmt.Errorf("snapshot workflow: %w", err)
 	}
 
-	var result ApplyResult
-	if mErr := mut(raw, args, &result); mErr != nil {
+	raw, encoded, mErr := runMutatorInMemory(path, verb, args)
+	if mErr != nil {
 		return DryRunResult{
 			Ok:         false,
 			Errors:     []string{mErr.Error()},
@@ -240,20 +266,10 @@ func ApplyDryRun(path, verb string, args MutatorArgs) (DryRunResult, error) {
 		}, nil
 	}
 
-	// Marshal post-mutation for validation + after-hash + indented
-	// rendering. Indentation must match ApplyAndPersist's `MarshalIndent`
-	// step so the after-hash is comparable to a real persisted document.
-	encoded, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return DryRunResult{}, fmt.Errorf("marshal workflow: %w", err)
-	}
-	encoded = append(encoded, '\n')
 	afterHash := sha256Hex(encoded)
-
 	out := DryRunResult{
 		BeforeHash: beforeHash,
 		AfterHash:  afterHash,
-		StepID:     result.StepID,
 		DiffPaths:  computeDiffPaths(beforeSnap, raw),
 	}
 
@@ -277,30 +293,32 @@ func ApplyDryRun(path, verb string, args MutatorArgs) (DryRunResult, error) {
 	return out, nil
 }
 
+// DryRunViolations runs the same mutate-and-validate pipeline as ApplyDryRun
+// but returns the raw schema.ValidationResult instead of pre-formatted error
+// strings. This lets callers (e.g. `save-step --hint-fixes`) access the
+// structured Violation slice with AllowedValues / AllowedFields populated,
+// which is required to render worked examples.
+//
+// Returns (nil, err) when the mutator fails — the caller can inspect the error
+// directly (previously this swallowed the error and returned (nil, nil)).
+func DryRunViolations(path, verb string, args MutatorArgs) (*schema.ValidationResult, error) {
+	if _, ok := Mutators[verb]; !ok {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownVerb, verb)
+	}
+	_, encoded, mErr := runMutatorInMemory(path, verb, args)
+	if mErr != nil {
+		return nil, mErr // propagate — previously swallowed with (nil, nil)
+	}
+	res := schema.ValidateWorkflow(encoded)
+	return &res, nil
+}
+
 // sha256Hex returns the hex-encoded SHA-256 digest of b. Used for
 // dry-run before/after hashes — comparing the hashes is the cheapest
 // "did anything change" check the operator can run.
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-// cloneMapViaJSON deep-clones raw via json.Marshal/Unmarshal. The
-// only safe way to copy `map[string]any` containing nested maps,
-// slices, and primitives without writing a hand-rolled walker.
-func cloneMapViaJSON(raw map[string]any) (map[string]any, error) {
-	if raw == nil {
-		return map[string]any{}, nil
-	}
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // computeDiffPaths returns the dotted paths whose values differ
@@ -406,6 +424,128 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// BatchMutatorArgs groups a verb + its MutatorArgs for use in ApplyBatchAndPersist.
+type BatchMutatorArgs struct {
+	Verb string
+	Args MutatorArgs
+}
+
+// ApplyBatchAndPersist applies a sequence of mutators to the workflow at path
+// in a single atomic operation: one lock acquisition, all mutators run
+// sequentially against the SAME in-memory document, ONE post-batch CUE
+// validation pass, and ONE atomic write.
+//
+// Contrast with the old save-step-batch loop which acquired/released the lock
+// once per phase (F-1) and validated each phase against the on-disk file
+// independently before writing (F-2). Both problems are fixed here:
+//   - The caller acquires the lock ONCE before calling this function and holds
+//     it until it returns (or the caller owns the lock lifecycle — see note).
+//   - All mutators run against the same raw map so earlier phases' changes are
+//     visible to later phases' validation.
+//   - A single post-batch CUE pass replaces N independent pre-flight dry-runs.
+//   - If CUE validation fails, NO write has occurred — workflow.json mtime is
+//     guaranteed unchanged (F-4).
+//
+// Lock note: this function does NOT acquire the advisory lock. The caller MUST
+// hold it for the duration of this call. This matches ApplyAndPersist's
+// contract and keeps the lock lifecycle in the cobra layer where lock timeout,
+// --no-lock, and audit lines all live.
+//
+// On any error the function returns before AtomicWrite so the file is never
+// partially mutated.
+func ApplyBatchAndPersist(path string, batch []BatchMutatorArgs) ([]ApplyResult, error) {
+	if len(batch) == 0 {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read workflow: %w", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse workflow map: %w", err)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+
+	var beforeViolations []schema.Violation
+	if len(data) > 0 {
+		beforeViolations = schema.ValidateWorkflow(data).Violations
+	}
+
+	results := make([]ApplyResult, 0, len(batch))
+	for _, b := range batch {
+		mut, ok := Mutators[b.Verb]
+		if !ok {
+			return nil, fmt.Errorf("%w: %q", ErrUnknownVerb, b.Verb)
+		}
+		if b.Args.WorkflowDir == "" {
+			b.Args.WorkflowDir = filepath.Dir(path)
+		}
+		var res ApplyResult
+		if mErr := mut(raw, b.Args, &res); mErr != nil {
+			return nil, fmt.Errorf("batch mutator %q: %w", b.Verb, mErr)
+		}
+		results = append(results, res)
+	}
+
+	// Single post-batch CUE validation pass.
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal workflow for validation: %w", err)
+	}
+
+	envBypass := os.Getenv("BROWZER_NO_SCHEMA_CHECK") == "1"
+	if !envBypass {
+		validation := schema.ValidateWorkflow(encoded)
+		if !validation.Valid {
+			tagged := schema.TagViolationScopes(beforeViolations, validation.Violations)
+			return nil, fmt.Errorf("batch schema validation failed:\n%s",
+				schema.FormatViolations(tagged))
+		}
+	}
+
+	var typed Workflow
+	if err := json.Unmarshal(encoded, &typed); err != nil {
+		return nil, fmt.Errorf("re-parse workflow for validation: %w", err)
+	}
+	if errs := Validate(typed); len(errs) > 0 {
+		return nil, fmt.Errorf("batch validation error: %s: %s", errs[0].Path, errs[0].Message)
+	}
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal workflow: %w", err)
+	}
+	out = append(out, '\n')
+
+	// FR-3: skip rotation when any arg in the batch has NoBackup set.
+	// (In practice the batch is from a single caller context, so if
+	// one entry opts out, the whole batch opts out.)
+	noBackup := false
+	for _, b := range batch {
+		if b.Args.NoBackup {
+			noBackup = true
+			break
+		}
+	}
+	if !noBackup {
+		rotateWorkflowBackups(path)
+	}
+
+	if err := AtomicWrite(path, out); err != nil {
+		return nil, err
+	}
+
+	for i := range results {
+		results[i].ValidatedOk = true
+	}
+	return results, nil
 }
 
 // ApplyAndPersist runs the full mutate-and-write pipeline for a single
@@ -554,15 +694,19 @@ func ApplyAndPersist(path, verb string, args MutatorArgs, awaitDurability bool) 
 	}
 	out = append(out, '\n')
 
-	// B6 (2026-05-05): rotate up to 5 numeric backups before the
-	// rename so a wedged operator can recover the previous workflow
-	// state from `.bak.1` … `.bak.5`. Best-effort: rotation failures
+	// B6 (2026-05-05, retention reduced 5→2 in 2026-05-07): rotate
+	// up to `workflowBackupCount` numeric backups before the rename
+	// so a wedged operator can recover the previous workflow state
+	// from `.bak.1` … `.bak.<workflowBackupCount>`. Best-effort: rotation failures
 	// log to stderr but never abort the mutation. Skipped on no-op
 	// mutators (already short-circuited above) and for the daemon-
 	// goroutine path (which calls ApplyAndPersist with awaitDurability=
 	// true; we still want backups there). Dry-run callers route
 	// through ApplyDryRun and never touch disk.
-	rotateWorkflowBackups(path)
+	// FR-3: --no-backup skips rotation (opt-in for autosave hook path).
+	if !args.NoBackup {
+		rotateWorkflowBackups(path)
+	}
 
 	if awaitDurability {
 		if err := atomicWriteFsync(path, out); err != nil {
@@ -578,18 +722,15 @@ func ApplyAndPersist(path, verb string, args MutatorArgs, awaitDurability bool) 
 	return result, nil
 }
 
-// workflowBackupCount caps the rotated copies. 5 is plenty for the
-// "Ctrl+Z one workflow ago" use case while keeping disk overhead
-// bounded (each copy ≤200 KB in practice). Mirrored as a constant so
-// tests can introspect.
-const workflowBackupCount = 5
+// workflowBackupCount caps the rotated copies. 2 keeps disk overhead
+// minimal while still offering a one-step-back safety net for the
+// "Ctrl+Z one workflow ago" use case (each copy ≤200 KB in practice).
+// Mirrored as a constant so tests can introspect.
+const workflowBackupCount = 2
 
 // rotateWorkflowBackups maintains a rolling backup of `path`:
 //
-//	<path>.bak.5  ← removed
-//	<path>.bak.4  → <path>.bak.5
-//	<path>.bak.3  → <path>.bak.4
-//	<path>.bak.2  → <path>.bak.3
+//	<path>.bak.2  ← removed
 //	<path>.bak.1  → <path>.bak.2
 //	<path>        → <path>.bak.1   (copy, not move — leaves original
 //	                                in place so the rename below
@@ -730,7 +871,7 @@ func mutatorAppendStep(raw map[string]any, args MutatorArgs, out *ApplyResult) e
 	stepsSlice = append(stepsSlice, stepMap)
 	raw["steps"] = stepsSlice
 
-	recomputeCountersRaw(raw)
+	RecomputeCountersRaw(raw)
 
 	if id, _ := stepMap["stepId"].(string); id != "" {
 		out.StepID = id
@@ -818,7 +959,7 @@ func mutatorAppendSteps(raw map[string]any, args MutatorArgs, out *ApplyResult) 
 	}
 	raw["steps"] = stepsSlice
 
-	recomputeCountersRaw(raw)
+	RecomputeCountersRaw(raw)
 
 	out.StepID = lastStepID
 	out.ExplorerProjected = projectedAny
@@ -858,7 +999,7 @@ func mutatorUpdateStep(raw map[string]any, args MutatorArgs, out *ApplyResult) e
 		// raw string flows through unchanged.
 		stepMap[field] = coerceUpdateStepValue(field, value)
 	}
-	recomputeCountersRaw(raw)
+	RecomputeCountersRaw(raw)
 	return nil
 }
 
@@ -950,7 +1091,7 @@ func mutatorCompleteStep(raw map[string]any, args MutatorArgs, out *ApplyResult)
 		// stepId in their Langfuse traces.
 		clearActiveStepCache(args.WorkflowDir)
 	}
-	recomputeCountersRaw(raw)
+	RecomputeCountersRaw(raw)
 	return nil
 }
 
@@ -998,7 +1139,7 @@ func mutatorSetStatus(raw map[string]any, args MutatorArgs, out *ApplyResult) er
 	if newStatus == StatusStopped && allStepsTerminal(raw) {
 		clearActiveStepCache(args.WorkflowDir)
 	}
-	recomputeCountersRaw(raw)
+	RecomputeCountersRaw(raw)
 	return nil
 }
 
@@ -2014,24 +2155,280 @@ func mutatorAppendDispatch(raw map[string]any, args MutatorArgs, out *ApplyResul
 	return nil
 }
 
-// recomputeCountersRaw mirrors recomputeCounters in workflow_mutator_helpers.go.
-// Duplicated here to keep workflow package free of the commands import (the
-// commands package uses workflow, not the other way round).
-func recomputeCountersRaw(raw map[string]any) {
+// mutatorAppendAgent appends a #TaskAgent record to step.task.execution.agents[].
+//
+// Args: args.Args[0] = stepId. The step MUST be a TASK step (name == "TASK")
+// with a populated `task.execution.agents` array — append-agent on any other
+// step type returns an error with a meaningful hint.
+//
+// Payload: JSON-encoded map representing the #TaskAgent. The cobra command
+// composes this from --role / --skill / --status / --files-created /
+// --files-modified / --notes / --model / --skills-loaded flags. CUE schema
+// validation runs post-mutation in ApplyAndPersist and rejects records with
+// an out-of-enum status, missing required fields, etc.
+func mutatorAppendAgent(raw map[string]any, args MutatorArgs, out *ApplyResult) error {
+	if len(args.Args) < 1 || args.Args[0] == "" {
+		return fmt.Errorf("append-agent: stepId is required")
+	}
+	stepID := args.Args[0]
+	out.StepID = stepID
+
+	if len(args.Payload) == 0 {
+		return fmt.Errorf("append-agent: payload is required")
+	}
+	var record map[string]any
+	if err := json.Unmarshal(args.Payload, &record); err != nil {
+		return fmt.Errorf("append-agent: parse agent record: %w", err)
+	}
+
+	stepMap, _, err := findStepRaw(raw, stepID)
+	if err != nil {
+		return err
+	}
+
+	// Guard: only TASK steps carry task.execution.agents[].
+	stepName, _ := stepMap["name"].(string)
+	if stepName != "TASK" {
+		return fmt.Errorf("append-agent: step %q has name=%q; agents[] only exists on TASK steps", stepID, stepName)
+	}
+
+	taskMap, ok := stepMap["task"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("append-agent: step %q is missing task payload", stepID)
+	}
+	execMap, ok := taskMap["execution"].(map[string]any)
+	if !ok {
+		// F-4: refuse to silently synthesise a partial execution block.
+		// complete-step or update-step must initialise it first; otherwise
+		// downstream CUE validation rejects the half-baked record and the
+		// audit trail is poisoned with an artefact this verb invented.
+		return fmt.Errorf("append-agent: step %q has no task.execution block; complete-step or update-step must initialise it first", stepID)
+	}
+
+	agents, _ := execMap["agents"].([]any)
+	agents = append(agents, record)
+	execMap["agents"] = agents
+	// F-7: bump the parent step's updatedAt alongside the workflow root,
+	// mirroring mutatorAppendDispatch (apply.go ~1990) so consumers running
+	// `workflow get-step --field updatedAt` after append-agent see the step
+	// as freshly mutated, not stale.
+	now := time.Now().UTC().Format(time.RFC3339)
+	stepMap["updatedAt"] = now
+	raw["updatedAt"] = now
+	return nil
+}
+
+// mutatorBackfillElapsed walks every step in the workflow and stamps
+// elapsedMin = (completedAt - startedAt) / 60 (minutes) when both timestamps
+// are set AND the current elapsedMin is null/missing/zero. Idempotent: running
+// twice on the same workflow is a no-op the second time (because the first
+// run already populated every fillable cell, so the guard short-circuits).
+//
+// After per-step backfill, the workflow-level totalElapsedMin is recomputed by
+// summing per-step elapsedMin (preferred — matches the per-step values the
+// operator just saw). If no steps have an elapsedMin we fall back to
+// (updatedAt - startedAt) when both root timestamps are present.
+//
+// The motivation (RETRO §2): the orchestrator's Step 7 closure was the only
+// place that stamped elapsedMin; if the orchestrator was interrupted before
+// closure ran, completed steps ended up with elapsedMin: null. This verb is
+// the recovery path — runnable any time, including mid-flow.
+//
+// F-15 cost note: this verb iterates every step (O(steps)) holding the
+// workflow advisory flock. Today's workflows are O(20) steps so the lock-
+// hold window is sub-millisecond, but invoking it on a very large
+// workflow.json (hundreds of steps) over the daemon's --await path will
+// block sibling mutators queued behind it for the duration of the walk.
+// The verb's `Long` cobra string surfaces this cost to operators.
+func mutatorBackfillElapsed(raw map[string]any, _ MutatorArgs, out *ApplyResult) error {
+	stepsRaw, _ := raw["steps"].([]any)
+	changed := 0
+	for _, s := range stepsRaw {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Only backfill when the current value is null / missing / zero.
+		if !elapsedMinIsUnfilled(sm["elapsedMin"]) {
+			continue
+		}
+		completedRaw, ok := sm["completedAt"].(string)
+		if !ok || completedRaw == "" {
+			continue
+		}
+		// stampElapsedMin is no-op when startedAt is missing/malformed —
+		// snapshot the cell before the call so we only count real updates.
+		before := sm["elapsedMin"]
+		stampElapsedMin(sm, completedRaw)
+		if !sameElapsedCell(before, sm["elapsedMin"]) {
+			changed++
+		}
+	}
+
+	// Recompute workflow-level totalElapsedMin from per-step values when we
+	// have any signal; otherwise fall back to (updatedAt - startedAt).
+	totalChanged := recomputeTotalElapsedFromSteps(raw)
+
+	if changed == 0 && !totalChanged {
+		out.NoOp = true
+		out.NoOpReason = "no_unfilled_elapsed"
+		return nil
+	}
+	raw["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+	return nil
+}
+
+// elapsedMinIsUnfilled returns true when the given JSON-decoded value should
+// be treated as "missing" by the backfill — null, absent, or numeric zero.
+// Any positive value is left alone (a previous backfill or a complete-step
+// mutator already stamped a real elapsed value).
+func elapsedMinIsUnfilled(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case float64:
+		return x == 0
+	case int:
+		return x == 0
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil {
+			return false
+		}
+		return f == 0
+	}
+	return false
+}
+
+// sameElapsedCell compares two elapsedMin cell values structurally. Used to
+// detect whether stampElapsedMin actually wrote a new value.
+func sameElapsedCell(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	af, aok := toFloat(a)
+	bf, bok := toFloat(b)
+	if aok && bok {
+		return af == bf
+	}
+	return false
+}
+
+func toFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case int:
+		return float64(x), true
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	}
+	return 0, false
+}
+
+// recomputeTotalElapsedFromSteps refreshes raw["totalElapsedMin"] from the
+// per-step elapsedMin values. Returns true when the value changed.
+//
+// Order of preference:
+//  1. Sum of all positive per-step elapsedMin values (matches what the
+//     operator just saw on each step).
+//  2. MAX(per-step completedAt) - startedAt at the workflow root, when (1)
+//     yielded zero. We deliberately avoid raw["updatedAt"] as the upper
+//     bound because backfill itself stamps updatedAt; using it conflates
+//     "time backfill ran" with "wall-clock spent on the feature" and
+//     overstates totalElapsedMin dramatically on workflows that have been
+//     idle for weeks before recovery.
+func recomputeTotalElapsedFromSteps(raw map[string]any) bool {
+	stepsRaw, _ := raw["steps"].([]any)
+	sum := 0.0
+	for _, s := range stepsRaw {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if f, ok := toFloat(sm["elapsedMin"]); ok && f > 0 {
+			sum += f
+		}
+	}
+	if sum == 0 {
+		// F-5 fallback: derive from workflow startedAt → MAX(per-step
+		// completedAt). Survives idle gaps because completedAt is only
+		// stamped when the orchestrator closed the step, not by backfill.
+		started, _ := raw["startedAt"].(string)
+		var maxCompleted string
+		for _, s := range stepsRaw {
+			sm, ok := s.(map[string]any)
+			if !ok {
+				continue
+			}
+			c, _ := sm["completedAt"].(string)
+			if c == "" {
+				continue
+			}
+			if maxCompleted == "" || c > maxCompleted { // RFC3339 strings sort lexicographically
+				maxCompleted = c
+			}
+		}
+		if started != "" && maxCompleted != "" {
+			startedT, err1 := time.Parse(time.RFC3339, started)
+			if err1 != nil {
+				startedT, err1 = time.Parse(time.RFC3339Nano, started)
+			}
+			completedT, err2 := time.Parse(time.RFC3339, maxCompleted)
+			if err2 != nil {
+				completedT, err2 = time.Parse(time.RFC3339Nano, maxCompleted)
+			}
+			if err1 == nil && err2 == nil {
+				delta := completedT.Sub(startedT).Minutes()
+				if delta > 0 {
+					sum = delta
+				}
+			}
+		}
+	}
+	current, _ := toFloat(raw["totalElapsedMin"])
+	if current == sum {
+		return false
+	}
+	raw["totalElapsedMin"] = sum
+	return true
+}
+
+// RecomputeCountersRaw recomputes totalSteps, completedSteps, updatedAt, and
+// currentStepId from the in-memory raw document. Called after every mutation
+// that alters the steps slice or step statuses (append-step, update-step,
+// complete-step, set-status, save-step). currentStepId is set to the stepId
+// of the first RUNNING or PENDING step after the last COMPLETED one, or empty
+// when all steps are in a terminal status.
+func RecomputeCountersRaw(raw map[string]any) {
 	stepsRaw := raw["steps"]
 	stepsSlice, _ := stepsRaw.([]any)
 	total := len(stepsSlice)
 	completed := 0
+	var currentStepID string
 	for _, s := range stepsSlice {
 		sm, ok := s.(map[string]any)
 		if !ok {
 			continue
 		}
-		if sm["status"] == StatusCompleted {
+		status, _ := sm["status"].(string)
+		if status == StatusCompleted {
 			completed++
+		} else if currentStepID == "" {
+			// First non-completed (non-terminal) step is the "current" one.
+			sid, _ := sm["stepId"].(string)
+			currentStepID = sid
 		}
 	}
 	raw["totalSteps"] = total
 	raw["completedSteps"] = completed
+	raw["currentStepId"] = currentStepID
 	raw["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
 }

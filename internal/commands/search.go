@@ -149,11 +149,8 @@ Examples:
 
 			// RETRO PR 6 §2.1: --quiet suppresses the staleness banner
 			// (parity with `workflow describe-step-type --quiet`).
-			if !quietFlag {
-				if s := git.CheckStaleness(gitRoot, project.LastSyncCommit); s.Stale {
-					output.Errf("%s", output.FormatStalenessWarning(s.CommitsBehind))
-				}
-			}
+			s := git.CheckStaleness(gitRoot, project.LastSyncCommit)
+			output.EmitStalenessWarningTo(os.Stderr, quietFlag, s.Stale, s.CommitsBehind)
 
 			results, err := ac.Client.SearchWorkspace(rootContext(cmd), project.WorkspaceID, query, limit, 0)
 			if err != nil {
@@ -192,6 +189,9 @@ Examples:
 	cmd.Flags().BoolVar(&allWorkspaces, "all-workspaces", false, "Search across all workspaces in the organization (mutually exclusive with --workspaces)")
 	cmd.Flags().Bool("json", false, "emit JSON")
 	cmd.Flags().String("save", "", "write JSON to <file> (implies --json)")
-	cmd.Flags().Bool("quiet", false, "suppress the staleness warning (parity with workflow read verbs)")
+	// RETRO PR 6 §2.1: routed through the shared helper so future
+	// evolution (BROWZER_QUIET=1 env, default-on under BROWZER_LLM) lives
+	// in one place — parity with deps/mentions/status/sync.
+	output.RegisterQuietFlag(cmd)
 	parent.AddCommand(cmd)
 }
