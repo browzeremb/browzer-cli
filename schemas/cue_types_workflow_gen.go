@@ -529,6 +529,16 @@ type TaskAgent struct {
 
 	SkillsLoaded []string `json:"skillsLoaded,omitempty"`
 
+	// First-class per-agent file ledger (TE2-T3.2, 2026-05-08). Closes
+	// the cargo-culted `files=<created>/<modified>` cursor convention by
+	// surfacing structured paths the orchestrator + code-review skill can
+	// read without re-discovering via diff. Mirrors the pre-existing
+	// shape on #DispatchRecord. Optional + default `[]` so existing
+	// workflow.json fixtures stay valid under v2.
+	FilesCreated []any/* CUE closed list */ `json:"filesCreated"`
+
+	FilesModified []any/* CUE closed list */ `json:"filesModified"`
+
 	Notes string `json:"notes,omitempty"`
 }
 

@@ -2493,6 +2493,19 @@
                             "type": "string"
                         }
                     },
+                    "filesCreated": {
+                        "description": "First-class per-agent file ledger (TE2-T3.2, 2026-05-08). Closes\nthe cargo-culted `files=<created>/<modified>` cursor convention by\nsurfacing structured paths the orchestrator + code-review skill can\nread without re-discovering via diff. Mirrors the pre-existing\nshape on #DispatchRecord. Optional + default `[]` so existing\nworkflow.json fixtures stay valid under v2.",
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "filesModified": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
                     "notes": {
                         "type": "string"
                     }

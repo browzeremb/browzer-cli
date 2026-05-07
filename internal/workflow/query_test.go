@@ -264,6 +264,58 @@ func TestQueryChangedFiles(t *testing.T) {
 	}
 }
 
+// TestQueryChangedFiles_AggregatesAgentLedger pins TE2-T3.2: when a TASK
+// step's #TaskAgent entries carry filesCreated[] / filesModified[] (the
+// first-class ledger), the changed-files query unions those paths into the
+// returned slice. Ensures the schema addition keeps downstream consumers
+// (code-review SCOPE_TIER, etc.) wired without re-discovering via diff.
+func TestQueryChangedFiles_AggregatesAgentLedger(t *testing.T) {
+	raw := map[string]any{
+		"steps": []any{
+			map[string]any{
+				"name":   "TASK",
+				"stepId": "STEP_01_TASK",
+				"task": map[string]any{
+					"execution": map[string]any{
+						"agents": []any{
+							map[string]any{
+								"role":          "platform-specialist",
+								"skill":         "browzer:execute-task",
+								"status":        "completed",
+								"filesCreated":  []any{"a.go", "b.go"},
+								"filesModified": []any{"c.go"},
+							},
+							map[string]any{
+								"role":          "go-specialist",
+								"skill":         "go-best-practices",
+								"status":        "completed",
+								"filesModified": []any{"a.go", "d.go"}, // a.go dedup
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	got, err := queryChangedFiles(raw)
+	if err != nil {
+		t.Fatalf("queryChangedFiles: %v", err)
+	}
+	files, ok := got.([]string)
+	if !ok {
+		t.Fatalf("expected []string, got %T", got)
+	}
+	want := []string{"a.go", "b.go", "c.go", "d.go"}
+	if len(files) != len(want) {
+		t.Fatalf("expected %v, got %v", want, files)
+	}
+	for i, f := range files {
+		if f != want[i] {
+			t.Errorf("files[%d]: expected %q, got %q", i, want[i], f)
+		}
+	}
+}
+
 // TestQueryDeferredScopeAdjustments asserts adjustments matching the
 // deferred-keyword regex are returned with the originating stepId; other
 // adjustments are excluded.

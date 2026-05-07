@@ -1053,9 +1053,107 @@ func TestRender_UnknownTemplate_IncludesNewTemplates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown template, got nil")
 	}
-	for _, known := range []string{"task-context", "task-evidence", "finding"} {
+	for _, known := range []string{"task-context", "task-evidence", "task-agent", "finding"} {
 		if !strings.Contains(err.Error(), known) {
 			t.Errorf("expected error to mention new template %q in known list, got: %v", known, err)
 		}
+	}
+}
+
+// ── task-agent fixtures ───────────────────────────────────────────────────────
+
+func TestRender_TaskAgent_PreDispatch(t *testing.T) {
+	payload := map[string]any{
+		"title": "Wave-aware dispatch",
+		"scope": []any{"packages/skills/skills/execute-task/references/dispatch-pattern.md"},
+		"explorer": map[string]any{
+			"skillsFound": []any{
+				map[string]any{"skill": "browzer:execute-task", "domain": "platform"},
+				map[string]any{"skill": "go-best-practices", "domain": "go"},
+			},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	step := Step{
+		StepID: "STEP_05_TASK_01",
+		Name:   StepTask,
+		Task:   json.RawMessage(raw),
+	}
+
+	out, err := Render(step, "task-agent")
+	if err != nil {
+		t.Fatalf("Render task-agent: %v", err)
+	}
+	for _, want := range []string{
+		"Task: Wave-aware dispatch",
+		"Scope (1 files):",
+		"Agents (pre-dispatch, 2 planned):",
+		"domain=platform skill=browzer:execute-task",
+		"domain=go skill=go-best-practices",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestRender_TaskAgent_PostDispatch(t *testing.T) {
+	payload := map[string]any{
+		"title": "Wave-aware dispatch",
+		"scope": []any{"a.go", "b.go"},
+		"execution": map[string]any{
+			"agents": []any{
+				map[string]any{
+					"role":          "platform-specialist",
+					"skill":         "browzer:execute-task",
+					"model":         "sonnet",
+					"status":        "completed",
+					"filesCreated":  []any{"a.go"},
+					"filesModified": []any{"b.go", "c.go"},
+				},
+				map[string]any{
+					"role":   "go-specialist",
+					"skill":  "go-best-practices",
+					"status": "running",
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	step := Step{
+		StepID: "STEP_05_TASK_01",
+		Name:   StepTask,
+		Task:   json.RawMessage(raw),
+	}
+
+	out, err := Render(step, "task-agent")
+	if err != nil {
+		t.Fatalf("Render task-agent: %v", err)
+	}
+	for _, want := range []string{
+		"Agents (2):",
+		"role=platform-specialist skill=browzer:execute-task model=sonnet status=completed files=+1/~2",
+		"role=go-specialist skill=go-best-practices model=(default) status=running files=+0/~0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestRender_TaskAgent_WrongStepType(t *testing.T) {
+	step := brainstormingStepFixture(t)
+	_, err := Render(step, "task-agent")
+	if err == nil {
+		t.Fatal("expected error for wrong step type, got nil")
+	}
+	if !strings.Contains(err.Error(), "task-agent") {
+		t.Errorf("expected error to mention template name, got: %v", err)
 	}
 }

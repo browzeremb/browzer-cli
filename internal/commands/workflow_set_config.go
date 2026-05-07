@@ -41,11 +41,13 @@ func registerWorkflowSetConfig(parent *cobra.Command) {
 					!errors.Is(bsErr, wf.ErrAlreadyExists) {
 					return fmt.Errorf("auto-bootstrap before set-config: %w", bsErr)
 				}
-				_, _ = fmt.Fprintf(
-					cmd.ErrOrStderr(),
-					"info: auto-bootstrapped workflow.json at %s (no file present)\n",
-					wfPath,
-				)
+				if !quietByDefaultUnderLLM(cmd) {
+					_, _ = fmt.Fprintf(
+						cmd.ErrOrStderr(),
+						"info: auto-bootstrapped workflow.json at %s (no file present)\n",
+						wfPath,
+					)
+				}
 			}
 
 			noLock, _ := cmd.Flags().GetBool("no-lock")

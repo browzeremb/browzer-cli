@@ -120,6 +120,12 @@ type Violation struct {
 	Field         string   `json:"field"`
 	AllowedFields []string `json:"allowedFields,omitempty"`
 	AllowedValues []string `json:"allowedValues,omitempty"`
+	// Scope tags whether this violation was introduced by the current
+	// patch ("patch") or was already present in the pre-mutation
+	// document ("existing"). Empty when the caller did not provide a
+	// before-state for diff tagging — preserves backward compatibility
+	// for callers that validate single payloads in isolation.
+	Scope string `json:"scope,omitempty"`
 }
 
 // internal — CUE compilation + @addedIn lookup table cached once per process.
@@ -639,6 +645,11 @@ func ValidateStep(stepJSON []byte, stepType string) ValidationResult {
 // FormatViolations renders ONLY the constraint failures. The fallback
 // (no constraint failure surfaced) preserves the historical noisy
 // output so operators don't lose information silently.
+//
+// When `Scope` is set on a violation (populated by TagViolationScopes),
+// it appears immediately after the code as `[scope=patch|existing]` so
+// callers can grep `[scope=patch]` to isolate violations introduced by
+// the current write.
 func FormatViolations(vs []Violation) string {
 	if len(vs) == 0 {
 		return ""
@@ -656,9 +667,43 @@ func FormatViolations(vs []Violation) string {
 		if path == "" {
 			path = "<root>"
 		}
-		fmt.Fprintf(&b, "%s: %s at @addedIn(%s): %s", path, v.Code, v.AddedIn, v.Message)
+		if v.Scope != "" {
+			fmt.Fprintf(&b, "%s: %s [scope=%s] at @addedIn(%s): %s", path, v.Code, v.Scope, v.AddedIn, v.Message)
+		} else {
+			fmt.Fprintf(&b, "%s: %s at @addedIn(%s): %s", path, v.Code, v.AddedIn, v.Message)
+		}
 	}
 	return b.String()
+}
+
+// TagViolationScopes annotates each violation in `after` with
+// `Scope = "patch"` when its (Path, Code, Message) signature does NOT
+// appear in `before`, and `Scope = "existing"` otherwise. Returns the
+// same slice for chaining; mutates entries in place.
+//
+// Use this immediately after a paired pre-mutation + post-mutation
+// validation (e.g. inside `wf.ApplyAndPersist`) to let downstream
+// renderers separate violations introduced by the current write from
+// pre-existing problems re-surfaced because the schema tightened.
+//
+// `before` may be nil (no pre-validation available) — in that case
+// every after violation is tagged `patch`, matching the conservative
+// default that anything surfaced after a write is "this write's
+// responsibility unless proven otherwise".
+func TagViolationScopes(before, after []Violation) []Violation {
+	beforeSet := make(map[string]struct{}, len(before))
+	for _, v := range before {
+		beforeSet[v.Path+"\x00"+v.Code+"\x00"+v.Message] = struct{}{}
+	}
+	for i := range after {
+		key := after[i].Path + "\x00" + after[i].Code + "\x00" + after[i].Message
+		if _, ok := beforeSet[key]; ok {
+			after[i].Scope = "existing"
+		} else {
+			after[i].Scope = "patch"
+		}
+	}
+	return after
 }
 
 // emptyDisjunctionRe matches CUE's empty-disjunction placeholder

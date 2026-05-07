@@ -28,10 +28,12 @@ func Render(step Step, template string) (string, error) {
 		return renderTaskContext(step)
 	case "task-evidence":
 		return renderTaskEvidence(step)
+	case "task-agent":
+		return renderTaskAgent(step)
 	case "finding":
 		return renderFinding(step, "")
 	default:
-		return "", fmt.Errorf("unknown template %q (known: execute-task, code-review, brainstorming, update-docs, generate-task, task-context, task-evidence, finding)", template)
+		return "", fmt.Errorf("unknown template %q (known: execute-task, code-review, brainstorming, update-docs, generate-task, task-context, task-evidence, task-agent, finding)", template)
 	}
 }
 
@@ -722,6 +724,106 @@ func renderTaskEvidence(step Step) (string, error) {
 			notes = append(notes, a.Kind+": "+a.Note)
 		}
 		fmt.Fprintf(&b, "Scope adjustments: %d (%s)\n", adj, strings.Join(notes, "; "))
+	}
+
+	return b.String(), nil
+}
+
+// ── task-agent ────────────────────────────────────────────────────────────────
+//
+// Per-agent dispatch context block for a TASK step. Consolidates the inline
+// prompt-context the orchestrator otherwise composes by hand. Two render
+// modes share the same template:
+//
+//   - PRE-DISPATCH (execution.agents[] empty): emits the planned dispatch
+//     slots derived from explorer.skillsFound[] so the orchestrator can wire
+//     up specialist subagents without re-reading the full TASK payload.
+//   - POST-DISPATCH (execution.agents[] populated): emits the live slate of
+//     specialists with role / skill / model / status / per-agent file
+//     counts (T3.2 first-class fields).
+//
+// Stays under ~150 tokens per task to keep dispatch prompts terse.
+
+type taskAgentEntry struct {
+	Role          string   `json:"role"`
+	Skill         string   `json:"skill"`
+	Model         string   `json:"model"`
+	Status        string   `json:"status"`
+	SkillsLoaded  []string `json:"skillsLoaded"`
+	FilesCreated  []string `json:"filesCreated"`
+	FilesModified []string `json:"filesModified"`
+	Notes         string   `json:"notes"`
+}
+
+type taskAgentExecution struct {
+	Agents []taskAgentEntry `json:"agents"`
+}
+
+type taskAgentPayload struct {
+	Title     string             `json:"title"`
+	Scope     []string           `json:"scope"`
+	Execution taskAgentExecution `json:"execution"`
+	Explorer  taskExplorer       `json:"explorer"`
+}
+
+func renderTaskAgent(step Step) (string, error) {
+	if step.Name != StepTask {
+		return "", fmt.Errorf("task-agent template requires a TASK step, got %q", step.Name)
+	}
+
+	var p taskAgentPayload
+	if len(step.Task) > 0 {
+		if err := json.Unmarshal(step.Task, &p); err != nil {
+			return "", fmt.Errorf("task-agent: decode payload: %w", err)
+		}
+	}
+
+	var b strings.Builder
+
+	title := p.Title
+	if title == "" {
+		title = "(none)"
+	}
+	fmt.Fprintf(&b, "Task: %s\n", title)
+
+	if len(p.Scope) == 0 {
+		fmt.Fprintf(&b, "Scope: (none)\n")
+	} else {
+		fmt.Fprintf(&b, "Scope (%d files): %s\n", len(p.Scope), strings.Join(p.Scope, "; "))
+	}
+
+	if len(p.Execution.Agents) == 0 {
+		if len(p.Explorer.SkillsFound) == 0 {
+			fmt.Fprintf(&b, "Agents (pre-dispatch): (no skills resolved by explorer)\n")
+			return b.String(), nil
+		}
+		fmt.Fprintf(&b, "Agents (pre-dispatch, %d planned):\n", len(p.Explorer.SkillsFound))
+		for _, sf := range p.Explorer.SkillsFound {
+			fmt.Fprintf(&b, "  - domain=%s skill=%s\n", sf.Domain, sf.Skill)
+		}
+		return b.String(), nil
+	}
+
+	fmt.Fprintf(&b, "Agents (%d):\n", len(p.Execution.Agents))
+	for _, a := range p.Execution.Agents {
+		role := a.Role
+		if role == "" {
+			role = "(none)"
+		}
+		skill := a.Skill
+		if skill == "" {
+			skill = "(none)"
+		}
+		model := a.Model
+		if model == "" {
+			model = "(default)"
+		}
+		status := a.Status
+		if status == "" {
+			status = "(none)"
+		}
+		fmt.Fprintf(&b, "  - role=%s skill=%s model=%s status=%s files=+%d/~%d\n",
+			role, skill, model, status, len(a.FilesCreated), len(a.FilesModified))
 	}
 
 	return b.String(), nil

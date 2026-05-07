@@ -378,10 +378,29 @@ func queryChangedFiles(raw map[string]any) (any, error) {
 		}
 		switch stringField(step, "name") {
 		case StepTask:
-			files := nestedMap(nestedMap(step, "task"), "execution")
-			files = nestedMap(files, "files")
+			execution := nestedMap(nestedMap(step, "task"), "execution")
+			files := nestedMap(execution, "files")
 			collected = appendStrings(collected, nestedSlice(files, "modified"))
 			collected = appendStrings(collected, nestedSlice(files, "created"))
+			// Top-level execution.filesCreated/filesModified — present
+			// since 2026-04-24, recorded by some specialists in lieu of
+			// the nested .files.* shape. Read both so the union is
+			// complete regardless of which shape the specialist chose.
+			collected = appendStrings(collected, nestedSlice(execution, "filesCreated"))
+			collected = appendStrings(collected, nestedSlice(execution, "filesModified"))
+			// TE2-T3.2 (2026-05-08): per-agent ledger on
+			// task.execution.agents[]. Each #TaskAgent now carries
+			// first-class filesCreated[] + filesModified[] so
+			// downstream consumers (this query, code-review) can read
+			// paths directly without re-discovering via diff.
+			for _, a := range nestedSlice(execution, "agents") {
+				agent, ok := a.(map[string]any)
+				if !ok {
+					continue
+				}
+				collected = appendStrings(collected, nestedSlice(agent, "filesCreated"))
+				collected = appendStrings(collected, nestedSlice(agent, "filesModified"))
+			}
 		case StepReceivingCodeReview:
 			dispatches := nestedSlice(nestedMap(step, "receivingCodeReview"), "dispatches")
 			for _, d := range dispatches {

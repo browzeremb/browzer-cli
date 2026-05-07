@@ -119,6 +119,61 @@ func WriteAudit(w io.Writer, a AuditLine) {
 	_, _ = w.Write([]byte(b.String()))
 }
 
+// AuditCompactPathMax is the operator-facing cap on the `path` value in the
+// audit line emitted by WriteAuditCompact. Keeps the path token under 60
+// chars so `verb=` / `validatedOk=` / `durable=` / `reason=` stay visible on
+// a typical terminal line even when the underlying file lives deep in
+// `/var/folders/.../T/...` test tempdirs or absolute project paths. The
+// structured AuditLine is unmodified — downstream tracker/Langfuse consumers
+// read AuditLine.Path directly via recordAuditEventBestEffort and still see
+// the full untruncated path.
+const AuditCompactPathMax = 60
+
+// auditCompactEllipsisRune marks where the path was elided. UTF-8 "…" is 3
+// bytes; the suffix-keep math accounts for that.
+const auditCompactEllipsisRune = "…"
+
+// WriteAuditCompact writes the audit line for operator-facing stderr emits,
+// shortening the `path` value to AuditCompactPathMax bytes (with a leading
+// "…" marker) when the full path would dominate the line. Every other field
+// is byte-identical to WriteAudit — so Node parsers anchored on
+// `validatedOk=`/`durable=`/`reason=` continue to work, and existing tests
+// that grep for those tokens stay green. Use for the operator-facing stderr
+// emit (workflow_mutator_helpers.emitAuditLine non-quiet path); the
+// structured tracker / Langfuse path uses AuditLine.Path directly and is
+// unaffected.
+//
+// Closes TE2-T4.3: long workflow paths used to bloat the operator's terminal
+// to 200+ chars per audit line; collapsing the path to its tail keeps the
+// line readable while preserving every diagnostic field downstream.
+func WriteAuditCompact(w io.Writer, a AuditLine) {
+	if len(a.Path) <= AuditCompactPathMax {
+		WriteAudit(w, a)
+		return
+	}
+	short := a
+	short.Path = shortenAuditPath(a.Path, AuditCompactPathMax)
+	WriteAudit(w, short)
+}
+
+// shortenAuditPath returns p truncated to maxLen total bytes by keeping the
+// rightmost suffix and prefixing the elision marker. Falls back to the
+// basename when even maxLen bytes won't accommodate the marker plus a
+// meaningful suffix. p is returned untouched when len(p) ≤ maxLen.
+func shortenAuditPath(p string, maxLen int) string {
+	if len(p) <= maxLen {
+		return p
+	}
+	keep := maxLen - len(auditCompactEllipsisRune)
+	if keep <= 0 {
+		if i := strings.LastIndex(p, "/"); i >= 0 && i < len(p)-1 {
+			return auditCompactEllipsisRune + "/" + p[i+1:]
+		}
+		return auditCompactEllipsisRune
+	}
+	return auditCompactEllipsisRune + p[len(p)-keep:]
+}
+
 // auditQuote renders a value safe for the key=value audit line.
 // If the value contains a space, '=', '"', or starts/ends with whitespace,
 // it is wrapped in double quotes with embedded quotes/backslashes escaped.

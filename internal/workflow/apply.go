@@ -441,6 +441,18 @@ func ApplyAndPersist(path, verb string, args MutatorArgs, awaitDurability bool) 
 		raw = map[string]any{}
 	}
 
+	// Pre-mutation validation snapshot (best-effort). Used downstream
+	// by schema.TagViolationScopes to mark each post-mutation
+	// violation as `[scope=patch]` (introduced by THIS write) or
+	// `[scope=existing]` (already present in the on-disk document).
+	// Failures here are silently ignored — a malformed pre-state
+	// degrades to "tag everything as patch", matching the conservative
+	// default and preserving the historic non-tagged output.
+	var beforeViolations []schema.Violation
+	if len(data) > 0 {
+		beforeViolations = schema.ValidateWorkflow(data).Violations
+	}
+
 	// Populate WorkflowDir so mutators can write side-channel cache files
 	// (TASK_05 .browzer/active-step). Callers that set this explicitly win.
 	if args.WorkflowDir == "" {
@@ -516,8 +528,9 @@ func ApplyAndPersist(path, verb string, args MutatorArgs, awaitDurability bool) 
 	default:
 		validation := schema.ValidateWorkflow(encoded)
 		if !validation.Valid {
+			tagged := schema.TagViolationScopes(beforeViolations, validation.Violations)
 			return ApplyResult{}, fmt.Errorf("schema validation failed:\n%s",
-				schema.FormatViolations(validation.Violations))
+				schema.FormatViolations(tagged))
 		}
 	}
 

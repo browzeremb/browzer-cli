@@ -57,11 +57,13 @@ seeded file and run through the daemon FIFO + standalone fallback as usual.`,
 				}
 				return err
 			}
-			_, _ = fmt.Fprintf(
-				cmd.OutOrStdout(),
-				"workflow init: seeded %s (featureId=%s)\n",
-				wfPath, featureID,
-			)
+			if !quietByDefaultUnderLLM(cmd) {
+				_, _ = fmt.Fprintf(
+					cmd.OutOrStdout(),
+					"workflow init: seeded %s (featureId=%s)\n",
+					wfPath, featureID,
+				)
+			}
 			return nil
 		},
 	}

@@ -718,7 +718,10 @@ func runStandaloneAndAudit(cmd *cobra.Command, wfPath, verb string, args wf.Muta
 func emitAuditLine(cmd *cobra.Command, stderr io.Writer, line wf.AuditLine) {
 	quiet, src := auditQuietSource(cmd)
 	if !quiet {
-		wf.WriteAudit(stderr, line)
+		// User-facing emit: cap to ~120 chars by elision-marking the path
+		// value in-place. Structured consumers (tracker / Langfuse) read
+		// `line.Path` directly below and still see the full path.
+		wf.WriteAuditCompact(stderr, line)
 		return
 	}
 	if isLLMGate(src) {

@@ -41,6 +41,18 @@ var workflowCmd = &cobra.Command{
 		"There is no `patch step` / `patch <stepId>` verb. Generic mutations of\n" +
 		"a step's payload always go through `patch --jq '<expr>'`.\n" +
 		"\n" +
+		"--async fence pattern (TE2-T4.2):\n" +
+		"  When a phase pipeline emits N independent mutations followed by ONE\n" +
+		"  durability checkpoint, prefer the `--async … --async … --async … --await`\n" +
+		"  fence over four `--await` calls. The first three calls return as soon as\n" +
+		"  the daemon enqueues the write; the trailing `--await` blocks until the\n" +
+		"  full queue is fsynced, amortising the parent-dir fsync cost across the\n" +
+		"  batch. A typical 4-step phase emit drops from ~120ms to ~35ms wall-clock.\n" +
+		"  Only use when every async mutation is independent of the next — if step N+1\n" +
+		"  reads what step N just wrote, the trailing await must move forward to\n" +
+		"  cover the dependency. The corresponding skill cheat-sheet lives in\n" +
+		"  `packages/skills/skills/orchestrate-task-delivery/references/pipeline-phases.md`.\n" +
+		"\n" +
 		"Run `browzer workflow [command] --help` for subcommand details.",
 }
 
@@ -58,7 +70,7 @@ func registerWorkflow(parent *cobra.Command) {
 	// Write-mode flags. Mutually exclusive: --async, --sync, --await. When
 	// none is set, resolveWriteMode falls through to config + default. Read
 	// verbs ignore these flags.
-	cmd.PersistentFlags().Bool("async", false, "send mutation through the daemon and return immediately (default mode)")
+	cmd.PersistentFlags().Bool("async", false, "send mutation through the daemon and return immediately (default mode). Fence pattern: 3 --async + 1 --await per phase amortises fsync cost — see `browzer workflow --help`.")
 	cmd.PersistentFlags().Bool("sync", false, "skip the daemon and apply the mutation in-process (historic behaviour)")
 	cmd.PersistentFlags().Bool("await", false, "send mutation through the daemon and block until durable (file + parent dir fsync)")
 	// --quiet suppresses the per-mutation audit line on success. Errors and
