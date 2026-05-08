@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +73,78 @@ func TestSaveProjectConfig_PreservesCreatedAt(t *testing.T) {
 	}
 	if loaded.CreatedAt != "2025-12-25T00:00:00Z" {
 		t.Fatalf("CreatedAt not preserved: %s", loaded.CreatedAt)
+	}
+}
+
+func TestEnsureBrowzerGitignore_CreatesFileWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureBrowzerGitignore(dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf(".gitignore not created: %v", err)
+	}
+	for _, entry := range BrowzerGitignoreEntries {
+		if !strings.Contains(string(data), entry) {
+			t.Fatalf("missing entry %q in:\n%s", entry, data)
+		}
+	}
+}
+
+func TestEnsureBrowzerGitignore_AppendsMissingOnly(t *testing.T) {
+	dir := t.TempDir()
+	existing := "node_modules/\n.browzer/\n"
+	path := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureBrowzerGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	if strings.Count(got, ".browzer/") != 1 {
+		t.Fatalf(".browzer/ duplicated:\n%s", got)
+	}
+	if !strings.Contains(got, "docs/browzer/feat-*/staging/") {
+		t.Fatalf("staging entry not appended:\n%s", got)
+	}
+	if !strings.HasPrefix(got, existing) {
+		t.Fatalf("existing content not preserved:\n%s", got)
+	}
+}
+
+func TestEnsureBrowzerGitignore_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureBrowzerGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+
+	if err := EnsureBrowzerGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+
+	if string(first) != string(second) {
+		t.Fatalf("file changed on second call:\nbefore=%q\nafter=%q", first, second)
+	}
+}
+
+func TestEnsureBrowzerGitignore_NoTrailingNewlineHandled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("node_modules/"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureBrowzerGitignore(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	got := string(data)
+	if !strings.Contains(got, "node_modules/\n.browzer/") {
+		t.Fatalf("missing newline before appended entries:\n%s", got)
 	}
 }

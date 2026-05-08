@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/auth"
 	"github.com/browzeremb/browzer-cli/internal/config"
 	"github.com/browzeremb/browzer-cli/internal/daemon"
@@ -267,6 +269,12 @@ func daemonStartCmd() *cobra.Command {
 			// who revokes via the web UI mid-session stops flushing within
 			// the next tick without needing a daemon restart.
 			if tr != nil {
+				// FR-13: drain any events the hooks queued to
+				// `~/.browzer/pending-events.jsonl` while the daemon was
+				// down. Synchronous at boot — file is bounded at 10MB.
+				if err := drainPendingEvents(tr); err != nil {
+					_, _ = fmt.Fprintln(cmd.OutOrStderr(), "warn: drain pending events:", err)
+				}
 				creds := auth.LoadCredentials()
 				if creds != nil && creds.Server != "" {
 					sender := telemetry.NewSender(
@@ -446,7 +454,12 @@ func checkStaleDaemon() error {
 // TokensEconomized RPC method (consumed by the dashboard KPI card via
 // apps/api `GET /api/telemetry/tokens-economized`).
 func defaultDaemonDeps(srv *daemon.Server) (daemon.Deps, *tracker.Tracker, error) {
-	manifests := daemon.NewManifestCache(config.ManifestCachePath)
+	// FR-4: manifest cache recovers from missing files via a single-flight
+	// background fetch when credentials are available. When the daemon has
+	// no credentials (operator never ran `browzer login`), the fallback
+	// is the no-fetcher constructor — recovery defers to the next
+	// user-driven `browzer init` / `browzer sync`.
+	manifests := newManifestCacheWithRecovery()
 	sessions := daemon.NewSessionCache(config.SessionCachePath)
 
 	tr, err := tracker.Open(config.HistoryDBPath())
@@ -472,20 +485,21 @@ func defaultDaemonDeps(srv *daemon.Server) (daemon.Deps, *tracker.Tracker, error
 				return map[string]any{"ok": true}, nil
 			}
 			if err := tr.Record(tracker.Event{
-				TS:           p.TS,
-				Source:       p.Source,
-				Command:      p.Command,
-				PathHash:     p.PathHash,
-				InputBytes:   p.InputBytes,
-				OutputBytes:  p.OutputBytes,
-				SavedTokens:  p.SavedTokens,
-				SavingsPct:   p.SavingsPct,
-				FilterLevel:  p.FilterLevel,
-				ExecMs:       p.ExecMs,
-				WorkspaceID:  p.WorkspaceID,
-				SessionID:    p.SessionID,
-				Model:        p.Model,
-				FilterFailed: p.FilterFailed,
+				TS:               p.TS,
+				Source:           p.Source,
+				Command:          p.Command,
+				PathHash:         p.PathHash,
+				InputBytes:       p.InputBytes,
+				OutputBytes:      p.OutputBytes,
+				SavedTokens:      p.SavedTokens,
+				SavingsPct:       p.SavingsPct,
+				FilterLevel:      p.FilterLevel,
+				ExecMs:           p.ExecMs,
+				WorkspaceID:      p.WorkspaceID,
+				SessionID:        p.SessionID,
+				Model:            p.Model,
+				FilterFailed:     p.FilterFailed,
+				EstimationMethod: p.EstimationMethod,
 			}); err != nil {
 				return map[string]any{"ok": false, "error": err.Error()}, nil
 			}
@@ -594,4 +608,154 @@ func workspaceRelativePath(workspaceID, abs string) (string, bool) {
 		dir = parent
 	}
 	return "", false
+}
+
+// pendingEventsPath returns `~/.browzer/pending-events.jsonl`. Empty
+// string when the home dir cannot be resolved (the caller treats this as
+// "skip drain — no pending file possible").
+func pendingEventsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".browzer", "pending-events.jsonl")
+}
+
+// drainPendingEvents replays events the hooks queued to
+// `~/.browzer/pending-events.jsonl` while the daemon was down (FR-13).
+// Each line is one JSON-encoded daemon.TrackParams payload.
+//
+// F-003: rename-then-drain. The pending-events file is renamed to a
+// uniquely-named drain file BEFORE scanning, so concurrent hook
+// appenders create a fresh empty file via O_CREAT|O_APPEND and we never
+// lose events to a "read-then-truncate" race. The renamed file is
+// unlinked at the end (not truncated). Per-line tracker errors are
+// logged + skipped so a single bad event doesn't prevent the rest from
+// draining. If `tr` is nil the drain is a no-op.
+//
+// F-019: only log "drained N pending events" when N > 0; steady-state
+// boots don't pollute stderr.
+func drainPendingEvents(tr *tracker.Tracker) error {
+	if tr == nil {
+		return nil
+	}
+	path := pendingEventsPath()
+	if path == "" {
+		return nil
+	}
+
+	// Atomic rename to a unique drain filename. Concurrent hook appenders
+	// using O_CREAT|O_APPEND on the original path will create a fresh
+	// empty file; their writes go there, not the renamed file we drain.
+	drainPath := fmt.Sprintf("%s.drain-%d", path, time.Now().UnixNano())
+	if err := os.Rename(path, drainPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// No pending file → nothing to drain. Quiet per F-019.
+			return nil
+		}
+		return fmt.Errorf("rename pending-events: %w", err)
+	}
+	// Always unlink at end — we own this file post-rename.
+	defer func() { _ = os.Remove(drainPath) }()
+
+	f, err := os.Open(drainPath)
+	if err != nil {
+		return fmt.Errorf("open drain file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var (
+		drained int
+		skipped int
+	)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var p daemon.TrackParams
+		if err := json.Unmarshal(line, &p); err != nil {
+			skipped++
+			_, _ = fmt.Fprintf(os.Stderr, "warn: skipping corrupt pending-events line: %v\n", err)
+			continue
+		}
+		if err := tr.Record(tracker.Event{
+			TS:               p.TS,
+			Source:           p.Source,
+			Command:          p.Command,
+			PathHash:         p.PathHash,
+			InputBytes:       p.InputBytes,
+			OutputBytes:      p.OutputBytes,
+			SavedTokens:      p.SavedTokens,
+			SavingsPct:       p.SavingsPct,
+			FilterLevel:      p.FilterLevel,
+			ExecMs:           p.ExecMs,
+			WorkspaceID:      p.WorkspaceID,
+			SessionID:        p.SessionID,
+			Model:            p.Model,
+			FilterFailed:     p.FilterFailed,
+			EstimationMethod: p.EstimationMethod,
+		}); err != nil {
+			// F-003: per-line tracker error → log + skip, keep
+			// draining the rest. Don't abort the whole drain (which
+			// would leave the renamed file orphaned, since unlink
+			// runs in defer regardless).
+			skipped++
+			_, _ = fmt.Fprintf(os.Stderr, "warn: skipping pending-events line (tracker error): %v\n", err)
+			continue
+		}
+		drained++
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan pending-events: %w", err)
+	}
+
+	// F-019: only log when N > 0 to avoid stderr noise on steady-state boots.
+	if drained > 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "drained %d pending events", drained)
+		if skipped > 0 {
+			_, _ = fmt.Fprintf(os.Stderr, " (%d skipped)", skipped)
+		}
+		_, _ = fmt.Fprintln(os.Stderr)
+	} else if skipped > 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "drained 0 pending events (%d skipped)\n", skipped)
+	}
+	return nil
+}
+
+// newManifestCacheWithRecovery wires the daemon's manifest cache with a
+// best-effort API-backed FetchFn (FR-4). When credentials are unavailable
+// the cache falls back to the legacy no-fetcher behaviour — operator must
+// run `browzer init` / `browzer sync` to repopulate manually.
+func newManifestCacheWithRecovery() *daemon.ManifestCache {
+	// F-014: load credentials INSIDE the fetcher closure on every
+	// invocation so a `browzer login` after daemon start is picked up
+	// without a daemon restart. Boot-time creds are advisory only — we
+	// still install the fetch path even when not yet logged in.
+	fetch := daemon.FetchFn(func(ctx context.Context, workspaceID string) (*daemon.Manifest, error) {
+		creds := auth.LoadCredentials()
+		if creds == nil || creds.Server == "" || creds.AccessToken == "" {
+			return nil, errors.New("no credentials; run `browzer login`")
+		}
+		client := api.NewClient(creds.Server, creds.AccessToken, 0)
+		wm, err := client.GetWorkspaceManifest(ctx, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		// Re-marshal/unmarshal to convert api.WorkspaceManifest →
+		// daemon.Manifest. JSON shapes are identical (matches
+		// packages/cli/internal/api/types.go: WorkspaceManifest).
+		body, err := json.Marshal(wm)
+		if err != nil {
+			return nil, err
+		}
+		var m daemon.Manifest
+		if err := json.Unmarshal(body, &m); err != nil {
+			return nil, err
+		}
+		return &m, nil
+	})
+	return daemon.NewManifestCacheWithFetch(config.ManifestCachePath, fetch)
 }

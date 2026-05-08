@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
@@ -89,6 +90,16 @@ Examples:
 			// is 0 — agents can branch on `staleness.stale` directly.
 			staleness := git.CheckStaleness(gitRoot, project.LastSyncCommit)
 
+			// FR-3: surface manifest-cache presence so skills can branch
+			// on it. The manifest backs aggressive read filtering — when
+			// missing, the daemon downgrades aggressive → minimal silently.
+			manifestCachePresent := false
+			if path := config.ManifestCachePath(project.WorkspaceID); path != "" {
+				if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 0 {
+					manifestCachePresent = true
+				}
+			}
+
 			payload := map[string]any{
 				"user":              map[string]string{"id": creds.UserID},
 				"organization":      map[string]string{"id": creds.OrganizationID},
@@ -97,10 +108,11 @@ Examples:
 				"tokenExpiresHuman": formatExpiry(creds.ExpiresAt),
 				"workspace":         workspacePayload,
 				"staleness": map[string]any{
-					"indexedCommit": project.LastSyncCommit,
-					"workingCommit": staleness.CurrentHead,
-					"commitsBehind": staleness.CommitsBehind,
-					"stale":         staleness.Stale,
+					"indexedCommit":        project.LastSyncCommit,
+					"workingCommit":        staleness.CurrentHead,
+					"commitsBehind":        staleness.CommitsBehind,
+					"stale":                staleness.Stale,
+					"manifestCachePresent": manifestCachePresent,
 				},
 			}
 			if usage != nil {
@@ -115,6 +127,7 @@ Examples:
 				staleness,
 				ws.FileCount,
 				creds.ExpiresAt,
+				manifestCachePresent,
 			)
 			payload["recommendations"] = recommendations
 
@@ -268,8 +281,17 @@ func buildStatusRecommendationsFromStaleness(
 	s git.Staleness,
 	fileCount int,
 	tokenExpiresAt string,
+	manifestCachePresent bool,
 ) []map[string]string {
 	recs := []map[string]string{}
+
+	if !manifestCachePresent {
+		recs = append(recs, map[string]string{
+			"kind":   "missing_manifest_cache",
+			"action": "browzer workspace sync",
+			"reason": "workspace manifest cache is missing — aggressive read filtering will downgrade to minimal until the next sync",
+		})
+	}
 
 	if s.Stale {
 		recs = append(recs, map[string]string{

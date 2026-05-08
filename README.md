@@ -35,9 +35,28 @@ Designed to be agent-friendly: every read command supports `--json` and `--save 
 >
 > Or run `browzer plugin` at any time to reprint these instructions.
 
-## Token Economy (v0.8.0)
+## Token Economy (v2.0.0 — measured / estimated / counterfactual)
 
-When paired with the Claude Code plugin, `browzer read` replaces built-in `Read`/`Glob`/`Grep` tool calls with daemon-filtered equivalents. Savings reported by `browzer gain` on medium TypeScript/Go repos (numbers below use the calibrated per-language tokenizer shipped in v1.0.3 — see "How `savedTokens` is calculated" below):
+When paired with the Claude Code plugin, the daemon and the plugin's hook guards observe Claude Code's tool calls and record the realized token savings into a local SQLite tracker. As of v2.0.0 the tracker classifies every event by **estimation method** (`measured | estimated | counterfactual | unknown`) so `browzer gain` can report adoption as a meaningful ratio rather than a single ghost total.
+
+> Note: the v1 (2026-04-15) Read-rewrite path was reverted in 2026-04-16 because rewriting `tool_input.file_path` broke `Edit` round-trips. The current Read hook is **PostToolUse, advisory-only** — it observes the filtered output bytes after the tool ran, never substitutes its input.
+
+**Sources observed**:
+
+| Source | What it tracks | Method |
+|---|---|---|
+| `hook-read` | Claude Code `Read` calls | measured (filtered output bytes) for ≥40 KB files; estimated otherwise |
+| `hook-grep` | Claude Code `Grep` calls | measured (actual tool output bytes) |
+| `hook-glob` | Claude Code `Glob` calls | measured in soft-mode; counterfactual (manifest-derived) in block-mode |
+| `hook-cli-explore` | `browzer explore` invoked by the agent via Bash | measured |
+| `hook-cli-search` | `browzer search` invoked by the agent via Bash | measured |
+| `hook-cli-deps` | `browzer deps` invoked by the agent via Bash | measured |
+| `hook-cli-ask` | `browzer ask` invoked by the agent via Bash | measured |
+| `hook-run` | `browzer run <cmd>` proxy — compresses stdout from git / vitest / turbo / go test / cargo test / biome / tsc before the LLM sees it | measured |
+| `wasted-grep` | A `Grep` that the plugin would have rewritten to `browzer explore` | counterfactual |
+| `wasted-find` | A `Bash(find ...)` that the plugin would have rewritten to `browzer explore` / `browzer deps` | counterfactual |
+
+Savings reported by `browzer gain` on medium TypeScript/Go repos (numbers below use the calibrated per-language tokenizer shipped in v1.0.3 — see "How `savedTokens` is calculated" below):
 
 | Operation                | Standard | browzer `read` (`--filter auto`) | Savings |
 | ------------------------ | -------: | -------------------------------: | ------: |
@@ -195,13 +214,24 @@ Introduced in v0.8.0 to reduce token burn when Claude Code reads files, globs, o
 
 | Command                               | Purpose                                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `browzer run <cmd> [--no-filter]`     | Run any shell command and compress its stdout through a family-specific filter before returning it to the LLM. Supports git (status/log/diff/push/pull), vitest, pnpm turbo test, go test, cargo test, biome, and tsc. Non-zero exits return raw output unchanged. `--no-filter` disables compression. The plugin's `PreToolUse(Bash)` hook auto-rewrites these command families to `browzer run <cmd>`. |
 | `browzer read <path>`                 | Read a file with AST filter (`none\|minimal\|aggressive\|auto`). `auto` uses the manifest      |
 | `browzer daemon start [--background]` | Start the Unix-socket JSON-RPC daemon (hot path for `read`, tracking, session cache)           |
 | `browzer daemon status`               | Health: uptime, queue length, tracker DB path                                                  |
 | `browzer daemon stop`                 | Graceful shutdown                                                                              |
-| `browzer gain [--since 7d]`           | Tabular token-savings report. `--ultra` gives a one-line summary                               |
+| `browzer gain [--since 7d]`           | Tabular token-savings report. `--ultra` gives a one-line summary. New: `--by method` groups by `measured\|estimated\|counterfactual\|unknown`; `--adoption` prints the adoption ratio `SUM(saved \| measured+estimated+counterfactual) / ABS(SUM(wasted))` |
 | `browzer config <key> [value]`        | Get/set persisted config. Keys: `tracking`, `hook`, `telemetry`, `daemon.idle_timeout_seconds` |
 | `browzer plugin`                      | Print marketplace install instructions (the plugin is installed from **inside** Claude Code)   |
+
+#### Staleness signals on `browzer status --json`
+
+`browzer status --json` exposes a `staleness` block with the daemon's view of its caches. Notable fields:
+
+- `staleness.manifestCachePresent` (bool) — `true` iff the workspace manifest is currently cached on disk under `~/.browzer/manifests/`. `false` means the next Glob block-mode call will fall back to soft-mode and the next aggressive `Read` will downgrade to minimal until the manifest is re-pulled. Surfaces what was previously a silent failure mode.
+
+#### `~/.browzer/pending-events.jsonl` (durability)
+
+When the daemon is unreachable (mid-respawn, post-crash, or never started), hook guards append failed `Track` payloads — one JSON line per event, mode `0600` — to `~/.browzer/pending-events.jsonl`. On the next `browzer daemon start`, the daemon **renames** the file to `pending-events.jsonl.draining` (under a sidecar `pending-events.jsonl.lock` acquired with `O_CREAT|O_EXCL`), drops the lock, and replays the renamed file. Hooks landing during the drain append to a fresh `pending-events.jsonl` rather than blocking. Bounded at 10 MB by hook-side rotation. Successful `Track` calls bypass the JSONL entirely — the queue is the failure path only.
 
 ### Workflow state (`docs/browzer/<feat>/workflow.json`)
 
@@ -292,7 +322,7 @@ Run `/reload-plugins` inside Claude Code after editing a SKILL.
 
 ### What the plugin wires up
 
-- **Hooks** (`hooks/guards/`) — `PreToolUse` for `Read` (rewrites to a filtered daemon path), `Glob` (blocks sensitive patterns), `Grep` (suggests `browzer explore`), and `Bash` (rewrites `find`/`grep` invocations). Plus a `SessionStart` hook that auto-starts the daemon and registers the session's model with the tracker.
+- **Hooks** (`hooks/guards/`) — `PreToolUse` for `Read` (rewrites to a filtered daemon path), `Glob` (blocks sensitive patterns), `Grep` (suggests `browzer explore`), and `Bash` (rewrites `find`/`grep` invocations and auto-rewrites git / vitest / turbo / go test / cargo test / biome / tsc to `browzer run <cmd>` for stdout compression). Plus a `PostToolUse(Bash)` hook (`browzer-postuse-run.mjs`) that injects top-5 `additionalContext` entries when `browzer explore`/`search`/`deps`/`ask` returns more than 10 JSON entries. Plus a `SessionStart` hook that auto-starts the daemon and registers the session's model with the tracker.
 - **Skills** (`skills/`) — installable slash-commands for RAG workflows, ops, and tooling.
 - **Agents** (`agents/`) — long-running specialist agents (the Browzer monorepo ships a `browzer` agent that uses the CLI for deep search).
 

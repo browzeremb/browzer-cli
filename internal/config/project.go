@@ -13,8 +13,9 @@ import (
 const ProjectConfigVersion = 1
 
 // ProjectConfig is the contents of <repo>/.browzer/config.json. The
-// file is committed to the repo so the workspace id can be shared
-// across machines.
+// `.browzer/` directory is gitignored, so this file is local to each
+// machine — re-run `browzer init` (or `workspace relink`) on a fresh
+// clone to repopulate it.
 type ProjectConfig struct {
 	Version        int    `json:"version"`
 	WorkspaceID    string `json:"workspaceId"`
@@ -88,25 +89,44 @@ func SaveProjectConfig(gitRoot string, cfg *ProjectConfig) error {
 	return nil
 }
 
-// AddCacheDirToGitignore appends `.browzer/.cache/` to <gitRoot>/.gitignore
-// if not already present. Idempotent.
-func AddCacheDirToGitignore(gitRoot string) error {
-	const entry = ".browzer/.cache/"
+// BrowzerGitignoreEntries are the patterns `browzer init` ensures are
+// present in <gitRoot>/.gitignore. The `.browzer/` directory is fully
+// local (caches, machine-specific config). Per-feature `staging/` dirs
+// hold transient phase artifacts staged for `save-step` autosave; the
+// surrounding `docs/browzer/feat-*/` itself stays tracked.
+var BrowzerGitignoreEntries = []string{
+	".browzer/",
+	"docs/browzer/feat-*/staging/",
+}
+
+// EnsureBrowzerGitignore appends any missing entries from
+// BrowzerGitignoreEntries to <gitRoot>/.gitignore. Idempotent.
+func EnsureBrowzerGitignore(gitRoot string) error {
 	path := filepath.Join(gitRoot, ".gitignore")
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == entry {
-			return nil // already present
+
+	present := make(map[string]bool, len(BrowzerGitignoreEntries))
+	for line := range strings.SplitSeq(string(data), "\n") {
+		present[strings.TrimSpace(line)] = true
+	}
+
+	var missing []string
+	for _, entry := range BrowzerGitignoreEntries {
+		if !present[entry] {
+			missing = append(missing, entry)
 		}
 	}
-	// Append (with leading newline if file doesn't end with one).
+	if len(missing) == 0 {
+		return nil
+	}
+
 	prefix := ""
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		prefix = "\n"
 	}
-	out := append(data, []byte(prefix+entry+"\n")...)
+	out := append(data, []byte(prefix+strings.Join(missing, "\n")+"\n")...)
 	return os.WriteFile(path, out, 0o644)
 }

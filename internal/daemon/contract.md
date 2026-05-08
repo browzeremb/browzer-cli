@@ -305,3 +305,123 @@ BEFORE sending the first `WorkflowMutate` of the run.
 - A v1 CLI sending `WorkflowMutate` to a v2 daemon: the daemon-side guard catches the missing `protocolVersion` field (default 0 ≠ 2) and rejects with `-32602`. The v1 CLI surfaces the error and exits non-zero — it predates the fallback wiring, so it cannot recover. This is acceptable: the CLI binary in question is the older one, and the operator-visible failure points at the upgrade requirement. Document forces the operator to update.
 
 **`WorkflowMutate` change (v2, 2026-05-04):** the request gains a required `protocolVersion: int` field. Older daemons that have not been recompiled silently dropped the field via JSON unknown-field tolerance, so OLD-CLI ↔ OLD-DAEMON pairings keep working — but a NEW CLI ↔ OLD DAEMON sees a `method_not_found: Daemon.Version` from the preflight and falls back to standalone before any `WorkflowMutate` is sent.
+
+---
+
+## EstimationMethod field (Token Economy v2.0.0, 2026-05-07)
+
+`Track.params.estimationMethod` and the corresponding SQLite column
+`events.estimation_method` classify how `savedTokens` was derived. Optional
+on the wire; NULL on disk for legacy rows.
+
+| Value | Meaning |
+|---|---|
+| `"measured"` | Token delta computed from the calibrated chars-per-token table against actual filtered output bytes. |
+| `"estimated"` | Token delta inferred without filter execution (e.g. hook short-circuited). |
+| `"counterfactual"` | Comparison against an alternative path that did not run (planning / what-if). |
+| `"unknown"` | Caller couldn't classify — distinct from omitting the field, which means "legacy / pre-v2 caller". |
+
+**Wire path** (`Track.params`):
+
+```jsonc
+{
+  "ts": "...",
+  "savedTokens": 4800,
+  "estimationMethod": "measured"  // optional; omitted by older clients
+}
+```
+
+**Storage**: `events.estimation_method TEXT NULL` — added by the daemon's
+boot-time migration (`tracker.ensureEstimationMethodColumn`); idempotent
+across restarts via `PRAGMA table_info` probe.
+
+**Aggregation**: `tracker.UnsentBuckets` includes `estimation_method` in
+the bucket key, so two rows with different methods never coalesce.
+`tracker.QueryAggregated(since, "method")` groups the gain report by
+method (FR-9; new `method` value joins the existing `source | command |
+filter | model | session` set in `groupColumn`).
+
+**Backward compatibility**:
+
+- A pre-v2 CLI sending `Track` to a v2 daemon: omits the field → daemon
+  records NULL → bucket has `estimationMethod: null`.
+- A v2 CLI sending `Track` to a pre-v2 daemon: silently dropped via JSON
+  unknown-field tolerance → no observable failure mode (daemon records
+  NULL by virtue of never receiving the value).
+- A v2 daemon opening a pre-v2 history.db: column is added at boot;
+  pre-existing rows scan as NULL.
+
+---
+
+## Pending events durability (FR-13, 2026-05-07)
+
+Events are appended to `pending-events.jsonl` ONLY when the daemon
+`Track` JSON-RPC fails (catch branch in hook guards) — typically when
+the daemon is mid-respawn or unreachable. Successful Track calls bypass
+the JSONL queue. The drain on next daemon boot replays only the queued
+failures.
+
+Rationale: always-append-before-RPC was rejected because the per-event
+`fs.appendFileSync` penalty on hot paths (every Bash, every Read ≥40KB)
+exceeded the budget for the marginal durability gain.
+
+**File format**:
+
+- Path: `~/.browzer/pending-events.jsonl` (mode `0600`).
+- One line per event: a JSON-encoded `daemon.TrackParams` payload.
+- Bounded at 10 MB by hook-side rotation (oldest lines truncated when
+  the file exceeds the cap). Rotation (stat+rename) is guarded by a
+  sidecar lockfile (`pending-events.jsonl.lock`, `O_CREAT|O_EXCL`) to
+  serialize concurrent rotations across processes; the append itself
+  remains lock-free, relying on POSIX `O_APPEND` atomicity for writes
+  ≤ PIPE_BUF.
+
+**Drain semantics** (daemon side, on every `daemon start`):
+
+1. Open the file (or skip if missing → log `drained 0 pending events`).
+2. Acquire `flock(LOCK_EX)` for the duration of the drain.
+3. Scan line-by-line; for each parsed event call `tracker.Record(...)`.
+4. Corrupt lines are warn-logged and skipped without aborting the drain.
+5. On all-success: `Truncate(0)` and log `drained N pending events`.
+6. On a tracker `Record` error mid-drain: stop, leave the file as-is.
+   The next boot retries.
+
+**What happens when the daemon never boots**:
+
+- Events accumulate in the JSONL file up to the 10 MB cap.
+- The hooks operate normally: filter/track decisions still log savings;
+  `browzer gain` simply lacks the in-flight events until the next drain.
+- Operator recovery: `browzer daemon start --background` will drain the
+  backlog at boot.
+
+**Tracker unavailability**: when `tracker.Open` fails (`tr == nil`),
+`drainPendingEvents` is a no-op — events stay queued for the next boot.
+
+---
+
+## Manifest cache single-flight (F-021, 2026-05-07)
+
+The daemon coalesces concurrent manifest pulls per workspace via
+`golang.org/x/sync/singleflight`. The single-flight **key is
+`workspaceID` only** — the auth principal (CLI session, API key id) is
+intentionally NOT part of the key.
+
+**Why**: the daemon currently runs single-user (Unix socket at
+`/tmp/browzer-daemon.<uid>.sock`, mode `0600`, owner-uid only). Every
+in-flight manifest pull within a daemon instance is therefore already
+scoped to one principal by socket ACL, so adding the principal to the
+key would only fragment the coalescing without any isolation gain.
+
+**When this changes**: if a future daemon ever serves multiple
+principals over the same socket, sharing an in-flight pull's result
+across principals would leak workspace contents across auth boundaries.
+That release MUST extend the key to `(workspaceID, principalID)` and
+update this note. Until then, callers can rely on at most one
+in-flight pull per workspace, regardless of how many requests arrive
+during the fetch.
+
+**ENOENT recovery**: the on-disk cache file can disappear between key
+acquisition and the file read (concurrent prune, stale TTL eviction).
+The loader treats `ENOENT` on the cached path as a cold miss — it
+re-pulls and re-populates rather than returning an error to the
+caller.

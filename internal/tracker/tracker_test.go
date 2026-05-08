@@ -108,6 +108,139 @@ func TestTracker_UnsentBatchesAndMarkFlushed(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
+// TestEstimationMethod_RoundTrip verifies that EstimationMethod (FR-7) is
+// persisted and read back via the public API.
+//
+//   - A non-nil method ('measured', 'estimated', 'counterfactual', 'unknown')
+//     round-trips through SQLite as a *string in the resulting Bucket.
+//   - A nil method records as NULL and surfaces as nil in the bucket.
+func TestEstimationMethod_RoundTrip(t *testing.T) {
+	tr, err := Open(filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tr.Close() }()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := tr.Record(Event{
+		TS: now, Source: "hook-read", Command: "Read",
+		InputBytes: 100, OutputBytes: 20, SavedTokens: 80, SavingsPct: 80,
+		EstimationMethod: ptr("measured"),
+	}); err != nil {
+		t.Fatalf("Record (measured): %v", err)
+	}
+	if err := tr.Record(Event{
+		TS: now, Source: "hook-read", Command: "Read",
+		InputBytes: 50, OutputBytes: 10, SavedTokens: 40, SavingsPct: 80,
+		// EstimationMethod left nil — must persist as NULL.
+	}); err != nil {
+		t.Fatalf("Record (nil method): %v", err)
+	}
+
+	buckets, _, err := tr.UnsentBuckets()
+	if err != nil {
+		t.Fatalf("UnsentBuckets: %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets (measured + nil), got %d: %#v", len(buckets), buckets)
+	}
+	var sawMeasured, sawNil bool
+	for _, b := range buckets {
+		switch {
+		case b.EstimationMethod != nil && *b.EstimationMethod == "measured":
+			sawMeasured = true
+		case b.EstimationMethod == nil:
+			sawNil = true
+		}
+	}
+	if !sawMeasured || !sawNil {
+		t.Fatalf("expected one measured + one nil bucket; got %#v", buckets)
+	}
+}
+
+// TestEstimationMethod_GroupColumn verifies that groupColumn("method")
+// resolves to the new estimation_method column (FR-9) and leaves the
+// existing groupings intact.
+func TestEstimationMethod_GroupColumn(t *testing.T) {
+	col, err := groupColumn("method")
+	if err != nil {
+		t.Fatalf("groupColumn(method) returned error: %v", err)
+	}
+	if col != "estimation_method" {
+		t.Fatalf("groupColumn(method) = %q, want estimation_method", col)
+	}
+	// Sanity: existing groupings unchanged.
+	for _, g := range []string{"source", "command", "filter", "model", "session"} {
+		if _, err := groupColumn(g); err != nil {
+			t.Fatalf("groupColumn(%q) regressed: %v", g, err)
+		}
+	}
+}
+
+// TestEstimationMethod_BucketAggregation verifies that UnsentBuckets
+// aggregates events along the estimation_method dimension: two 'measured'
+// rows + one 'counterfactual' row collapse to two buckets per
+// (day,source,filter,model).
+func TestEstimationMethod_BucketAggregation(t *testing.T) {
+	tr, err := Open(filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tr.Close() }()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for range 2 {
+		if err := tr.Record(Event{
+			TS: now, Source: "hook-read",
+			InputBytes: 100, OutputBytes: 20, SavedTokens: 80, SavingsPct: 80,
+			FilterLevel: ptr("aggressive"), Model: ptr("claude-opus-4-7"),
+			EstimationMethod: ptr("measured"),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tr.Record(Event{
+		TS: now, Source: "hook-read",
+		InputBytes: 50, OutputBytes: 10, SavedTokens: 40, SavingsPct: 80,
+		FilterLevel: ptr("aggressive"), Model: ptr("claude-opus-4-7"),
+		EstimationMethod: ptr("counterfactual"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	buckets, _, err := tr.UnsentBuckets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets after method-dimension split, got %d: %#v", len(buckets), buckets)
+	}
+	for _, b := range buckets {
+		if b.EstimationMethod == nil {
+			t.Fatalf("bucket has nil EstimationMethod despite all rows non-NULL: %#v", b)
+		}
+	}
+}
+
+// TestEstimationMethod_OpenIdempotent verifies that the column-add
+// migration is idempotent: closing and re-Opening the same DB path does
+// not error on the second pass (FR-7 acceptance).
+func TestEstimationMethod_OpenIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "h.db")
+	tr1, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open#1: %v", err)
+	}
+	if err := tr1.Close(); err != nil {
+		t.Fatalf("Close#1: %v", err)
+	}
+	tr2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open#2 (must be idempotent): %v", err)
+	}
+	defer func() { _ = tr2.Close() }()
+}
+
 // TestTrackerConcurrentRecord verifies F-26: tracker.Record is safe to call
 // from multiple goroutines simultaneously — no data race, no "database is
 // locked" error, and QueryAggregated returns exactly N recorded events.

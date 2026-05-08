@@ -20,3 +20,8 @@ CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS events_model ON events(model);
 CREATE INDEX IF NOT EXISTS events_unflushed ON events(flushed_at) WHERE flushed_at IS NULL;
+-- Token Economy v2.0.0 (FR-7): classifies how SavedTokens was derived.
+-- 'measured' | 'estimated' | 'counterfactual' | 'unknown'. NULL for legacy
+-- rows recorded before this column existed. The actual ALTER TABLE is
+-- driven by ensureEstimationMethodColumn() in tracker.go because SQLite
+-- does not support `ADD COLUMN IF NOT EXISTS`.

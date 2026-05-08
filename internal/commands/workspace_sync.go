@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"strings"
 	"time"
 
@@ -156,6 +157,11 @@ func runSyncFlow(ctx context.Context, opts syncFlowOptions) error {
 			// the rewrite-read hook. Best-effort — stale cache just
 			// downgrades aggressive → minimal.
 			if err := pullAndSaveManifest(ctx, client, project.WorkspaceID); err != nil {
+				// FR-3: surface the failure on stderr in a stable,
+				// regex-matchable format so operators / skills can
+				// detect silent manifest-cache misses without breaking
+				// the sync flow. Best-effort caching — do NOT escalate.
+				fmt.Fprintf(os.Stderr, "warn: manifest pull failed: workspaceId=%s err=%v\n", project.WorkspaceID, err)
 				if !quiet {
 					ui.Warn(fmt.Sprintf("could not cache workspace manifest: %v", err))
 				}

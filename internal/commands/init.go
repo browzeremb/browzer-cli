@@ -163,11 +163,11 @@ Examples:
 					err, ws.ID, ws.ID,
 				)
 			}
-			if err := config.AddCacheDirToGitignore(gitRoot); err != nil {
-				ui.Warn(fmt.Sprintf("Could not update .gitignore (%v). Add \".browzer/.cache/\" manually.", err))
+			if err := config.EnsureBrowzerGitignore(gitRoot); err != nil {
+				ui.Warn(fmt.Sprintf("Could not update .gitignore (%v). Add %q manually.", err, config.BrowzerGitignoreEntries))
 			}
-			if err := config.InjectBrowzerSection(gitRoot); err != nil {
-				ui.Warn(fmt.Sprintf("Could not update CLAUDE.md (%v). Add the Browzer KB section manually.", err))
+			if err := os.MkdirAll(filepath.Join(gitRoot, "docs", "browzer"), 0o755); err != nil {
+				ui.Warn(fmt.Sprintf("Could not create docs/browzer (%v). Create it manually.", err))
 			}
 
 			// Best-effort plan status — never block init on this. If
@@ -185,7 +185,8 @@ Examples:
 			fmt.Println()
 			ui.Success(fmt.Sprintf("Workspace %q created (%s)", ws.Name, ws.ID))
 			ui.Success("Wrote .browzer/config.json")
-			ui.Success("Injected Browzer KB section into CLAUDE.md")
+			ui.Success("Updated .gitignore (.browzer/, docs/browzer/feat-*/staging/)")
+			ui.Success("Created docs/browzer/")
 
 			fmt.Println("\nNext steps:")
 			fmt.Println("  browzer workspace index    # parse code structure into the workspace graph")

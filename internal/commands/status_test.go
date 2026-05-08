@@ -144,7 +144,7 @@ func TestStatus_LastSyncCommitOmittedWhenEmpty(t *testing.T) {
 
 func TestBuildStatusRecommendations_StaleEmitsHint(t *testing.T) {
 	stale := git.Staleness{Stale: true, CommitsBehind: 5, CurrentHead: "abc"}
-	recs := buildStatusRecommendationsFromStaleness(stale, 10, "2099-01-01T00:00:00Z")
+	recs := buildStatusRecommendationsFromStaleness(stale, 10, "2099-01-01T00:00:00Z", true)
 	var found bool
 	for _, r := range recs {
 		if r["kind"] == "stale_index" {
@@ -161,10 +161,76 @@ func TestBuildStatusRecommendations_StaleEmitsHint(t *testing.T) {
 
 func TestBuildStatusRecommendations_FreshIndexNoStaleHint(t *testing.T) {
 	fresh := git.Staleness{Stale: false, CommitsBehind: 0, CurrentHead: "abc"}
-	recs := buildStatusRecommendationsFromStaleness(fresh, 10, "2099-01-01T00:00:00Z")
+	recs := buildStatusRecommendationsFromStaleness(fresh, 10, "2099-01-01T00:00:00Z", true)
 	for _, r := range recs {
 		if r["kind"] == "stale_index" {
 			t.Errorf("did not expect a stale_index hint when Stale=false: %v", r)
+		}
+	}
+}
+
+// TestBuildStatusRecommendations_MissingManifestCacheEmitsHint asserts
+// FR-3: when the manifest cache is absent, status surfaces an actionable
+// missing_manifest_cache recommendation pointing at `workspace sync`.
+func TestBuildStatusRecommendations_MissingManifestCacheEmitsHint(t *testing.T) {
+	fresh := git.Staleness{Stale: false, CommitsBehind: 0, CurrentHead: "abc"}
+	recs := buildStatusRecommendationsFromStaleness(fresh, 10, "2099-01-01T00:00:00Z", false)
+	var found bool
+	for _, r := range recs {
+		if r["kind"] == "missing_manifest_cache" {
+			found = true
+			if want := "browzer workspace sync"; r["action"] != want {
+				t.Errorf("action = %q, want %q", r["action"], want)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected missing_manifest_cache hint, got %v", recs)
+	}
+}
+
+// TestBuildStatusRecommendations_PresentManifestCacheNoHint — when the
+// manifest cache exists, no missing_manifest_cache hint should fire.
+func TestBuildStatusRecommendations_PresentManifestCacheNoHint(t *testing.T) {
+	fresh := git.Staleness{Stale: false, CommitsBehind: 0, CurrentHead: "abc"}
+	recs := buildStatusRecommendationsFromStaleness(fresh, 10, "2099-01-01T00:00:00Z", true)
+	for _, r := range recs {
+		if r["kind"] == "missing_manifest_cache" {
+			t.Errorf("did not expect missing_manifest_cache when present=true: %v", r)
+		}
+	}
+}
+
+// TestStatus_StalenessJSONShape_ManifestCachePresent asserts the FR-3
+// JSON shape: a top-level `staleness.manifestCachePresent` boolean is
+// part of the contract consumed by the daemon-aware read filter.
+func TestStatus_StalenessJSONShape_ManifestCachePresent(t *testing.T) {
+	for _, present := range []bool{true, false} {
+		s := git.Staleness{Stale: false, CommitsBehind: 0, CurrentHead: "deadbeef"}
+		payload := map[string]any{
+			"staleness": map[string]any{
+				"indexedCommit":        "cafebabe",
+				"workingCommit":        s.CurrentHead,
+				"commitsBehind":        s.CommitsBehind,
+				"stale":                s.Stale,
+				"manifestCachePresent": present,
+			},
+		}
+		b, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		st := got["staleness"].(map[string]any)
+		gotPresent, ok := st["manifestCachePresent"].(bool)
+		if !ok {
+			t.Fatalf("manifestCachePresent missing or wrong type: %v", st)
+		}
+		if gotPresent != present {
+			t.Errorf("manifestCachePresent = %v, want %v", gotPresent, present)
 		}
 	}
 }

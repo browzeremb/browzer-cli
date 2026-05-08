@@ -152,8 +152,8 @@ func TestSenderSendBatch(t *testing.T) {
 	if err := json.Unmarshal(receivedBody, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if payload.SchemaVersion != 1 {
-		t.Fatalf("schemaVersion = %d, want 1", payload.SchemaVersion)
+	if payload.SchemaVersion != 2 {
+		t.Fatalf("schemaVersion = %d, want 2", payload.SchemaVersion)
 	}
 	if len(payload.Buckets) != 2 {
 		t.Fatalf("len(buckets) = %d, want 2", len(payload.Buckets))

@@ -34,6 +34,7 @@ const CurrentSchemaVersion = 2
 // time (the literal is already sorted) and pinned by the deterministic-JSON
 // integration test. Adding a new feature requires keeping the slice sorted.
 var protocolFeatures = []string{
+	"estimationMethod",
 	"jqVars",
 	"save",
 	"schemaV2",
@@ -91,6 +92,10 @@ type TrackParams struct {
 	SessionID    *string `json:"sessionId,omitempty"`
 	Model        *string `json:"model,omitempty"`
 	FilterFailed bool    `json:"filterFailed"`
+	// EstimationMethod classifies how SavedTokens was derived (FR-7).
+	// One of: 'measured' | 'estimated' | 'counterfactual' | 'unknown'.
+	// Older clients omit the field; daemon records it as NULL.
+	EstimationMethod *string `json:"estimationMethod,omitempty"`
 }
 
 // SessionRegisterParams identifies a session and the path to its transcript.

@@ -96,6 +96,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerJob(root)
 	registerUpgrade(root)
 	registerRead(root)
+	registerRun(root)
 	registerDaemon(root)
 	registerConfig(root)
 	registerGain(root)

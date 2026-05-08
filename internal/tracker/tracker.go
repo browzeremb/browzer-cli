@@ -34,6 +34,10 @@ type Event struct {
 	SessionID    *string
 	Model        *string
 	FilterFailed bool
+	// EstimationMethod classifies how SavedTokens was derived. Nullable
+	// for legacy rows. One of: 'measured' | 'estimated' |
+	// 'counterfactual' | 'unknown'. Token Economy v2.0.0 (FR-7).
+	EstimationMethod *string
 }
 
 // Tracker owns the SQLite connection. Single writer, multiple readers.
@@ -57,7 +61,48 @@ func Open(path string) (*Tracker, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	// Idempotent column add (NULL-safe for legacy rows).
+	if err := ensureEstimationMethodColumn(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate estimation_method: %w", err)
+	}
 	return &Tracker{db: db}, nil
+}
+
+// ensureEstimationMethodColumn adds the `estimation_method` column to the
+// `events` table when absent. Idempotent across boots: SQLite does not
+// support `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so we probe via
+// PRAGMA table_info and only run the ALTER on miss. Legacy rows scan as
+// NULL through *string in the Event struct.
+func ensureEstimationMethodColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(events)`)
+	if err != nil {
+		return fmt.Errorf("table_info: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		if name == "estimation_method" {
+			return nil // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE events ADD COLUMN estimation_method TEXT`); err != nil {
+		return fmt.Errorf("add column: %w", err)
+	}
+	return nil
 }
 
 // Close releases the connection.
@@ -73,12 +118,14 @@ func (t *Tracker) Record(e Event) error {
 	_, err := t.db.Exec(`
 		INSERT INTO events (ts, source, command, path_hash, input_bytes, output_bytes,
 		                    saved_tokens, savings_pct, filter_level, exec_ms,
-		                    workspace_id, session_id, model, filter_failed)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                    workspace_id, session_id, model, filter_failed,
+		                    estimation_method)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		e.TS, e.Source, e.Command, e.PathHash, e.InputBytes, e.OutputBytes,
 		e.SavedTokens, e.SavingsPct, e.FilterLevel, e.ExecMs,
 		e.WorkspaceID, e.SessionID, e.Model, boolToInt(e.FilterFailed),
+		e.EstimationMethod,
 	)
 	return err
 }
@@ -143,6 +190,9 @@ type Bucket struct {
 	InputBytes  int64
 	OutputBytes int64
 	SavedTokens int64
+	// EstimationMethod is the per-bucket classification (FR-7 / FR-9).
+	// Nullable when the contributing rows predate the column.
+	EstimationMethod *string
 }
 
 // UnsentBuckets aggregates all rows where flushed_at IS NULL into per-(day,
@@ -152,7 +202,8 @@ func (t *Tracker) UnsentBuckets() ([]Bucket, []int64, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	rows, err := t.db.Query(`
-		SELECT id, ts, source, filter_level, model, input_bytes, output_bytes, saved_tokens
+		SELECT id, ts, source, filter_level, model, input_bytes, output_bytes, saved_tokens,
+		       estimation_method
 		FROM events WHERE flushed_at IS NULL
 	`)
 	if err != nil {
@@ -161,24 +212,24 @@ func (t *Tracker) UnsentBuckets() ([]Bucket, []int64, error) {
 	defer func() { _ = rows.Close() }()
 
 	type key struct {
-		day, source, filter, model string
-		filterNull, modelNull      bool
+		day, source, filter, model, estMethod string
+		filterNull, modelNull, estMethodNull  bool
 	}
 	agg := map[key]*Bucket{}
 	var ids []int64
 	for rows.Next() {
 		var (
-			id              int64
-			ts, source      string
-			filter, mdl     sql.NullString
-			inB, outB, saved int64
+			id                     int64
+			ts, source             string
+			filter, mdl, estMethod sql.NullString
+			inB, outB, saved       int64
 		)
-		if err := rows.Scan(&id, &ts, &source, &filter, &mdl, &inB, &outB, &saved); err != nil {
+		if err := rows.Scan(&id, &ts, &source, &filter, &mdl, &inB, &outB, &saved, &estMethod); err != nil {
 			return nil, nil, err
 		}
 		ids = append(ids, id)
 		day := ts[:10] // YYYY-MM-DD
-		k := key{day, source, filter.String, mdl.String, !filter.Valid, !mdl.Valid}
+		k := key{day, source, filter.String, mdl.String, estMethod.String, !filter.Valid, !mdl.Valid, !estMethod.Valid}
 		b, ok := agg[k]
 		if !ok {
 			b = &Bucket{Day: day, Source: source, N: 0}
@@ -189,6 +240,10 @@ func (t *Tracker) UnsentBuckets() ([]Bucket, []int64, error) {
 			if mdl.Valid {
 				v := mdl.String
 				b.Model = &v
+			}
+			if estMethod.Valid {
+				v := estMethod.String
+				b.EstimationMethod = &v
 			}
 			agg[k] = b
 		}
@@ -242,6 +297,8 @@ func groupColumn(g string) (string, error) {
 		return "model", nil
 	case "session":
 		return "session_id", nil
+	case "method":
+		return "estimation_method", nil
 	default:
 		return "", errors.New("unknown groupBy: " + g)
 	}

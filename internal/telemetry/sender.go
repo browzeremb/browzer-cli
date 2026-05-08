@@ -30,14 +30,15 @@ func NewSender(url, bearer, cliVersion string) *Sender {
 }
 
 type wireBucket struct {
-	Day         string  `json:"day"`
-	Source      string  `json:"source"`
-	FilterLevel *string `json:"filterLevel"`
-	Model       *string `json:"model"`
-	N           int     `json:"n"`
-	InputBytes  int64   `json:"inputBytes"`
-	OutputBytes int64   `json:"outputBytes"`
-	SavedTokens int64   `json:"savedTokens"`
+	Day              string  `json:"day"`
+	Source           string  `json:"source"`
+	FilterLevel      *string `json:"filterLevel"`
+	Model            *string `json:"model"`
+	N                int     `json:"n"`
+	InputBytes       int64   `json:"inputBytes"`
+	OutputBytes      int64   `json:"outputBytes"`
+	SavedTokens      int64   `json:"savedTokens"`
+	EstimationMethod *string `json:"estimationMethod,omitempty"`
 }
 
 type wirePayload struct {
@@ -48,11 +49,12 @@ type wirePayload struct {
 
 // Send POSTs the batch as a single JSON document.
 func (s *Sender) Send(ctx context.Context, buckets []tracker.Bucket) error {
-	w := wirePayload{SchemaVersion: 1, CLIVersion: s.cliVersion, Buckets: make([]wireBucket, 0, len(buckets))}
+	w := wirePayload{SchemaVersion: 2, CLIVersion: s.cliVersion, Buckets: make([]wireBucket, 0, len(buckets))}
 	for _, b := range buckets {
 		w.Buckets = append(w.Buckets, wireBucket{
 			Day: b.Day, Source: b.Source, FilterLevel: b.FilterLevel, Model: b.Model,
 			N: b.N, InputBytes: b.InputBytes, OutputBytes: b.OutputBytes, SavedTokens: b.SavedTokens,
+			EstimationMethod: b.EstimationMethod,
 		})
 	}
 	body, err := json.Marshal(w)
