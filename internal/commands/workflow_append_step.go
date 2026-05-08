@@ -13,6 +13,7 @@ func registerWorkflowAppendStep(parent *cobra.Command) {
 	var payloadFile string
 	var scaffoldStepType string
 	var lockTimeout time.Duration
+	var idFlag string
 
 	cmd := &cobra.Command{
 		Use:   "append-step",
@@ -51,7 +52,7 @@ The two modes are mutually exclusive; passing both fails fast.`,
 				return emitReadOutput(cmd, skeleton)
 			}
 
-			wfPath, err := getWorkflowPath(cmd)
+			wfPath, err := resolveWorkflowPathForGetSave(cmd, idFlag, false)
 			if err != nil {
 				return err
 			}
@@ -80,5 +81,6 @@ The two modes are mutually exclusive; passing both fails fast.`,
 	cmd.Flags().StringVar(&scaffoldStepType, "scaffold", "", "preview-only: emit a JSON skeleton for the named step type (mutually exclusive with --payload)")
 	cmd.Flags().DurationVar(&lockTimeout, "lock-timeout", 5*time.Second, "advisory lock acquisition timeout")
 	cmd.Flags().String("save", "", "write the scaffold output to <path> instead of stdout (only meaningful with --scaffold)")
+	cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (alternative to --workflow)")
 	parent.AddCommand(cmd)
 }

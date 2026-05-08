@@ -107,8 +107,8 @@ Exit codes: 0 success, 2 step not found / phase unknown.`,
 	}
 
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit a stable JSON #StepView struct instead of markdown")
+	cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (alternative to --workflow)")
 	if topLevel {
-		cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (required)")
 		_ = cmd.MarkFlagRequired("id")
 	}
 	return cmd

@@ -13,12 +13,15 @@ import (
 // resolveWorkflowPathForGetSave returns the absolute path of workflow.json for
 // either a top-level command (`browzer get-step PRD --id <feat>`) or a
 // workflow-subcommand (`browzer workflow get-step PRD`).
+//
+// Resolution order:
+//  1. --id wins when provided, regardless of which command surface is calling.
+//  2. When idFlag is empty and topLevel=true, returns an error (--id required).
+//  3. When idFlag is empty and topLevel=false, falls through to getWorkflowPath
+//     which reads --workflow / env / walk-up discovery.
 func resolveWorkflowPathForGetSave(cmd *cobra.Command, idFlag string, topLevel bool) (string, error) {
-	if topLevel {
-		if idFlag == "" {
-			return "", fmt.Errorf("--id is required (use the feature slug, e.g. feat-foo)")
-		}
-		// Reject any slug that escapes the expected subtree.
+	// --id wins when provided, regardless of which command surface is calling.
+	if idFlag != "" {
 		if strings.ContainsAny(idFlag, `/\`) || idFlag == ".." || strings.Contains(idFlag, "..") {
 			return "", fmt.Errorf("--id must be a plain slug (no path separators or traversal): %q", idFlag)
 		}
@@ -39,6 +42,9 @@ func resolveWorkflowPathForGetSave(cmd *cobra.Command, idFlag string, topLevel b
 			return "", fmt.Errorf("resolved path %q escapes %q", abs, baseAbs)
 		}
 		return abs, nil
+	}
+	if topLevel {
+		return "", fmt.Errorf("--id is required (use the feature slug, e.g. feat-foo)")
 	}
 	return getWorkflowPath(cmd)
 }

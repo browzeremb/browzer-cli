@@ -3,6 +3,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	wf "github.com/browzeremb/browzer-cli/internal/workflow"
 	"github.com/spf13/cobra"
@@ -31,9 +32,27 @@ Subsequent set-config / append-step / set-status / patch calls operate on the
 seeded file and run through the daemon FIFO + standalone fallback as usual.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Determine whether the caller supplied an explicit --workflow flag
+			// (either on this command or the parent workflow group).
+			workflowFlagSet := cmd.Flags().Changed("workflow") || cmd.InheritedFlags().Changed("workflow")
+
 			wfPath, err := getWorkflowPath(cmd)
 			if err != nil {
 				return err
+			}
+
+			// Collision guard: if we resolved the path via walk-up (no explicit
+			// --workflow flag) and the resolved path already exists, fail closed.
+			// Walk-up can silently land in the WRONG feat dir when multiple feat
+			// dirs exist under docs/browzer/. Require an explicit path in that case
+			// to prevent silent collisions.
+			if !workflowFlagSet {
+				if _, statErr := os.Stat(wfPath); statErr == nil {
+					return fmt.Errorf(
+						"workflow init: walk-up resolved to existing %s — pass --workflow docs/browzer/<new-feat>/workflow.json explicitly to avoid collision",
+						wfPath,
+					)
+				}
 			}
 			switch executionStrategy {
 			case "", "serial", "parallel", "parallel-worktrees", "agent-teams":

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 func registerSaveStep(root *cobra.Command) {
 	var (
 		idFlag       string
+		workflowFlag string
 		fromFile     string
 		fromStdin    bool
 		format       string
@@ -74,12 +76,26 @@ Behaviour:
 				return cliExitErr(2, errors.New("exactly one of --from / --stdin is required"))
 			}
 
+			if idFlag == "" && workflowFlag == "" {
+				return cliExitErr(2, errors.New("--id or --workflow is required"))
+			}
+
 			// FR-5: BROWZER_LLM=1 implies --hint-fixes unless --no-hint-fixes is set.
 			effectiveHintFixes := resolveHintFixes(hintFixes, noHintFixes)
 
-			path, err := resolveWorkflowPathForGetSave(cmd, idFlag, true)
-			if err != nil {
-				return cliExitErr(2, err)
+			var path string
+			if workflowFlag != "" && idFlag == "" {
+				abs, absErr := filepath.Abs(workflowFlag)
+				if absErr != nil {
+					return cliExitErr(2, fmt.Errorf("--workflow: resolve %q: %w", workflowFlag, absErr))
+				}
+				path = abs
+			} else {
+				var pathErr error
+				path, pathErr = resolveWorkflowPathForGetSave(cmd, idFlag, true)
+				if pathErr != nil {
+					return cliExitErr(2, pathErr)
+				}
 			}
 
 			payload, srcFormat, err := readSaveInput(cmd, fromFile, format)
@@ -151,7 +167,7 @@ Behaviour:
 				if effectiveHintFixes {
 					emitHintFixesOnError(cmd, path, args2)
 				}
-				return err
+				return enrichSaveStepTaskNotFound(phase, idFlag, err)
 			}
 			if !shouldSuppressSaveSuccess(cmd, quiet) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "save-step: persisted %s → %s\n", phase, path)
@@ -160,7 +176,8 @@ Behaviour:
 		},
 	}
 
-	cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (required)")
+	cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (alternative to --workflow)")
+	cmd.Flags().StringVar(&workflowFlag, "workflow", "", "explicit workflow.json path (alternative to --id)")
 	cmd.Flags().StringVar(&fromFile, "from", "", "read payload from file (.md or .json — format inferred from extension)")
 	cmd.Flags().BoolVar(&fromStdin, "stdin", false, "read payload from stdin (use --format md|json)")
 	cmd.Flags().StringVar(&format, "format", "json", "stdin format: md or json (default json)")
@@ -176,7 +193,6 @@ Behaviour:
 	cmd.Flags().Bool("await", false, "send via daemon, block until durable")
 	cmd.Flags().Bool("no-lock", false, "skip advisory lock")
 	cmd.Flags().Bool("no-schema-check", false, "bypass CUE validation (audited)")
-	_ = cmd.MarkFlagRequired("id")
 	root.AddCommand(cmd)
 
 	// Register the --batch variant.
@@ -210,12 +226,13 @@ func emitHintFixesOnError(cmd *cobra.Command, path string, args2 wf.MutatorArgs)
 // rolled back — workflow.json mtime is unchanged.
 func registerSaveStepBatch(root *cobra.Command) {
 	var (
-		idFlag      string
-		fromPairs   []string
-		quiet       bool
-		hintFixes   bool
-		noHintFixes bool
-		noBackup    bool
+		idFlag       string
+		workflowFlag string
+		fromPairs    []string
+		quiet        bool
+		hintFixes    bool
+		noHintFixes  bool
+		noBackup     bool
 	)
 
 	cmd := &cobra.Command{
@@ -247,12 +264,26 @@ violations.`,
 				return cliExitErr(2, errors.New("--batch requires at least one --from PHASE=PATH pair"))
 			}
 
+			if idFlag == "" && workflowFlag == "" {
+				return cliExitErr(2, errors.New("--id or --workflow is required"))
+			}
+
 			// FR-5: BROWZER_LLM=1 implies --hint-fixes unless --no-hint-fixes is set.
 			effectiveHintFixes := resolveHintFixes(hintFixes, noHintFixes)
 
-			wfPath, err := resolveWorkflowPathForGetSave(cmd, idFlag, true)
-			if err != nil {
-				return cliExitErr(2, err)
+			var wfPath string
+			if workflowFlag != "" && idFlag == "" {
+				abs, absErr := filepath.Abs(workflowFlag)
+				if absErr != nil {
+					return cliExitErr(2, fmt.Errorf("--workflow: resolve %q: %w", workflowFlag, absErr))
+				}
+				wfPath = abs
+			} else {
+				var pathErr error
+				wfPath, pathErr = resolveWorkflowPathForGetSave(cmd, idFlag, true)
+				if pathErr != nil {
+					return cliExitErr(2, pathErr)
+				}
 			}
 
 			// Parse all PHASE=PATH pairs upfront before touching disk.
@@ -343,7 +374,8 @@ violations.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (required)")
+	cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (alternative to --workflow)")
+	cmd.Flags().StringVar(&workflowFlag, "workflow", "", "explicit workflow.json path (alternative to --id)")
 	cmd.Flags().StringArrayVar(&fromPairs, "from", nil, "PHASE=PATH pair; repeat for each phase (required)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress per-phase success lines on stderr")
 	cmd.Flags().BoolVar(&hintFixes, "hint-fixes", false, "on enum/unknown-field violations emit a worked example")
@@ -354,7 +386,6 @@ violations.`,
 	cmd.Flags().Bool("await", false, "send via daemon, block until durable")
 	cmd.Flags().Bool("no-lock", false, "skip advisory lock")
 	cmd.Flags().Bool("no-schema-check", false, "bypass CUE validation (audited)")
-	_ = cmd.MarkFlagRequired("id")
 	root.AddCommand(cmd)
 }
 
@@ -432,6 +463,28 @@ func detectWrapperVsBodyHint(phase string, m map[string]any) string {
 		"save-step: input appears to wrap the body in the full step. Submit only the BODY (the `%s` payload), not the full step wrapper.\n\n  Got:    %s\n  Expected: {<the contents of %s>}\n\nThe CLI wraps the body itself. See `browzer workflow describe-step-type %s` for the body shape.",
 		bodyKey, outer, bodyKey, phase,
 	)
+}
+
+// enrichSaveStepTaskNotFound adds an actionable hint when save-step fails with
+// "step not found" for a TASK_NN phase. This happens when TASKS_MANIFEST was
+// not persisted first — the TASK_NN slots are materialised by save-step
+// TASKS_MANIFEST, not by append-step.
+func enrichSaveStepTaskNotFound(phase, idFlag string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	isTaskNN := regexp.MustCompile(`^TASK_\d+$`).MatchString(strings.ToUpper(phase))
+	if !isTaskNN || !strings.Contains(msg, "not found") {
+		return err
+	}
+	hint := "hint: TASK_NN slots are created by `browzer save-step TASKS_MANIFEST`"
+	if idFlag != "" {
+		hint += fmt.Sprintf(" — verify TASKS_MANIFEST was saved: browzer get-step TASKS_MANIFEST --id %s", idFlag)
+	} else {
+		hint += " — verify the preceding save-step TASKS_MANIFEST succeeded"
+	}
+	return fmt.Errorf("%w\n%s", err, hint)
 }
 
 func shouldSuppressSaveSuccess(cmd *cobra.Command, quietFlag bool) bool {
@@ -658,9 +711,7 @@ func parseMarkdownPRD(raw []byte) map[string]any {
 	if m := frontmatterRE.FindStringSubmatch(body); m != nil {
 		var fm map[string]any
 		if err := json.Unmarshal([]byte("{"+m[1]+"}"), &fm); err == nil {
-			for k, v := range fm {
-				out[k] = v
-			}
+			maps.Copy(out, fm)
 		}
 		body = body[len(m[0]):]
 	}
@@ -668,8 +719,8 @@ func parseMarkdownPRD(raw []byte) map[string]any {
 	if m := h1RE.FindStringSubmatch(body); m != nil {
 		title := strings.TrimSpace(m[1])
 		for _, prefix := range []string{"PRD —", "PRD -", "PRD:"} {
-			if strings.HasPrefix(title, prefix) {
-				title = strings.TrimSpace(strings.TrimPrefix(title, prefix))
+			if rest, ok := strings.CutPrefix(title, prefix); ok {
+				title = strings.TrimSpace(rest)
 				break
 			}
 		}
@@ -1228,9 +1279,7 @@ func mergeTaskPayload(task, payload map[string]any) {
 	}
 	// Caller-provided `execution: {...}` is merged first.
 	if explicit, ok := payload["execution"].(map[string]any); ok {
-		for k, v := range explicit {
-			exec[k] = v
-		}
+		maps.Copy(exec, explicit)
 	}
 	for k, v := range payload {
 		if k == "execution" {
