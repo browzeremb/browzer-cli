@@ -50,8 +50,15 @@ Examples:
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// With DisableFlagParsing=true all args (including --no-filter) arrive
-			// unprocessed. Strip --no-filter / -- separator and collect the rest
-			// as the child argv.
+			// unprocessed. Intercept --help / -h first so the smoke test and
+			// interactive users get the Cobra help text instead of an exec error.
+			for _, a := range args {
+				if a == "--help" || a == "-h" {
+					return cmd.Help()
+				}
+			}
+
+			// Strip --no-filter / -- separator and collect the rest as child argv.
 			childArgs := make([]string, 0, len(args))
 			seenSep := false
 			for _, a := range args {
