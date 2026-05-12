@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "id": "ARCH-1",
+      "domain": "software-architect",
+      "severity": "high",
+      "category": "race-condition",
+      "file": "src/routes/auth.ts",
+      "line": 42,
+      "description": "Missing mutex around shared map write — concurrent requests will corrupt state.",
+      "suggestedFix": "Wrap the write in a sync.Mutex critical section.",
+      "assignedSkill": "race-condition",
+      "status": "open"
+    },
+    {
+      "id": "ARCH-2",
+      "domain": "software-architect",
+      "severity": "low",
+      "category": "coupling",
+      "file": "src/services/user.ts",
+      "line": 15,
+      "description": "Service directly imports db connection — should go through a repository abstraction.",
+      "suggestedFix": "Introduce a UserRepository interface.",
+      "assignedSkill": null,
+      "status": "open"
+    }
+  ]
+}

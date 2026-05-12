@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "id": "SR-1",
+      "domain": "senior-engineer",
+      "severity": "high",
+      "category": "complexity",
+      "file": "src/routes/auth.ts",
+      "line": 42,
+      "description": "Function exceeds cyclomatic complexity threshold of 10.",
+      "suggestedFix": "Extract validation logic into a separate helper.",
+      "assignedSkill": null,
+      "status": "open"
+    },
+    {
+      "id": "SR-2",
+      "domain": "senior-engineer",
+      "severity": "medium",
+      "category": "dry-violation",
+      "file": "src/services/user.ts",
+      "line": 87,
+      "description": "Duplicated error-handling block also appears at line 120.",
+      "suggestedFix": "Extract into a shared handleDbError helper.",
+      "assignedSkill": null,
+      "status": "open"
+    }
+  ]
+}

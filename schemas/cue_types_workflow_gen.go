@@ -717,6 +717,19 @@ type CodeReview struct {
 	// `Skill(code-review, "dispatchMode: <…>; tier: <…>")` under autonomous
 	// mode, bypassing the Phase-1 prompt. See code-review/SKILL.md §1.
 	PreRegistered bool `json:"preRegistered"`
+
+	// Optional gate verdict for the consolidated review. When set, drives
+	// automated merge/block logic in receiving-code-review skill.
+	// "advisory-only" never blocks; "fail-on-high" blocks on severity=high;
+	// "fail-on-medium-or-high" blocks on medium or high.
+	Gate any/* CUE disjunction: (null|string) */ `json:"gate,omitempty"`
+
+	// Exit code of the consolidated gate check. null = not yet run.
+	ExitCode any/* CUE disjunction: (null|int) */ `json:"exitCode,omitempty"`
+
+	// Sensitive-path scan result from the FR-3 gate (populated by code-review
+	// skill when it detects files matching references/sensitive-paths.md).
+	SensitivePathGate any/* CUE disjunction: (null|struct) */ `json:"sensitivePathGate,omitempty"`
 }
 
 type CodeReviewConsolidator struct {
@@ -757,6 +770,12 @@ type CyclomaticAudit struct {
 	ConductedBy string `json:"conductedBy"`
 
 	Files []any/* CUE closed list */ `json:"files"`
+}
+
+type SensitivePathGate struct {
+	Matched bool `json:"matched"`
+
+	MatchedFiles []string `json:"matchedFiles"`
 }
 
 type CyclomaticFile struct {
@@ -844,6 +863,10 @@ type Finding struct {
 	// (cross-domain duplicate). The off-lane copies become advisory and the
 	// owning lane drives the fix. See code-review/references/severity-matrix.md §49.
 	CrossLaneOverlap bool `json:"crossLaneOverlap"`
+
+	// IDs of sibling findings that were merged into this one during
+	// consolidation (format: "<lane>-<seq>", e.g. "SR-3", "QA-1").
+	MergedFrom []string `json:"mergedFrom,omitempty"`
 }
 
 // =============================================================
@@ -940,6 +963,17 @@ type WriteTests struct {
 	MutationTesting MutationTesting `json:"mutationTesting,omitempty"`
 
 	Notes string `json:"notes"`
+
+	// Flat top-level aliases for mutation results (additive, backward-compat).
+	// Both the nested mutationTesting.{score,…} and these flat fields are
+	// accepted; tools may populate either or both. Added 2026-05-11.
+	MutationScore any/* CUE disjunction: (null|int) */ `json:"mutationScore,omitempty"`
+
+	Killed any/* CUE disjunction: (null|int) */ `json:"killed,omitempty"`
+
+	Survived any/* CUE disjunction: (null|int) */ `json:"survived,omitempty"`
+
+	Categories any/* CUE disjunction: (null|list) */ `json:"categories,omitempty"`
 }
 
 type GreenTests struct {
@@ -997,6 +1031,15 @@ type UpdateDocs struct {
 	Patches []any/* CUE closed list */ `json:"patches"`
 
 	TwoPassRun TwoPassRun `json:"twoPassRun"`
+
+	// signals records the browzer-mentions / browzer-deps scan signals that
+	// drove Phase A discovery. Each entry names the signal, its source command,
+	// whether it returned results (hit), and an optional result count.
+	Signals any/* CUE disjunction: (null|list) */ `json:"signals,omitempty"`
+
+	// enoentScan records whether Phase B ran a missing-file sweep and which
+	// files (if any) were absent from the filesystem at patch time.
+	EnoentScan any/* CUE disjunction: (null|struct) */ `json:"enoentScan,omitempty"`
 }
 
 type TwoPassRun struct {
@@ -1013,6 +1056,22 @@ type TwoPassRun struct {
 	//
 	//	jq 'del(.steps[].updateDocs.twoPassRun.mentionsFallback)' workflow.json
 	MentionsResultEmpty any/* CUE disjunction: (null|string) */ `json:"mentionsResultEmpty"`
+}
+
+type UpdateDocsSignal struct {
+	Name string `json:"name"`
+
+	Source string `json:"source"`
+
+	Hit bool `json:"hit"`
+
+	Count int64 `json:"count,omitempty"`
+}
+
+type UpdateDocsEnoentScan struct {
+	Ran bool `json:"ran"`
+
+	MissingFiles []string `json:"missingFiles"`
 }
 
 type DocMention struct {
@@ -1051,9 +1110,11 @@ type DocPatch struct {
 type FeatureAcceptanceStep map[string]any /* CUE top */
 
 type FeatureAcceptance struct {
-	Mode string `json:"mode"`
+	// mode is now optional (not required) to allow partial/in-progress saves.
+	// Enum extended to include "autonomous-with-stack-boot" (2026-05-11).
+	Mode string `json:"mode,omitempty"`
 
-	ModeNote string `json:"modeNote"`
+	ModeNote string `json:"modeNote,omitempty"`
 
 	AcceptanceCriteria []FAcceptanceCriterion `json:"acceptanceCriteria"`
 

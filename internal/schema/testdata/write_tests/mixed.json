@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260511-write-tests-mixed",
+  "featureName": "Write tests mixed shape",
+  "featDir": "docs/browzer/feat-20260511-write-tests-mixed",
+  "originalRequest": "fixture",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-11T00:00:00Z" },
+  "startedAt": "2026-05-11T00:00:00Z",
+  "updatedAt": "2026-05-11T00:00:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_WRITE_TESTS",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_WRITE_TESTS",
+      "name": "WRITE_TESTS",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-11T00:00:00Z",
+      "completedAt": "2026-05-11T00:05:00Z",
+      "elapsedMin": 5.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["write-tests"],
+      "skillsInvoked": ["write-tests"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "writeTests": {
+        "skipped": false,
+        "skipReason": null,
+        "runner": "go test",
+        "filesAuthored": ["internal/schema/validator_test.go"],
+        "greenTests": { "added": 5, "augmented": 0 },
+        "mutationTesting": {
+          "ran": true,
+          "tool": "go-mutesting",
+          "score": 85,
+          "target": 80,
+          "survivors": [],
+          "coverageGap": null
+        },
+        "mutationScore": 85,
+        "killed": 34,
+        "survived": 6,
+        "categories": ["boolean-flip"],
+        "notes": "both nested and flat fields"
+      }
+    }
+  ]
+}

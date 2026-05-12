@@ -373,6 +373,12 @@ func TestExtractKV(t *testing.T) {
 		{"foo target: x; bar", "target", "x", "foo bar"},
 		{"alpha; method=run cmd; beta", "method", "run cmd", "alpha beta"},
 		{"no marker here", "target", "", "no marker here"},
+		// F-008: URL value contains a colon — leftmost-separator-wins must stop at
+		// " — " (em-dash), not at the colon inside the URL. The value must be the
+		// full URL, not just the scheme fragment.
+		{"target: http://host:8080 — comment", "target", "http://host:8080", "comment"},
+		// Variant: semicolon terminator after a URL-like value.
+		{"target: http://host:8080; extra", "target", "http://host:8080", "extra"},
 	}
 	for _, c := range cases {
 		v, r := extractKV(c.s, c.key)

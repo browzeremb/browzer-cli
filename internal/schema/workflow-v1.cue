@@ -535,6 +535,21 @@ import "time"
 	// `Skill(code-review, "dispatchMode: <…>; tier: <…>")` under autonomous
 	// mode, bypassing the Phase-1 prompt. See code-review/SKILL.md §1.
 	preRegistered:       *false | bool                                      @addedIn("2026-05-04T00:00:00Z")
+	// Optional gate verdict for the consolidated review. When set, drives
+	// automated merge/block logic in receiving-code-review skill.
+	// "advisory-only" never blocks; "fail-on-high" blocks on severity=high;
+	// "fail-on-medium-or-high" blocks on medium or high.
+	gate?:               *null | "fail-on-high" | "fail-on-medium-or-high" | "advisory-only" @addedIn("2026-05-11T00:00:00Z")
+	// Exit code of the consolidated gate check. null = not yet run.
+	exitCode?:           *null | int                                        @addedIn("2026-05-11T00:00:00Z")
+	// Sensitive-path scan result from the FR-3 gate (populated by code-review
+	// skill when it detects files matching references/sensitive-paths.md).
+	sensitivePathGate?:  *null | #SensitivePathGate                        @addedIn("2026-05-11T00:00:00Z")
+}
+
+#SensitivePathGate: {
+	matched:      bool        @addedIn("2026-05-11T00:00:00Z")
+	matchedFiles: [...string] @addedIn("2026-05-11T00:00:00Z")
 }
 
 #CodeReviewConsolidator: {
@@ -621,6 +636,9 @@ import "time"
 	// (cross-domain duplicate). The off-lane copies become advisory and the
 	// owning lane drives the fix. See code-review/references/severity-matrix.md §49.
 	crossLaneOverlap: *false | bool                          @addedIn("2026-05-04T00:00:00Z")
+	// IDs of sibling findings that were merged into this one during
+	// consolidation (format: "<lane>-<seq>", e.g. "SR-3", "QA-1").
+	mergedFrom?:      [...=~"^[A-Z]{2,6}-[0-9]+$"]           @addedIn("2026-05-11T00:00:00Z")
 }
 
 // =============================================================
@@ -689,6 +707,13 @@ import "time"
 	greenTests?:     #GreenTests                                                   @addedIn("2026-04-24T00:00:00Z")
 	mutationTesting?: #MutationTesting                                             @addedIn("2026-04-24T00:00:00Z")
 	notes:           *"" | string                                                  @addedIn("2026-04-24T00:00:00Z")
+	// Flat top-level aliases for mutation results (additive, backward-compat).
+	// Both the nested mutationTesting.{score,…} and these flat fields are
+	// accepted; tools may populate either or both. Added 2026-05-11.
+	mutationScore?: *null | int                                                    @addedIn("2026-05-11T00:00:00Z")
+	killed?:        *null | int                                                    @addedIn("2026-05-11T00:00:00Z")
+	survived?:      *null | int                                                    @addedIn("2026-05-11T00:00:00Z")
+	categories?:    *null | [...string]                                            @addedIn("2026-05-11T00:00:00Z")
 }
 
 #GreenTests: {
@@ -733,6 +758,25 @@ import "time"
 	anchorDocsAlwaysIncluded: *[] | [...#AnchorDoc]                        @addedIn("2026-04-24T00:00:00Z")
 	patches:                  *[] | [...#DocPatch]                         @addedIn("2026-04-24T00:00:00Z")
 	twoPassRun:               #TwoPassRun                                  @addedIn("2026-04-24T00:00:00Z")
+	// signals records the browzer-mentions / browzer-deps scan signals that
+	// drove Phase A discovery. Each entry names the signal, its source command,
+	// whether it returned results (hit), and an optional result count.
+	signals?:    *null | [...#UpdateDocsSignal]                            @addedIn("2026-05-11T00:00:00Z")
+	// enoentScan records whether Phase B ran a missing-file sweep and which
+	// files (if any) were absent from the filesystem at patch time.
+	enoentScan?: *null | #UpdateDocsEnoentScan                             @addedIn("2026-05-11T00:00:00Z")
+}
+
+#UpdateDocsSignal: {
+	name:   string @addedIn("2026-05-11T00:00:00Z")
+	source: string @addedIn("2026-05-11T00:00:00Z")
+	hit:    bool   @addedIn("2026-05-11T00:00:00Z")
+	count?: int    @addedIn("2026-05-11T00:00:00Z")
+}
+
+#UpdateDocsEnoentScan: {
+	ran:          bool        @addedIn("2026-05-11T00:00:00Z")
+	missingFiles: [...string] @addedIn("2026-05-11T00:00:00Z")
 }
 
 #DocMention: {
@@ -777,8 +821,10 @@ import "time"
 }
 
 #FeatureAcceptance: {
-	mode:                     "autonomous" | "manual" | "hybrid" @addedIn("2026-04-24T00:00:00Z")
-	modeNote:                 *"" | string                        @addedIn("2026-04-24T00:00:00Z")
+	// mode is now optional (not required) to allow partial/in-progress saves.
+	// Enum extended to include "autonomous-with-stack-boot" (2026-05-11).
+	mode?:                    "autonomous" | "manual" | "hybrid" | "autonomous-with-stack-boot" @addedIn("2026-04-24T00:00:00Z")
+	modeNote?:                *"" | string                        @addedIn("2026-04-24T00:00:00Z")
 	acceptanceCriteria:       [...#FAcceptanceCriterion]          @addedIn("2026-04-24T00:00:00Z")
 	nfrVerifications:         *[] | [...#FNFR]                    @addedIn("2026-04-24T00:00:00Z")
 	successMetrics:           *[] | [...#FSuccessMetric]          @addedIn("2026-04-24T00:00:00Z")

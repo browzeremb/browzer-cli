@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260511-update-docs-new",
+  "featureName": "Update docs new shape",
+  "featDir": "docs/browzer/feat-20260511-update-docs-new",
+  "originalRequest": "fixture",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-11T00:00:00Z" },
+  "startedAt": "2026-05-11T00:00:00Z",
+  "updatedAt": "2026-05-11T00:00:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_UPDATE_DOCS",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_UPDATE_DOCS",
+      "name": "UPDATE_DOCS",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-11T00:00:00Z",
+      "completedAt": "2026-05-11T00:03:00Z",
+      "elapsedMin": 3.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["update-docs"],
+      "skillsInvoked": ["update-docs"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "updateDocs": {
+        "docsMentioning": [],
+        "anchorDocsAlwaysIncluded": [],
+        "patches": [
+          {
+            "doc": "docs/CHANGELOG.md",
+            "reason": "add new field docs",
+            "linesChanged": 4,
+            "verdict": "applied"
+          }
+        ],
+        "twoPassRun": {
+          "directRef": true,
+          "conceptLevel": true,
+          "mentionsPass": true,
+          "mentionsFallbackUsed": false,
+          "mentionsResultEmpty": null
+        },
+        "signals": [
+          {
+            "name": "mentions",
+            "source": "browzer mentions",
+            "hit": true,
+            "count": 3
+          },
+          {
+            "name": "deps-reverse",
+            "source": "browzer deps --reverse",
+            "hit": false
+          }
+        ],
+        "enoentScan": {
+          "ran": true,
+          "missingFiles": []
+        }
+      }
+    }
+  ]
+}

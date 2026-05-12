@@ -390,6 +390,36 @@
                         "description": "True when the operator pre-registered dispatchMode + reviewTier in\n`Skill(code-review, \"dispatchMode: <…>; tier: <…>\")` under autonomous\nmode, bypassing the Phase-1 prompt. See code-review/SKILL.md §1.",
                         "type": "boolean",
                         "default": false
+                    },
+                    "gate": {
+                        "description": "Optional gate verdict for the consolidated review. When set, drives\nautomated merge/block logic in receiving-code-review skill.\n\"advisory-only\" never blocks; \"fail-on-high\" blocks on severity=high;\n\"fail-on-medium-or-high\" blocks on medium or high.",
+                        "type": "string",
+                        "enum": [
+                            "fail-on-high",
+                            "fail-on-medium-or-high",
+                            "advisory-only"
+                        ],
+                        "default": null,
+                        "nullable": true
+                    },
+                    "exitCode": {
+                        "description": "Exit code of the consolidated gate check. null = not yet run.",
+                        "type": "integer",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "sensitivePathGate": {
+                        "description": "Sensitive-path scan result from the FR-3 gate (populated by code-review\nskill when it detects files matching references/sensitive-paths.md).",
+                        "type": "object",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/SensitivePathGate"
+                            },
+                            {
+                                "default": null
+                            }
+                        ],
+                        "nullable": true
                     }
                 }
             },
@@ -945,16 +975,17 @@
             "FeatureAcceptance": {
                 "type": "object",
                 "required": [
-                    "mode",
                     "acceptanceCriteria"
                 ],
                 "properties": {
                     "mode": {
+                        "description": "mode is now optional (not required) to allow partial/in-progress saves.\nEnum extended to include \"autonomous-with-stack-boot\" (2026-05-11).",
                         "type": "string",
                         "enum": [
                             "autonomous",
                             "manual",
-                            "hybrid"
+                            "hybrid",
+                            "autonomous-with-stack-boot"
                         ]
                     },
                     "modeNote": {
@@ -1132,6 +1163,14 @@
                         "description": "Set to true when the same finding was raised by an off-lane reviewer\n(cross-domain duplicate). The off-lane copies become advisory and the\nowning lane drives the fix. See code-review/references/severity-matrix.md §49.",
                         "type": "boolean",
                         "default": false
+                    },
+                    "mergedFrom": {
+                        "description": "IDs of sibling findings that were merged into this one during\nconsolidation (format: \"<lane>-<seq>\", e.g. \"SR-3\", \"QA-1\").",
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^[A-Z]{2,6}-[0-9]+$"
+                        }
                     }
                 }
             },
@@ -2132,6 +2171,24 @@
                     },
                     "loggedAsWarning": {
                         "type": "boolean"
+                    }
+                }
+            },
+            "SensitivePathGate": {
+                "type": "object",
+                "required": [
+                    "matched",
+                    "matchedFiles"
+                ],
+                "properties": {
+                    "matched": {
+                        "type": "boolean"
+                    },
+                    "matchedFiles": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
                     }
                 }
             },
@@ -3275,6 +3332,68 @@
                     },
                     "twoPassRun": {
                         "$ref": "#/components/schemas/TwoPassRun"
+                    },
+                    "signals": {
+                        "description": "signals records the browzer-mentions / browzer-deps scan signals that\ndrove Phase A discovery. Each entry names the signal, its source command,\nwhether it returned results (hit), and an optional result count.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/UpdateDocsSignal"
+                        },
+                        "default": null,
+                        "nullable": true
+                    },
+                    "enoentScan": {
+                        "description": "enoentScan records whether Phase B ran a missing-file sweep and which\nfiles (if any) were absent from the filesystem at patch time.",
+                        "type": "object",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/UpdateDocsEnoentScan"
+                            },
+                            {
+                                "default": null
+                            }
+                        ],
+                        "nullable": true
+                    }
+                }
+            },
+            "UpdateDocsEnoentScan": {
+                "type": "object",
+                "required": [
+                    "ran",
+                    "missingFiles"
+                ],
+                "properties": {
+                    "ran": {
+                        "type": "boolean"
+                    },
+                    "missingFiles": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "UpdateDocsSignal": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "source",
+                    "hit"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": "string"
+                    },
+                    "hit": {
+                        "type": "boolean"
+                    },
+                    "count": {
+                        "type": "integer"
                     }
                 }
             },
@@ -3575,6 +3694,30 @@
                     "notes": {
                         "type": "string",
                         "default": ""
+                    },
+                    "mutationScore": {
+                        "description": "Flat top-level aliases for mutation results (additive, backward-compat).\nBoth the nested mutationTesting.{score,…} and these flat fields are\naccepted; tools may populate either or both. Added 2026-05-11.",
+                        "type": "integer",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "killed": {
+                        "type": "integer",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "survived": {
+                        "type": "integer",
+                        "default": null,
+                        "nullable": true
+                    },
+                    "categories": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "default": null,
+                        "nullable": true
                     }
                 }
             },

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 2,
+  "pluginVersion": null,
+  "featureId": "feat-20260511-feature-acceptance-invalid",
+  "featureName": "Feature acceptance invalid mode",
+  "featDir": "docs/browzer/feat-20260511-feature-acceptance-invalid",
+  "originalRequest": "fixture",
+  "operator": { "locale": "en-US" },
+  "config": { "mode": "autonomous", "setAt": "2026-05-11T00:00:00Z" },
+  "startedAt": "2026-05-11T00:00:00Z",
+  "updatedAt": "2026-05-11T00:00:00Z",
+  "completedAt": null,
+  "totalElapsedMin": 0,
+  "currentStepId": "STEP_01_FEATURE_ACCEPTANCE",
+  "nextStepId": "",
+  "totalSteps": 1,
+  "completedSteps": 1,
+  "notes": [],
+  "globalWarnings": [],
+  "steps": [
+    {
+      "stepId": "STEP_01_FEATURE_ACCEPTANCE",
+      "name": "FEATURE_ACCEPTANCE",
+      "status": "COMPLETED",
+      "applicability": { "applicable": true, "reason": "" },
+      "startedAt": "2026-05-11T00:00:00Z",
+      "completedAt": "2026-05-11T00:05:00Z",
+      "elapsedMin": 5.0,
+      "retryCount": 0,
+      "itDependsOn": [],
+      "nextStep": "",
+      "skillsToInvoke": ["feature-acceptance"],
+      "skillsInvoked": ["feature-acceptance"],
+      "owner": null,
+      "warnings": [],
+      "reviewHistory": [],
+      "dispatches": [],
+      "featureAcceptance": {
+        "mode": "bogus",
+        "acceptanceCriteria": [],
+        "nfrVerifications": [],
+        "successMetrics": [],
+        "acRelaxations": [],
+        "operatorActionsRequested": []
+      }
+    }
+  ]
+}

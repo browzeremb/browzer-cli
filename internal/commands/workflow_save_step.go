@@ -127,6 +127,17 @@ Behaviour:
 				NoBackup: noBackup,
 			}
 
+			// FR-4: --async is deprecated in save-step. Always ran synchronously;
+			// the flag was misleading. Passing it now returns exit code 2.
+			// Users must remove --async from their call-sites.
+			// Check BEFORE validate-only so the deprecation fires even when
+			// --validate-only is passed alongside --async.
+			if asyncFlag, _ := cmd.Flags().GetBool("async"); asyncFlag {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+					"save-step: --async is deprecated; remove the flag (it always ran synchronously)")
+				return cliExitErr(2, errors.New("--async is deprecated; remove the flag (it always ran synchronously)"))
+			}
+
 			if validateOnly {
 				dr, err := wf.ApplyDryRun(path, "save-step", args2)
 				if err != nil {
@@ -153,12 +164,11 @@ Behaviour:
 			// running get-step right after the autosave hook fires). The
 			// generic mutator default is "async" because most mutators are
 			// fire-and-forget bookkeeping; save-step is read-after-write.
-			// Operators can still force --async / --sync explicitly.
-			async, _ := cmd.Flags().GetBool("async")
+			// Operators can still force --sync explicitly.
 			sync, _ := cmd.Flags().GetBool("sync")
 			await, _ := cmd.Flags().GetBool("await")
 			envMode := os.Getenv("BROWZER_WORKFLOW_MODE")
-			if !async && !sync && !await && envMode == "" {
+			if !sync && !await && envMode == "" {
 				mode = writeModeDaemonSync
 			}
 			if err := dispatchToDaemonOrFallback(cmd, path, "save-step", args2, mode, noLock, lockTimeout); err != nil {
@@ -200,18 +210,27 @@ Behaviour:
 }
 
 // emitHintFixesOnError runs the full dry-run validation pipeline and writes
-// the richer --hint-fixes messages (with worked examples for enum / unknown-
-// field violations) to stderr. Called by the save-step RunE when --hint-fixes
-// is set and the write failed.
+// the richer --hint-fixes messages (aggregated diagnostic table + worked
+// examples) to stderr. Called by the save-step RunE when --hint-fixes is set
+// and the write failed.
 //
-// Uses DryRunViolations to get the structured Violation slice with
-// AllowedValues / AllowedFields populated by the CUE enrichment pass,
-// then renders them with FormatViolationsWithHints.
+// Emits in two parts:
+//  1. An aggregated diagnostic table (path | kind | got | expected) that
+//     surfaces ALL violations at once (FR-2).
+//  2. The per-violation hint lines from FormatViolationsWithHints (FR-3).
 func emitHintFixesOnError(cmd *cobra.Command, path string, args2 wf.MutatorArgs) {
 	res, err := wf.DryRunViolations(path, "save-step", args2)
 	if err != nil || res == nil || res.Valid || len(res.Violations) == 0 {
 		return
 	}
+
+	// FR-2: aggregated diagnostic table.
+	rows := BuildDiagnosticTable(res.Violations)
+	if table := FormatDiagnosticTable(rows); table != "" {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "violations (%d):\n%s\n", len(res.Violations), table)
+	}
+
+	// FR-3: per-violation worked examples (enum / unknown-field only).
 	hints := schema.FormatViolationsWithHints(res.Violations)
 	if hints != "" {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "hint-fixes:\n%s\n", hints)
@@ -255,9 +274,9 @@ Examples:
     --from PRD=staging/PRD.md \
     --from TASKS_MANIFEST=staging/TASKS_MANIFEST.json
 
-Flags --async / --sync / --await / --no-lock / --no-schema-check are
-honored per phase. --hint-fixes emits worked examples on enum/unknown-field
-violations.`,
+Flags --sync / --await / --no-lock / --no-schema-check are honored per
+phase. --hint-fixes emits worked examples on enum/unknown-field violations.
+Note: --async is deprecated and returns exit code 2.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if len(fromPairs) == 0 {
@@ -266,6 +285,15 @@ violations.`,
 
 			if idFlag == "" && workflowFlag == "" {
 				return cliExitErr(2, errors.New("--id or --workflow is required"))
+			}
+
+			// FR-4: --async is deprecated (same as save-step). Emit the error
+			// here so callers that migrate from save-step to save-step-batch and
+			// carry over --async are notified immediately.
+			if asyncFlag, _ := cmd.Flags().GetBool("async"); asyncFlag {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+					"save-step-batch: --async is deprecated; remove the flag (it always ran synchronously)")
+				return cliExitErr(2, errors.New("--async is deprecated; remove the flag (it always ran synchronously)"))
 			}
 
 			// FR-5: BROWZER_LLM=1 implies --hint-fixes unless --no-hint-fixes is set.
@@ -977,6 +1005,7 @@ func extractKV(s, key string) (value, remaining string) {
 			if j := strings.Index(s[valStart:], sep); j >= 0 && valStart+j < valEnd {
 				valEnd = valStart + j
 				sepLen = len(sep)
+				break // first (leftmost) separator wins; stop scanning
 			}
 		}
 		val := strings.TrimSpace(s[valStart:valEnd])

@@ -102,6 +102,9 @@ func NewRootCommand(version string) *cobra.Command {
 	registerGain(root)
 	registerPlugin(root)
 
+	// `codereview` subcommand group.
+	registerCodeReview(root)
+
 	// `workflow` subcommand group.
 	registerWorkflow(root)
 

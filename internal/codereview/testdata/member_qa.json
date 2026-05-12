@@ -1,0 +1,16 @@
+{
+  "findings": [
+    {
+      "id": "QA-1",
+      "domain": "qa",
+      "severity": "medium",
+      "category": "missing-test",
+      "file": "src/routes/auth.ts",
+      "line": 42,
+      "description": "No test covers the error branch when token validation fails.",
+      "suggestedFix": "Add a unit test for the 401 path.",
+      "assignedSkill": "testing-strategies",
+      "status": "open"
+    }
+  ]
+}
