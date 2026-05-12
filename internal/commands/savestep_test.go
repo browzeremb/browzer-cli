@@ -5,6 +5,7 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -187,6 +188,142 @@ func TestSaveStep_AsyncWithValidateOnly_Exit2(t *testing.T) {
 	exitCode := extractExitCode(err)
 	if exitCode != 2 {
 		t.Errorf("expected exit code 2 for --async+--validate-only; got %d", exitCode)
+	}
+}
+
+// TestSaveStepBatch_AsyncDeprecated verifies that passing --async to
+// save-step-batch returns exit code 2 with the deprecation message (FR-4,
+// parallel to TestSaveStep_AsyncDeprecated for the batch variant).
+func TestSaveStepBatch_AsyncDeprecated(t *testing.T) {
+	root, _ := seedWorkflowForFeat(t, "feat-test", minimalWorkflow)
+	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
+	t.Chdir(root)
+
+	// Write a minimal staging file so --from parsing does not fail before the
+	// --async check fires.
+	stagingDir := root + "/docs/browzer/feat-test/staging"
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll staging: %v", err)
+	}
+	stagingFile := stagingDir + "/PRD.json"
+	if err := os.WriteFile(stagingFile, []byte(`{"title":"test"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile staging: %v", err)
+	}
+
+	var out, errBuf bytes.Buffer
+	cmd := NewRootCommand("test")
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{
+		"save-step-batch",
+		"--id", "feat-test",
+		"--from", "PRD=" + stagingFile,
+		"--async",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for deprecated --async on save-step-batch; got nil")
+	}
+
+	// Should mention deprecation in stderr.
+	stderr := errBuf.String()
+	if !strings.Contains(stderr, "--async is deprecated") {
+		t.Errorf("expected deprecation message on stderr; got:\n%s", stderr)
+	}
+
+	// Exit code must be 2.
+	exitCode := extractExitCode(err)
+	if exitCode != 2 {
+		t.Errorf("expected exit code 2 for --async deprecation; got %d (err=%v)", exitCode, err)
+	}
+}
+
+// TestSaveStep_CanonicalStepName_AliasResolution verifies that save-step's
+// canonicalStepName() correctly delegates alias resolution to
+// schema.ResolveStepAlias, so that:
+//
+//   - "BRAINSTORM" is persisted under the canonical name "BRAINSTORMING"
+//   - "TASKS"      is persisted under the canonical name "TASKS_MANIFEST"
+//
+// This is the command-boundary integration test for the consolidation in
+// feat-20260512-cli-skills-integration-fixes: canonicalStepName() is a thin
+// shim that must remain in sync with schema.ResolveStepAlias. The schema-
+// package unit test (TestResolveStepAlias) covers the resolver in isolation;
+// this test confirms the full save-step → mutatorSaveStep → canonicalStepName
+// path honours the same aliases.
+func TestSaveStep_CanonicalStepName_AliasResolution(t *testing.T) {
+	cases := []struct {
+		alias         string
+		wantStepName  string
+		payload       string
+	}{
+		{
+			alias:        "BRAINSTORM",
+			wantStepName: "BRAINSTORMING",
+			payload:      `{"summary":"brainstorm payload","questions":[]}`,
+		},
+		{
+			alias:        "TASKS",
+			wantStepName: "TASKS_MANIFEST",
+			payload:      `{"totalTasks":0,"tasksOrder":[],"tasks":[]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.alias, func(t *testing.T) {
+			root, wfPath := seedWorkflowForFeat(t, "feat-test", minimalWorkflow)
+			t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
+			t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
+			t.Chdir(root)
+
+			var out, errBuf bytes.Buffer
+			cmd := NewRootCommand("test")
+			cmd.SetOut(&out)
+			cmd.SetErr(&errBuf)
+			cmd.SetArgs([]string{
+				"save-step", tc.alias,
+				"--id", "feat-test",
+				"--stdin",
+				"--quiet",
+			})
+			cmd.SetIn(strings.NewReader(tc.payload))
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("save-step %s: unexpected error: %v\nstderr=%s", tc.alias, err, errBuf.String())
+			}
+
+			data, err := os.ReadFile(wfPath)
+			if err != nil {
+				t.Fatalf("read workflow.json: %v", err)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("unmarshal workflow.json: %v", err)
+			}
+
+			steps, _ := doc["steps"].([]any)
+			if len(steps) == 0 {
+				t.Fatalf("save-step %s: want ≥1 step in workflow.json, got 0", tc.alias)
+			}
+
+			// The step must be persisted under the canonical name, not the alias.
+			var foundName string
+			for _, s := range steps {
+				if sm, ok := s.(map[string]any); ok {
+					if n, _ := sm["name"].(string); n != "" {
+						foundName = n
+						break
+					}
+				}
+			}
+			if foundName != tc.wantStepName {
+				t.Errorf("save-step %s: step.name = %q, want %q (alias must resolve to canonical)",
+					tc.alias, foundName, tc.wantStepName)
+			}
+		})
 	}
 }
 

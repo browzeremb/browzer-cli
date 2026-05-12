@@ -37,6 +37,42 @@ func registerWorkflowDescribeStepType(parent *cobra.Command) {
 	copy(allowlist, schema.ValidStepNames)
 	sort.Strings(allowlist)
 
+	// Build the human-readable step-name list that advertises registered
+	// aliases alongside their canonical names. Each alias is appended as
+	// "(alias: ALIAS)" immediately after its canonical entry so operators
+	// running --help can discover both forms without reading source code.
+	//
+	// Example output line: "  BRAINSTORMING (alias: BRAINSTORM)"
+	//
+	// The reverse-map is built at command-registration time (once) from the
+	// schema.StepTypeAliases SSOT rather than hard-coded here, so adding a
+	// new alias in describe.go is the only change required.
+	reverseAliases := make(map[string][]string, len(schema.StepTypeAliases))
+	for alias, canonical := range schema.StepTypeAliases {
+		reverseAliases[canonical] = append(reverseAliases[canonical], alias)
+	}
+	// Sort each alias list for deterministic output.
+	for canonical := range reverseAliases {
+		sort.Strings(reverseAliases[canonical])
+	}
+
+	allowlistLines := make([]string, 0, len(allowlist))
+	for _, name := range allowlist {
+		line := name
+		if aliases, ok := reverseAliases[name]; ok {
+			line += " (alias: " + strings.Join(aliases, ", ") + ")"
+		}
+		allowlistLines = append(allowlistLines, line)
+	}
+
+	// allowlistPlain is used for the error path so the message stays compact.
+	allowlistWithAliases := make([]string, 0, len(allowlist)+len(schema.StepTypeAliases))
+	allowlistWithAliases = append(allowlistWithAliases, allowlist...)
+	for alias := range schema.StepTypeAliases {
+		allowlistWithAliases = append(allowlistWithAliases, alias)
+	}
+	sort.Strings(allowlistWithAliases)
+
 	cmd := &cobra.Command{
 		Use: "describe-step-type <STEP_NAME>",
 		// `describe-step` is a legacy alias kept because operators (and
@@ -83,7 +119,7 @@ Examples:
   browzer workflow describe-step-type TASK --field task.execution.scopeAdjustments
   browzer workflow describe-step-type CODE_REVIEW --field codeReview.regressionRun --json
   browzer workflow describe-step-type TASK --required-only`,
-			strings.Join(allowlist, "\n  "),
+			strings.Join(allowlistLines, "\n  "),
 		),
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
@@ -96,7 +132,7 @@ Examples:
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"unknown step type %q\nallowed: %s\n",
 					stepName,
-					strings.Join(allowlist, ", "),
+					strings.Join(allowlistWithAliases, ", "),
 				)
 				return fmt.Errorf("unknown step type %q", stepName)
 			}
@@ -141,7 +177,11 @@ Examples:
 	parent.AddCommand(cmd)
 }
 
-// isKnownStepType reports whether name appears in schema.ValidStepNames.
+// isKnownStepType reports whether name appears in schema.ValidStepNames or
+// is a recognised alias in schema.StepTypeAliases (e.g. "BRAINSTORM",
+// "TASKS"). Aliases are resolved to their canonical form before the
+// ValidStepNames check so the error path never fires for known aliases.
 func isKnownStepType(name string) bool {
-	return slices.Contains(schema.ValidStepNames, name)
+	canonical := schema.ResolveStepAlias(name)
+	return slices.Contains(schema.ValidStepNames, canonical)
 }

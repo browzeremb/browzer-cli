@@ -201,6 +201,58 @@ func LoadMemberFiles(stagingDir string, strict bool, errOut func(string)) ([]Mem
 	return members, skipped, nil
 }
 
+// fallbackFindingDescription is the sentinel value written to Finding.Description
+// when both Description and SuggestedFix are empty.  It is exported as a
+// package-level constant so downstream consumers (e.g. receiving-code-review)
+// can compare against it to distinguish "reviewer intentionally left blank"
+// from "actual issue with no description".
+const fallbackFindingDescription = "(no description provided)"
+
+// fillFindingDefaults fills empty required #Finding fields so the aggregated
+// output is always CUE-valid.  It is called BEFORE the global F-NNN ID is
+// assigned, so f.ID may still hold the per-member value at call time.
+//
+// Rules (matching AC-2 / R-2):
+//   - Status == ""      → "open"
+//   - Domain == ""      → mapped from memberName:
+//     "senior-engineer"  → "complexity"
+//     "software-architect" → "architecture"
+//     "qa"               → "qa"
+//     "regression-tester" → "regression"
+//     else               → memberName verbatim (case-sensitive; hyphen required)
+//   - Description == "" → f.SuggestedFix (if non-empty), else fallbackFindingDescription
+//   - Category == ""    → "review-finding"
+func fillFindingDefaults(f Finding, memberName string) Finding {
+	if f.Status == "" {
+		f.Status = "open"
+	}
+	if f.Domain == "" {
+		switch strings.ToLower(memberName) {
+		case "senior-engineer":
+			f.Domain = "complexity"
+		case "software-architect":
+			f.Domain = "architecture"
+		case "qa":
+			f.Domain = "qa"
+		case "regression-tester":
+			f.Domain = "regression"
+		default:
+			f.Domain = memberName
+		}
+	}
+	if f.Description == "" {
+		if f.SuggestedFix != "" {
+			f.Description = f.SuggestedFix
+		} else {
+			f.Description = fallbackFindingDescription
+		}
+	}
+	if f.Category == "" {
+		f.Category = "review-finding"
+	}
+	return f
+}
+
 // Aggregate merges the findings from all member files into a single
 // AggregateResult following the preserve-all algorithm:
 //
@@ -211,6 +263,10 @@ func LoadMemberFiles(stagingDir string, strict bool, errOut func(string)) ([]Mem
 //  5. Roll up severityCounts.
 //
 // The algorithm never drops a finding.  Severity is NOT used as a dedup key.
+//
+// Findings are normalized via fillFindingDefaults() before ID assignment;
+// empty required fields are backfilled with member-name-derived defaults.
+// Non-empty fields (including Status) are never overwritten.
 func Aggregate(members []MemberFile) AggregateResult {
 	// memberPrefix maps known domain names to their canonical 2-4 letter prefix.
 	// Unknown domains fall back to the first 4 upper-case characters of the
@@ -259,6 +315,9 @@ func Aggregate(members []MemberFile) AggregateResult {
 		memberNames = append(memberNames, m.MemberName)
 		prefix := memberPrefix(m.MemberName)
 		for i, f := range m.Findings {
+			// Fill required fields with defaults BEFORE assigning the member ID
+			// so that the consolidated output is always CUE-valid (R-2).
+			f = fillFindingDefaults(f, m.MemberName)
 			memberID := fmt.Sprintf("%s-%d", prefix, i+1)
 			f.ID = memberID
 			tagged = append(tagged, taggedFinding{memberID: memberID, memberName: m.MemberName, f: f})

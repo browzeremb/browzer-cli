@@ -62,7 +62,11 @@ type DescribeOpts struct {
 }
 
 // ValidStepNames is the canonical allowlist used both for input validation
-// and for the cobra --help text.
+// and for the cobra --help text. This list contains only canonical CUE step
+// names (and the special "workflow" alias for #WorkflowV1). User-facing
+// aliases like "BRAINSTORM" and "TASKS" are registered in StepTypeAliases
+// and resolved before validation — they are NOT added here to avoid drift
+// with the stepNameAllowlist() derivation from #StepName in validator.go.
 var ValidStepNames = []string{
 	"BRAINSTORMING",
 	"PRD",
@@ -75,6 +79,46 @@ var ValidStepNames = []string{
 	"FEATURE_ACCEPTANCE",
 	"COMMIT",
 	"workflow",
+}
+
+// StepTypeAliases maps user-facing shorthand names to canonical step type
+// names. This is the SINGLE SOURCE OF TRUTH for CLI alias resolution —
+// every callsite that accepts a phase name (save-step's canonicalStepName,
+// describe-step-type, workflow/view) MUST resolve through ResolveStepAlias
+// rather than carrying its own alias switch. Adding a new alias is a
+// one-file change here.
+//
+// Aliases are intentionally separate from ValidStepNames because they are NOT
+// CUE step names (the CUE #StepName disjunction at
+// packages/cli/schemas/workflow-v1.cue#L91 only contains canonical forms).
+// The validator's stepNameAllowlist() is derived from the CUE SSOT, so
+// adding aliases there would cause TestStepNameAllowlist_MirrorsValidStepNames
+// to diverge from the SSOT.
+//
+// Cross-reference: this Go map is the operator-facing alias surface; the
+// CUE SSOT (`schemas/workflow-v1.cue` → `#StepName`) carries a parallel
+// comment that points back here. Codegen from CUE → Go is intentionally
+// not wired (aliases are a CLI-UX concern, not a schema concern), so the
+// two files are kept in sync via the cross-reference comments.
+var StepTypeAliases = map[string]string{
+	"BRAINSTORM": "BRAINSTORMING",
+	"TASKS":      "TASKS_MANIFEST",
+}
+
+// ResolveStepAlias returns the canonical step name for alias, or alias itself
+// when no mapping exists. Case-sensitive — callers must upper-case first if
+// case-insensitive matching is desired.
+//
+// SSOT for alias resolution. Every CLI surface that accepts a phase name
+// (save-step's canonicalStepName in workflow_save_step.go,
+// describe-step-type below, the workflow view layer) MUST delegate here so
+// `browzer workflow describe-step-type BRAINSTORM`, `browzer save-step
+// BRAINSTORM`, and `browzer get-step BRAINSTORM` all resolve identically.
+func ResolveStepAlias(alias string) string {
+	if canonical, ok := StepTypeAliases[alias]; ok {
+		return canonical
+	}
+	return alias
 }
 
 // stepPayloadDefinition maps a canonical step name to the CUE definition name
@@ -123,8 +167,9 @@ type fieldInfo struct {
 }
 
 // DescribeStepType returns a description of the named step type. stepName must
-// be one of ValidStepNames (case-sensitive). The output format is controlled
-// by opts:
+// be one of ValidStepNames (case-sensitive) or a known alias from
+// StepTypeAliases (e.g. "BRAINSTORM" → "BRAINSTORMING", "TASKS" →
+// "TASKS_MANIFEST"). The output format is controlled by opts:
 //
 //   - Default (no flags): Markdown table sorted by field path.
 //   - opts.JSON: JSON array of field objects, sorted by path.
@@ -134,14 +179,17 @@ type fieldInfo struct {
 // Determinism guarantee: byte-identical output across consecutive invocations
 // because fields are sorted by path before emission.
 func DescribeStepType(stepName string, opts DescribeOpts) (string, error) {
+	// Resolve user-facing alias (BRAINSTORM → BRAINSTORMING, TASKS →
+	// TASKS_MANIFEST) before the canonical-name check so both surfaces
+	// produce identical output. Calls the SSOT exported resolver directly
+	// (no internal wrapper) — same path as save-step's canonicalStepName().
+	stepName = ResolveStepAlias(stepName)
+
 	if !isValidStepName(stepName) {
-		allowlist := make([]string, len(ValidStepNames))
-		copy(allowlist, ValidStepNames)
-		sort.Strings(allowlist)
 		return "", fmt.Errorf(
-			"unknown step type %q — allowed: %s",
+			"unknown step type %q; allowed: %s",
 			stepName,
-			strings.Join(allowlist, ", "),
+			formatAllowedStepNames(),
 		)
 	}
 
@@ -263,6 +311,44 @@ func DescribeStepType(stepName string, opts DescribeOpts) (string, error) {
 // isValidStepName reports whether name is in ValidStepNames.
 func isValidStepName(name string) bool {
 	return slices.Contains(ValidStepNames, name)
+}
+
+// formatAllowedStepNames returns a deterministic comma-separated list of
+// canonical step names with their registered aliases (when any) annotated
+// inline. The output is alpha-sorted by canonical name and aliases for a
+// given canonical name are alpha-sorted within their parenthesised group.
+//
+// Example:
+//
+//	BRAINSTORMING (alias: BRAINSTORM), CODE_REVIEW, …, TASKS_MANIFEST (alias: TASKS), …
+//
+// Surfaced in the "unknown step type" error so an operator who typed a
+// near-miss alias can discover the registered shorthand without reading
+// the source. Reads StepTypeAliases (the SSOT) so adding a new alias
+// flows through to the error message automatically.
+func formatAllowedStepNames() string {
+	// Invert StepTypeAliases: canonical → []alias.
+	aliasesByCanonical := map[string][]string{}
+	for alias, canonical := range StepTypeAliases {
+		aliasesByCanonical[canonical] = append(aliasesByCanonical[canonical], alias)
+	}
+	for k := range aliasesByCanonical {
+		sort.Strings(aliasesByCanonical[k])
+	}
+
+	names := make([]string, len(ValidStepNames))
+	copy(names, ValidStepNames)
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		if aliases, ok := aliasesByCanonical[n]; ok && len(aliases) > 0 {
+			parts = append(parts, fmt.Sprintf("%s (alias: %s)", n, strings.Join(aliases, ", ")))
+		} else {
+			parts = append(parts, n)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // walkCUEFields recursively descends the CUE value and appends leaf fieldInfo

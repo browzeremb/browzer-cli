@@ -103,13 +103,17 @@ Schema v2 is the current contract (since 2026-05-04). Workflows tagged `schemaVe
 
 Every workflow mutator honours three execution modes:
 
-| Mode      | Path                       | Cost                                          |
-| --------- | -------------------------- | --------------------------------------------- |
-| `--sync`  | in-process standalone      | ~500ms (full read/validate/write)             |
-| `--async` | daemon FIFO (default)      | <50ms — daemon completes durably in background |
-| `--await` | daemon + fsync wait        | ~50–120ms — durable when the call returns     |
+| Mode               | Path                       | Cost                                          |
+| ------------------ | -------------------------- | --------------------------------------------- |
+| `--sync`           | in-process standalone      | ~500ms (full read/validate/write)             |
+| `--async` (default)| daemon FIFO               | <50ms — daemon completes durably in background |
+| `--await`          | daemon + fsync wait        | ~50–120ms — durable when the call returns     |
 
 Override via `BROWZER_WORKFLOW_MODE=sync|async|await`. CI/test paths force standalone (`--sync`) when a long-running daemon binary may be stale.
+
+> **`save-step` / `save-step-batch` exception**: `--async` is **rejected** by both verbs with exit code 2 (`--async is deprecated; remove the flag`). The default for these two verbs is `--await` (daemon + fsync), because the very next agent step typically reads the persisted phase. Callers that previously passed `--async` must remove the flag; `--await` is the correct equivalent. Generic mutators still accept `--async` as the default fire-and-forget mode.
+>
+> **`--async` deprecation timeline**: `--async` will be removed from all workflow mutators (including generic ones) in the next major release (v4.0.0). Callers should migrate to `--await` (durable, same latency class) or `--sync` (in-process, no daemon dependency). To flag deprecated usage in your own call-sites, pass `cmd.Flags().MarkDeprecated("async", "use --await instead")` when wiring new Cobra commands. The environment variable `BROWZER_WORKFLOW_MODE=async` is also deprecated and will be ignored starting in v4.0.0; set `BROWZER_WORKFLOW_MODE=await` or omit it to accept the per-verb default.
 
 The daemon (`internal/daemon/`) speaks JSON-RPC over a Unix socket, hosts the read-filter pipeline (AST trimming for `browzer read --filter auto`), the manifest + session caches, and the `workflow_queue` for `--async` writes. Lifecycle: `browzer daemon start --background`, `browzer daemon status --json`, `browzer daemon stop`.
 
@@ -131,6 +135,19 @@ Mutators add `--quiet` (default-on under `BROWZER_LLM=1` for every workflow muta
 ### Step views (markdown + JSON)
 
 `browzer get-step <ID> --id <feat>` is the canonical read surface. Default output is a rich markdown view formatted for LLM context (role + scope + skills + PRD slice + deps + invariants + done-when), assembled by templates embedded at `internal/workflow/view/templates/*.md.tmpl` (11 templates — one per phase plus a `generic` fallback). `--json` emits the underlying `#StepView` payload defined in `schemas/workflow-v1.cue`. Accepted IDs: `PRD`, `TASKS`, `TASK_NN`, `CODE_REVIEW`, `RECEIVING_CODE_REVIEW`, `WRITE_TESTS`, `UPDATE_DOCS`, `FEATURE_ACCEPTANCE`, `COMMIT`, `BRAINSTORM`, plus two virtual phases: `ORIGINAL_REQUEST` (returns `metadata.originalRequest` — the verbatim operator ask captured at `workflow init` time, used as a fallback when a phase like BRAINSTORM was skipped) and `CONFIG` (carries `executionStrategy`, `mode`, `setAt` from `metadata.config` — seeded by `workflow init --execution-strategy <serial|parallel|parallel-worktrees|agent-teams>` and consumed by `generate-task` / orchestrator skills). Neither virtual phase has an underlying `steps[]` entry. Adding a new phase = add a `.md.tmpl` here AND extend `#StepView` in the CUE.
+
+**`--exit-only` flag (R-4):** `browzer get-step <PHASE> --id <feat> --exit-only` is a lightweight existence probe. Both stdout and stderr are suppressed when the step is absent or the phase is unknown — exit code is the sole signal: 0 = step found, 2 = absent or phase unknown. Use it in scripts and skill bodies that need a conditional branch without consuming the full markdown view:
+
+```bash
+if browzer get-step CODE_REVIEW --id "$FEAT_ID" --exit-only; then
+  # step exists — read it normally
+  browzer get-step CODE_REVIEW --id "$FEAT_ID" --json
+else
+  echo "CODE_REVIEW not yet persisted"
+fi
+```
+
+Do not parse stdout when `--exit-only` is set — it is empty on both success and failure paths.
 
 ### Cross-step aggregations
 
@@ -163,6 +180,7 @@ These are part of the contract — skills branch on them. Don't repurpose.
 - **Adding a new step phase**: extend `#StepView` in `schemas/workflow-v1.cue`, add a sibling `.md.tmpl` under `internal/workflow/view/templates/` (consumed by the embedded templates in `get-step`), add the parser branch in `workflow_save_step.go`, and document the ID in the `get-step` table. Skills cannot consume it until skill bodies + `skill-cli-references.mjs` audit allowlists are updated in the same change.
 - **Adding a new mutator verb** (rare — prefer extending `save-step` / `get-step`): wire it under `internal/commands/workflow_*.go`, register validation against the post-mutation CUE shape, default `--quiet` on under `BROWZER_LLM=1`, and document it in the README's "Workflow state" table.
 - **Adding a CLI flag visible to skills**: update the README, audit `skill-cobra-arg-syntax.mjs` examples, and rerun `skill-cli-sync-drift.mjs`.
+- **Plugin host-agnosticism**: a pre-push audit `audit-skill-host-agnosticism` (`scripts/packages/skills/audit/skill-host-agnosticism.mjs`) ensures `packages/skills/` contains no monorepo-specific paths (e.g. `packages/cli/internal/`, `apps/api/`) in SKILL.md or hook prose. The plugin is mirrored to `browzeremb/skills`; this audit is mandatory before any PR that touches skill bodies or hooks.
 - **JSON output stability**: every read command's `--json` payload is consumed by skills as a contract. Field renames are breaking changes; gate behind a major bump (cli-v2.0.0 was the last BREAKING — `#TestSpec.type → intent`, Explorer rich→lean projection, `--quiet` parity on `explore`/`search`).
 - **Banners go to stderr** (regression-pin test exists). Stdout is reserved for command output.
 - **JSON encoding**: read paths that re-encode workflow JSON use `marshalNoHTMLEscape` (`json.Encoder` with `SetEscapeHTML(false)`) — needed because earlier versions hit a parse race on PRDs ~35 KB. There's a 50-iter regression test (`TestWorkflowQuery_StepsByName_AfterRecentAppendStep_ProducesValidJSON`); keep it green.

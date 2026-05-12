@@ -198,7 +198,7 @@ Behaviour:
 	cmd.Flags().BoolVar(&noBackup, "no-backup", false, "skip backup rotation before write (opt-in; default rotates up to 2 backups)")
 	// Honor the global write-mode flags (defined on the workflow group). Save
 	// is a top-level command, so re-declare here.
-	cmd.Flags().Bool("async", false, "send via daemon, return immediately")
+	cmd.Flags().Bool("async", false, "DEPRECATED: send via daemon, return immediately (rejected with exit 2)")
 	cmd.Flags().Bool("sync", false, "skip daemon, apply in-process")
 	cmd.Flags().Bool("await", false, "send via daemon, block until durable")
 	cmd.Flags().Bool("no-lock", false, "skip advisory lock")
@@ -275,8 +275,7 @@ Examples:
     --from TASKS_MANIFEST=staging/TASKS_MANIFEST.json
 
 Flags --sync / --await / --no-lock / --no-schema-check are honored per
-phase. --hint-fixes emits worked examples on enum/unknown-field violations.
-Note: --async is deprecated and returns exit code 2.`,
+phase. --hint-fixes emits worked examples on enum/unknown-field violations.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if len(fromPairs) == 0 {
@@ -409,7 +408,7 @@ Note: --async is deprecated and returns exit code 2.`,
 	cmd.Flags().BoolVar(&hintFixes, "hint-fixes", false, "on enum/unknown-field violations emit a worked example")
 	cmd.Flags().BoolVar(&noHintFixes, "no-hint-fixes", false, "suppress hint-fixes even when BROWZER_LLM=1 implies it")
 	cmd.Flags().BoolVar(&noBackup, "no-backup", false, "skip backup rotation before write (opt-in; default rotates up to 2 backups)")
-	cmd.Flags().Bool("async", false, "send via daemon, return immediately")
+	cmd.Flags().Bool("async", false, "DEPRECATED: send via daemon, return immediately (rejected with exit 2)")
 	cmd.Flags().Bool("sync", false, "skip daemon, apply in-process")
 	cmd.Flags().Bool("await", false, "send via daemon, block until durable")
 	cmd.Flags().Bool("no-lock", false, "skip advisory lock")
@@ -1325,12 +1324,11 @@ func mergeTaskPayload(task, payload map[string]any) {
 	task["execution"] = exec
 }
 
+// canonicalStepName resolves a user-facing phase name (possibly an alias
+// like "TASKS" or "BRAINSTORM") to its canonical CUE step name.
+//
+// Delegates to schema.ResolveStepAlias — the SSOT for CLI alias resolution.
+// All future alias additions belong in schema.StepTypeAliases (one file).
 func canonicalStepName(phase string) string {
-	switch phase {
-	case "TASKS":
-		return "TASKS_MANIFEST"
-	case "BRAINSTORM":
-		return "BRAINSTORMING"
-	}
-	return phase
+	return schema.ResolveStepAlias(phase)
 }

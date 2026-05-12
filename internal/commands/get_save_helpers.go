@@ -60,3 +60,13 @@ func cliExitErr(code int, err error) error {
 		ExitCode: code,
 	}
 }
+
+// cliExitErrSilent returns a CliError with the given exit code and an empty
+// message. When --exit-only is set and a lookup fails, callers use this to
+// signal the failure via exit code alone — no message is written to stderr
+// by RunE, and cobra's SilenceErrors on the root command suppresses its own
+// printing. The exit code is the sole signal.
+// Co-located with cliExitErr so future callers find both helpers together.
+func cliExitErrSilent(code int) error {
+	return &cliErrors.CliError{Message: "", ExitCode: code}
+}

@@ -1102,6 +1102,7 @@
                 }
             },
             "Finding": {
+                "description": "#Finding.id — global finding identifier assigned by `browzer codereview aggregate`.\n\n# Pattern\n\nThe pattern =~\"^F-[0-9]+$\" deliberately accepts BOTH forms:\n  - Legacy (schema v1/v2, pre-2026-05-12): \"F-1\", \"F-2\", … (no zero-padding)\n  - Canonical (post-aggregate output): \"F-001\", \"F-002\", … (zero-padded to 3 digits)\n\nDO NOT tighten this to ^F-[0-9]{3}$ — that would break existing workflow.json\nfiles produced by earlier CLI versions (NFR-2 retrocompat).\n\n# Convention\n\nThe aggregator (internal/codereview/aggregate.go) ALWAYS emits zero-padded\nF-NNN ids for newly produced consolidated CODE_REVIEW.json files.  Consumers\nshould treat F-NNN as the canonical form going forward.\n\n# mergedFrom[] IDs\n\nThe sibling mergedFrom[] array uses per-member prefixes (e.g. \"SR-3\", \"QA-1\").\nIts separate pattern =~\"^[A-Z]{2,6}-[0-9]+$\" does NOT require zero-padding\nbecause per-member ids use the unpadded form by design.",
                 "type": "object",
                 "required": [
                     "id",
@@ -2444,6 +2445,7 @@
                 }
             },
             "StepName": {
+                "description": "#StepName lists the canonical step names. The CLI also accepts\noperator-facing aliases (e.g. \"TASKS\" → \"TASKS_MANIFEST\", \"BRAINSTORM\"\n→ \"BRAINSTORMING\") which are intentionally NOT modelled in the CUE\nschema — they are a CLI-UX concern, not a workflow-state concern. The\nalias map lives in `packages/cli/internal/schema/describe.go`\n(`StepTypeAliases` + `ResolveStepAlias`); modifying CUE step names\nhere requires updating that map in lockstep so the CLI surface stays\nconsistent. Codegen from CUE → Go is intentionally not wired for the\nalias table; the cross-reference comments above and at the Go SSOT\nare the agreed sync mechanism.",
                 "type": "string",
                 "enum": [
                     "PRD",

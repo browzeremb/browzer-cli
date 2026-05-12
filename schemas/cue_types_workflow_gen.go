@@ -88,6 +88,16 @@ type GlobalWarning struct {
 	Message string `json:"message"`
 }
 
+// #StepName lists the canonical step names. The CLI also accepts
+// operator-facing aliases (e.g. "TASKS" → "TASKS_MANIFEST", "BRAINSTORM"
+// → "BRAINSTORMING") which are intentionally NOT modelled in the CUE
+// schema — they are a CLI-UX concern, not a workflow-state concern. The
+// alias map lives in `packages/cli/internal/schema/describe.go`
+// (`StepTypeAliases` + `ResolveStepAlias`); modifying CUE step names
+// here requires updating that map in lockstep so the CLI surface stays
+// consistent. Codegen from CUE → Go is intentionally not wired for the
+// alias table; the cross-reference comments above and at the Go SSOT
+// are the agreed sync mechanism.
 type StepName string
 
 type StepStatus string
@@ -838,6 +848,28 @@ type RegressionFailure struct {
 	Error string `json:"error"`
 }
 
+// #Finding.id — global finding identifier assigned by `browzer codereview aggregate`.
+//
+// # Pattern
+//
+// The pattern =~"^F-[0-9]+$" deliberately accepts BOTH forms:
+//   - Legacy (schema v1/v2, pre-2026-05-12): "F-1", "F-2", … (no zero-padding)
+//   - Canonical (post-aggregate output): "F-001", "F-002", … (zero-padded to 3 digits)
+//
+// DO NOT tighten this to ^F-[0-9]{3}$ — that would break existing workflow.json
+// files produced by earlier CLI versions (NFR-2 retrocompat).
+//
+// # Convention
+//
+// The aggregator (internal/codereview/aggregate.go) ALWAYS emits zero-padded
+// F-NNN ids for newly produced consolidated CODE_REVIEW.json files.  Consumers
+// should treat F-NNN as the canonical form going forward.
+//
+// # mergedFrom[] IDs
+//
+// The sibling mergedFrom[] array uses per-member prefixes (e.g. "SR-3", "QA-1").
+// Its separate pattern =~"^[A-Z]{2,6}-[0-9]+$" does NOT require zero-padding
+// because per-member ids use the unpadded form by design.
 type Finding struct {
 	Id string `json:"id"`
 

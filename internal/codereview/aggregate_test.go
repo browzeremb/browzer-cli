@@ -376,6 +376,91 @@ func TestAggregate_SameMember_SameFile_NoLine_NoCrossLaneOverlap(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TestFillFindingDefaults_PreservesNonEmptyStatus (F-008a)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestFillFindingDefaults_PreservesNonEmptyStatus pins the guard at lines
+// 219-221 of aggregate.go: when a finding already carries a Status value
+// (e.g. "fixed"), fillFindingDefaults must leave it unchanged.  A future
+// refactor that force-resets Status to "open" would break this assertion.
+func TestFillFindingDefaults_PreservesNonEmptyStatus(t *testing.T) {
+	members := []codereview.MemberFile{
+		{
+			MemberName: "qa",
+			Findings: []codereview.Finding{
+				{
+					Domain:      "qa",
+					Severity:    "low",
+					Category:    "missing-test",
+					File:        "src/billing.ts",
+					Line:        intPtr(10),
+					Description: "Already reviewed.",
+					Status:      "fixed", // pre-set; must survive aggregation
+				},
+			},
+		},
+	}
+
+	result := codereview.Aggregate(members)
+
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding; got %d", len(result.Findings))
+	}
+	got := result.Findings[0].Status
+	if got != "fixed" {
+		t.Errorf("finding.Status = %q; want %q — fillFindingDefaults must not overwrite a pre-set status", got, "fixed")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TestFillFindingDefaults_MixedCaseMemberName (F-008b)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestFillFindingDefaults_MixedCaseMemberName pins the current default-branch
+// behavior when the member name does not match any known canonical key after
+// strings.ToLower: the Domain is set to the raw memberName value verbatim
+// (including original casing).  For example "SeniorEngineer" (no hyphen) does
+// NOT match "senior-engineer", so Domain becomes "SeniorEngineer".
+//
+// This test documents the current behavior so that any future change — either
+// to normalize unknown names or to extend the switch with hyphen-stripped forms
+// — is a deliberate, visible decision rather than a silent side-effect.
+func TestFillFindingDefaults_MixedCaseMemberName(t *testing.T) {
+	// "SeniorEngineer" is NOT the canonical "senior-engineer" key (missing the
+	// hyphen).  The switch in fillFindingDefaults uses strings.ToLower, so it
+	// sees "seniorengineer" which falls into the default branch.
+	memberName := "SeniorEngineer"
+	members := []codereview.MemberFile{
+		{
+			MemberName: memberName,
+			Findings: []codereview.Finding{
+				{
+					// Domain left empty — should be filled by the default branch.
+					Severity:    "low",
+					Category:    "naming",
+					File:        "src/util.ts",
+					Description: "Naming issue.",
+					Status:      "open",
+				},
+			},
+		},
+	}
+
+	result := codereview.Aggregate(members)
+
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding; got %d", len(result.Findings))
+	}
+	got := result.Findings[0].Domain
+	// Current behavior: domain == raw memberName (default branch in fillFindingDefaults).
+	// If this expectation ever changes (e.g. to "complexity"), update this assertion
+	// alongside the fillFindingDefaults switch to keep behavior and test in sync.
+	if got != memberName {
+		t.Errorf("finding.Domain = %q; want %q — default branch should set domain to the raw memberName verbatim", got, memberName)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 

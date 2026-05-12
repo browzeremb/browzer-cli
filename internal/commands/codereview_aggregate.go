@@ -70,6 +70,11 @@ func registerCodeReview(parent *cobra.Command) {
 // This function is the implementation entry-point referenced in
 // packages/skills/skills/code-review/SKILL.md.  Any change to flag names,
 // exit codes, or output shape is a breaking change for skills that invoke it.
+//
+// Flag ergonomics: --id is the canonical alias used by all other workflow
+// verbs; --feat is the legacy name kept for backward compatibility.  Both
+// bind to the same featID variable.  Exactly one must be supplied; supplying
+// both is an error (MarkFlagsMutuallyExclusive).
 func registerCodeReviewAggregate(parent *cobra.Command) {
 	var (
 		featID  string
@@ -79,7 +84,7 @@ func registerCodeReviewAggregate(parent *cobra.Command) {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "aggregate --feat <feat-id>",
+		Use:   "aggregate (--id|--feat) <feat-id>",
 		Short: "Merge per-member CODE_REVIEW.<member>.json into CODE_REVIEW.json",
 		Long: `Aggregate all per-member code-review staging files for a feature into a
 single consolidated CODE_REVIEW.json following the preserve-all algorithm:
@@ -102,16 +107,19 @@ Exit codes:
 
 Examples:
   # Dry-run (print to stdout, no file write)
-  browzer codereview aggregate --feat feat-20260511-my-feature --dry-run
+  browzer codereview aggregate --id feat-20260511-my-feature --dry-run
 
   # Emit consolidated JSON to stdout
-  browzer codereview aggregate --feat feat-20260511-my-feature --json
+  browzer codereview aggregate --id feat-20260511-my-feature --json
 
   # Write to staging/CODE_REVIEW.json (normal operation)
-  browzer codereview aggregate --feat feat-20260511-my-feature
+  browzer codereview aggregate --id feat-20260511-my-feature
 
   # Fail hard on any corrupt member file
-  browzer codereview aggregate --feat feat-20260511-my-feature --strict`,
+  browzer codereview aggregate --id feat-20260511-my-feature --strict
+
+  # Legacy --feat alias (backward compatible)
+  browzer codereview aggregate --feat feat-20260511-my-feature`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -119,12 +127,17 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&featID, "feat", "", "feature id (required); resolves docs/browzer/<feat>/staging/")
+	// --id is the canonical flag (matches all other workflow verbs).
+	// --feat is the legacy alias; both bind to featID.
+	// Exactly one must be supplied; supplying both is rejected as mutually exclusive.
+	cmd.Flags().StringVar(&featID, "id", "", "feature id; resolves docs/browzer/<id>/staging/ (alias: --feat)")
+	cmd.Flags().StringVar(&featID, "feat", "", "feature id (legacy alias for --id)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print consolidated JSON to stdout instead of writing to file")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit consolidated JSON to stdout (implies --dry-run)")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail (exit 3) if any per-member file fails schema validation")
 
-	_ = cmd.MarkFlagRequired("feat")
+	cmd.MarkFlagsOneRequired("id", "feat")
+	cmd.MarkFlagsMutuallyExclusive("id", "feat")
 	parent.AddCommand(cmd)
 }
 
@@ -133,7 +146,9 @@ Examples:
 // without constructing a full command tree.
 func runCodeReviewAggregate(cmd *cobra.Command, featID string, stdout bool, strict bool) error {
 	if featID == "" {
-		return cliErrors.WithCode("--feat is required", 1)
+		// Defensive: cobra's MarkFlagsOneRequired("id", "feat") fires first,
+		// but guard here in case the function is called directly in tests.
+		return cliErrors.WithCode("--id (or --feat) is required", 1)
 	}
 
 	// Resolve repo root via git walk-up so the command works from any

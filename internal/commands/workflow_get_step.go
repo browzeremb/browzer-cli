@@ -33,6 +33,7 @@ func newGetStepCommand(topLevel bool) *cobra.Command {
 	var idFlag string
 	var fieldFlag string
 	var invariantsFlag string
+	var exitOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "get-step <PHASE>",
@@ -66,20 +67,40 @@ honor the operator-resolved executionStrategy without a separate read.
                  hash — always emit the hash marker only.
                  skip — suppress the invariants block entirely.
 
+--exit-only    Suppress stdout AND stderr on error so callers can probe step
+               existence without noisy output:
+                 if browzer get-step CODE_REVIEW --id <feat> --exit-only; then
+                   # step exists — consume it normally
+                 fi
+
 Exit codes: 0 success, 2 step not found / phase unknown / unknown field.`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			phase := args[0]
 
+			// failGetStep normalises the two error shapes at all three early-exit
+			// sites: when --exit-only is set it returns a silent exit-2 sentinel
+			// (cliExitErrSilent — no message printed, no stderr); otherwise it
+			// propagates the original error so callers see the full diagnostic.
+			// Keeping the divergence in one closure makes it easier to change
+			// the exit code (e.g. to 4 for not-found) without touching three
+			// independent guard blocks.
+			failGetStep := func(err error) error {
+				if exitOnly {
+					return cliExitErrSilent(2)
+				}
+				return err
+			}
+
 			path, err := resolveWorkflowPathForGetSave(cmd, idFlag, topLevel)
 			if err != nil {
-				return err
+				return failGetStep(err)
 			}
 
 			_, raw, err := loadWorkflow(path)
 			if err != nil {
-				return err
+				return failGetStep(err)
 			}
 
 			view, err := wfview.Build(raw, phase)
@@ -89,17 +110,16 @@ Exit codes: 0 success, 2 step not found / phase unknown / unknown field.`,
 				// via Bash heredoc, or in another session), persist it on
 				// the fly and re-build the view. Skips virtual phases and
 				// TASK_NN (TASK steps must be seeded by tasks-manifest).
-				if recovered, healed := tryHealFromStaging(cmd, path, phase); healed {
+				if _, healed := tryHealFromStaging(cmd, path, phase); healed {
 					_, raw2, err2 := loadWorkflow(path)
 					if err2 == nil {
 						view, err = wfview.Build(raw2, phase)
 					} else {
 						err = err2
 					}
-					_ = recovered
 				}
 				if err != nil {
-					return cliExitErr(2, err)
+					return failGetStep(cliExitErr(2, err))
 				}
 			}
 
@@ -136,6 +156,7 @@ Exit codes: 0 success, 2 step not found / phase unknown / unknown field.`,
 	cmd.Flags().StringVar(&idFlag, "id", "", "feature id; resolves docs/browzer/<id>/workflow.json (alternative to --workflow)")
 	cmd.Flags().StringVar(&fieldFlag, "field", "", "comma-separated list of top-level fields to project from the step body")
 	cmd.Flags().StringVar(&invariantsFlag, "invariants", "auto", "invariants block emission: auto|full|hash|skip")
+	cmd.Flags().BoolVar(&exitOnly, "exit-only", false, "suppress stdout/stderr on error; exit code is the only signal (0=found, 2=not found/phase unknown)")
 	if topLevel {
 		_ = cmd.MarkFlagRequired("id")
 	}

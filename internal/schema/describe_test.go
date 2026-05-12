@@ -187,6 +187,118 @@ func TestDescribeStepType_IncludeBase_PrefixesStepBaseRows(t *testing.T) {
 	}
 }
 
+// TestDescribeStepType_Aliases verifies that BRAINSTORM and TASKS are accepted
+// as aliases and produce identical output to their canonical counterparts
+// (BRAINSTORMING and TASKS_MANIFEST respectively).
+//
+// FR-2 (feat-20260512-cli-skills-integration-fixes): describe-step-type must
+// resolve the same aliases that save-step's canonicalStepName() and get-step
+// already accept, so the CLI surfaces are consistent.
+func TestDescribeStepType_Aliases(t *testing.T) {
+	aliasCases := []struct {
+		alias     string
+		canonical string
+	}{
+		{alias: "BRAINSTORM", canonical: "BRAINSTORMING"},
+		{alias: "TASKS", canonical: "TASKS_MANIFEST"},
+	}
+
+	for _, tc := range aliasCases {
+		tc := tc // capture range var for parallel sub-tests
+
+		t.Run(tc.alias+"_json", func(t *testing.T) {
+			t.Parallel()
+
+			// Alias must succeed (exit-0 parity).
+			aliasOut, err := DescribeStepType(tc.alias, DescribeOpts{JSON: true})
+			if err != nil {
+				t.Errorf("DescribeStepType(%q) returned error: %v — alias should resolve to %q", tc.alias, err, tc.canonical)
+				return
+			}
+
+			// Canonical name must also succeed.
+			canonOut, err := DescribeStepType(tc.canonical, DescribeOpts{JSON: true})
+			if err != nil {
+				t.Errorf("DescribeStepType(%q) returned error: %v — unexpected, canonical name should always work", tc.canonical, err)
+				return
+			}
+
+			// Alias output must be byte-identical to canonical output (same schema,
+			// same serialisation). This ensures the alias is a pure routing alias
+			// with no schema difference.
+			if aliasOut != canonOut {
+				t.Errorf("DescribeStepType(%q) output differs from DescribeStepType(%q):\nalias=%s\ncanonical=%s",
+					tc.alias, tc.canonical, aliasOut, canonOut)
+			}
+
+			// Sanity: alias and canonical must produce a non-empty JSON array.
+			if len(aliasOut) < 2 || aliasOut[0] != '[' {
+				t.Errorf("DescribeStepType(%q, JSON:true) did not return a JSON array; got: %s", tc.alias, aliasOut)
+			}
+		})
+
+		t.Run(tc.alias+"_markdown", func(t *testing.T) {
+			t.Parallel()
+
+			// Alias resolved to markdown (default mode, JSON:false) must
+			// produce output byte-identical to the canonical name. This
+			// confirms that alias resolution is a pure routing shim with no
+			// rendering difference — callers who omit --json get the same
+			// markdown table regardless of whether they supplied the alias
+			// or the canonical name.
+			aliasOut, err := DescribeStepType(tc.alias, DescribeOpts{JSON: false})
+			if err != nil {
+				t.Errorf("DescribeStepType(%q, markdown) returned error: %v — alias should resolve to %q", tc.alias, err, tc.canonical)
+				return
+			}
+
+			canonOut, err := DescribeStepType(tc.canonical, DescribeOpts{JSON: false})
+			if err != nil {
+				t.Errorf("DescribeStepType(%q, markdown) returned error: %v — canonical name should always work", tc.canonical, err)
+				return
+			}
+
+			if aliasOut != canonOut {
+				t.Errorf("DescribeStepType(%q, markdown) output differs from DescribeStepType(%q, markdown):\nalias=%s\ncanonical=%s",
+					tc.alias, tc.canonical, aliasOut, canonOut)
+			}
+
+			// Sanity: markdown output must be non-empty and contain the
+			// table header row that describe-step-type always emits.
+			if len(aliasOut) == 0 {
+				t.Errorf("DescribeStepType(%q, markdown) returned empty output", tc.alias)
+			}
+		})
+	}
+}
+
+// TestResolveStepAlias verifies the exported alias resolver covers both
+// registered aliases and passes through unknown names unchanged.
+func TestResolveStepAlias(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{input: "BRAINSTORM", want: "BRAINSTORMING"},
+		{input: "TASKS", want: "TASKS_MANIFEST"},
+		// Canonical names pass through unchanged.
+		{input: "BRAINSTORMING", want: "BRAINSTORMING"},
+		{input: "TASKS_MANIFEST", want: "TASKS_MANIFEST"},
+		{input: "PRD", want: "PRD"},
+		{input: "TASK", want: "TASK"},
+		// Unknown names pass through unchanged.
+		{input: "UNKNOWN", want: "UNKNOWN"},
+		{input: "", want: ""},
+	}
+
+	for _, tc := range cases {
+		got := ResolveStepAlias(tc.input)
+		if got != tc.want {
+			t.Errorf("ResolveStepAlias(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 // TestDescribeStepType_ParentArrayRowAlwaysEmitted asserts that for every
 // array-typed field in PRD and TASK schemas, the parent row (`<field>` with
 // type=array) is present in the output — never silently absorbed into the

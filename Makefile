@@ -18,6 +18,11 @@ lint:
 # Install the binary locally (same target path used in CLAUDE.md dev docs).
 build:
 	go build -o "$$HOME/.local/bin/browzer" ./cmd/browzer
+	@case ":$$PATH:" in \
+		*":$$HOME/.local/bin:"*) ;; \
+		*) echo "⚠️  $$HOME/.local/bin not in PATH — installed browzer binary won't be found by your shell."; \
+		   echo "    Add to your shell rc: export PATH=\"\$$HOME/.local/bin:\$$PATH\"" ;; \
+	esac
 
 mutate: ## Run go-mutesting against the validator + dispatch scope (~30-60min)
 	@command -v go-mutesting >/dev/null 2>&1 || (echo "go-mutesting not installed; run: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest" && exit 1)
