@@ -37,7 +37,7 @@ go test -race -run TestValidator_Mutation ./internal/schema/...
 go test -race -run TestWorkflowQuery_StepsByName ./internal/commands/...
 
 # Mutation testing (validator + dispatch scope, 30–60min)
-make mutate          # writes packages/cli/mutate-out/report.txt
+make mutate          # writes packages/cli/mutate-out/report.txt (static scope: ./internal/schema/ + workflow_append_dispatch.go + workflow_describe_step_type.go; auto-discovers changed non-test non-schema .go files via git diff origin/main, excluding _test.go and internal/schema/)
 ```
 
 ### CUE schema codegen (`schemas/`)

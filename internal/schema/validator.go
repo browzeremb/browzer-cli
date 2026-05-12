@@ -820,61 +820,56 @@ func isNameEnumNoise(v Violation) bool {
 // real constraint failure (not narrowing noise, not a wrapper
 // placeholder). When any of these appears in a (path)-group, the
 // type-mismatch sibling-narrowing entries in that group are dropped.
+//
+// R-17 (2026-05-12): "unknown-field" is included so that when a step
+// carries an undeclared key, the name-enum disjunction noise row
+// (`name = "<PHASE>" — must be one of [...]`) is suppressed rather
+// than shown alongside the root-cause violation. The root-cause
+// unknown-field violation still surfaces and receives a "see also"
+// annotation in SuppressDisjunctionNoise.
 var constraintCodes = map[string]bool{
 	"invalid-pattern":        true,
 	"constraint-violation":   true,
 	"invalid-enum-value":     true,
 	"missing-required-field": true,
+	"unknown-field":          true,
 }
 
-// SuppressDisjunctionNoise applies the rules documented on
-// FormatViolations. It returns a new slice and never mutates vs.
+// stepParentClassification holds the per-parent maps computed by
+// classifyStepParents. It groups the three related boolean/string
+// tables so they travel together instead of being declared as three
+// separate variables inside SuppressDisjunctionNoise.
+type stepParentClassification struct {
+	// hasConstraint is true for any step parent that has at least one
+	// "real" constraint failure (constraint code OR non-narrowing
+	// type-mismatch).
+	hasConstraint map[string]bool
+	// unknownFieldPath records the alphabetically earliest unknown-field
+	// path for each step parent whose only real constraint is an
+	// unknown-field. Empty for parents that also carry non-unknown-field
+	// real constraints.
+	unknownFieldPath map[string]string
+	// hasNonUnknown is true for any step parent that has at least one
+	// non-unknown-field real constraint. When true, the "see also"
+	// annotation is omitted because more specific diagnostics are visible.
+	hasNonUnknown map[string]bool
+}
+
+// classifyStepParents scans stage1 and returns a stepParentClassification
+// that captures, per step-root parent:
+//   - whether any real constraint failure exists,
+//   - the earliest unknown-field path (if the only real constraint is
+//     unknown-field), and
+//   - whether any non-unknown-field real constraint also exists.
 //
-// Three passes:
-//
-//  1. Drop empty-disjunction placeholders (always — the leaves are
-//     already extracted by flattenCueErrors).
-//  2. Group by Path. If a group has a constraint failure AND at
-//     least one sibling-narrowing type-mismatch, drop every
-//     sibling-narrowing entry from that group. Real type-mismatch
-//     errors (e.g. "expected string, got int") are preserved.
-//  3. Drop misleading `invalid-enum-value` rows on `…name` whose
-//     bad value is itself a valid step name (WF-CUE-NOISE-03,
-//     2026-05-05) — covers the "PRD must be one of [...]" red
-//     herring noted in the orchestrate-task-delivery retro 2026-05-05.
-//     Only suppress when the parent step subtree carries a real
-//     constraint failure, so a genuinely malformed `name` typo
-//     still surfaces.
-//
-// Exported (capital S) since 2026-05-05 so the `validate` CLI render
-// path can apply the same filter previously available only to the
-// write-path's FormatViolations renderer.
-//
-// When the resulting slice is empty (e.g. the only violations were
-// placeholders + sibling narrowing), the caller falls back to the
-// raw input so we never silently render an empty error string.
-func SuppressDisjunctionNoise(vs []Violation) []Violation {
-	if len(vs) == 0 {
-		return vs
+// stage1 must already be sorted by sortViolations so that the first
+// unknown-field path seen is the alphabetically earliest one.
+func classifyStepParents(stage1 []Violation) stepParentClassification {
+	cls := stepParentClassification{
+		hasConstraint:    make(map[string]bool, len(stage1)),
+		unknownFieldPath: make(map[string]string, len(stage1)),
+		hasNonUnknown:    make(map[string]bool, len(stage1)),
 	}
-	// Pass 1: drop empty-disjunction placeholder rows.
-	stage1 := make([]Violation, 0, len(vs))
-	for _, v := range vs {
-		if emptyDisjunctionRe.MatchString(v.Message) {
-			continue
-		}
-		stage1 = append(stage1, v)
-	}
-	if len(stage1) == 0 {
-		return stage1
-	}
-	// Pass 2 + 3: group by Path; suppress sibling narrowing AND
-	// misleading name-enum noise when a real constraint failure
-	// shares the parent step subtree. We compare against the Path's
-	// step root (steps[N]) — the sibling narrowing happens at
-	// `…name`, the real failure typically lives at a deeper subtree
-	// (`…prd.acceptanceCriteria[1].bindsTo[0]`).
-	hasConstraintByParent := map[string]bool{}
 	for _, v := range stage1 {
 		// A "real" constraint failure is either an explicit constraint
 		// code OR a type-mismatch whose message is NOT the
@@ -894,23 +889,149 @@ func SuppressDisjunctionNoise(vs []Violation) []Violation {
 		if parent == "" {
 			continue
 		}
-		hasConstraintByParent[parent] = true
+		cls.hasConstraint[parent] = true
+		if v.Code == "unknown-field" {
+			// Record the first (alphabetically earliest) unknown-field
+			// path for this parent. Because stage1 is sorted before
+			// classifyStepParents is called, the first occurrence is
+			// deterministically the shortest/earliest path.
+			if _, seen := cls.unknownFieldPath[parent]; !seen {
+				cls.unknownFieldPath[parent] = v.Path
+			}
+		} else {
+			// A non-unknown-field real constraint exists — suppress
+			// the "see also" annotation since there are more specific
+			// diagnostics already visible.
+			cls.hasNonUnknown[parent] = true
+		}
 	}
+	return cls
+}
+
+// annotateUnknownFieldRootCauses performs the R-17 final pass: for each
+// parent in seeAlsoParents, find the first matching unknown-field
+// violation in stage2 (identified via unknownFieldPathByParent) and
+// append the "see also" annotation so callers can trace the causal chain.
+// Each parent is annotated at most once; seeAlsoParents is mutated as a
+// work-set and must not be reused after this call.
+func annotateUnknownFieldRootCauses(
+	stage2 []Violation,
+	unknownFieldPathByParent map[string]string,
+	seeAlsoParents map[string]bool,
+) {
+	for i, v := range stage2 {
+		if len(seeAlsoParents) == 0 {
+			break
+		}
+		if v.Code != "unknown-field" {
+			continue
+		}
+		parent := stepRootPath(v.Path)
+		if !seeAlsoParents[parent] {
+			continue
+		}
+		if unknownFieldPathByParent[parent] != v.Path {
+			continue
+		}
+		// Annotate in-place on the copy (stage2 holds value copies).
+		stage2[i].Message = v.Message + " (see also: this unknown field caused the step-name disjunction to narrow)"
+		// Only annotate once per parent.
+		delete(seeAlsoParents, parent)
+	}
+}
+
+// SuppressDisjunctionNoise applies the rules documented on
+// FormatViolations. It returns a new slice and never mutates vs.
+//
+// Four top-level steps:
+//
+//  1. Dedupe: drop empty-disjunction placeholder rows.
+//  2. Sort: call sortViolations on stage1 so pass 3 (classifyStepParents)
+//     sees violations in a deterministic order — earliest unknown-field
+//     path first.
+//  3. Classify: classifyStepParents builds per-parent constraint maps.
+//  4. Suppress: drop sibling-narrowing type-mismatches and name-enum
+//     noise when a real constraint failure shares the step subtree.
+//  5. Annotate: annotateUnknownFieldRootCauses injects "see also" on the
+//     root-cause unknown-field violation when it is the sole reason a
+//     name-enum row was suppressed (R-17 / FR-2).
+//
+// R-17 (2026-05-12): when the ONLY real constraint failure in a step
+// subtree is an `unknown-field` violation, the name-enum noise row is
+// suppressed (see constraintCodes). To prevent silently dropping the
+// root cause without explanation, the outermost `unknown-field`
+// violation for that step receives a "see also" annotation in its
+// Message noting that it caused the step-name disjunction to narrow.
+// This satisfies FR-2: the formatter never produces empty output when
+// an unknown field is the cascading root cause.
+//
+// Exported (capital S) since 2026-05-05 so the `validate` CLI render
+// path can apply the same filter previously available only to the
+// write-path's FormatViolations renderer.
+//
+// When the resulting slice is empty (e.g. the only violations were
+// placeholders + sibling narrowing), the caller falls back to the
+// raw input so we never silently render an empty error string.
+func SuppressDisjunctionNoise(vs []Violation) []Violation {
+	if len(vs) == 0 {
+		return vs
+	}
+	// Step 1 — dedupe: drop empty-disjunction placeholder rows.
+	stage1 := make([]Violation, 0, len(vs))
+	for _, v := range vs {
+		if emptyDisjunctionRe.MatchString(v.Message) {
+			continue
+		}
+		stage1 = append(stage1, v)
+	}
+	if len(stage1) == 0 {
+		return stage1
+	}
+	// Step 2 — sort: enforce deterministic order before classify so
+	// classifyStepParents always sees the alphabetically earliest
+	// unknown-field path first. Cost is negligible; the slice copy was
+	// already allocated above.
+	sortViolations(stage1)
+	// Step 3 — classify: build per-parent constraint maps.
+	cls := classifyStepParents(stage1)
+	// Step 4 — suppress: drop sibling-narrowing type-mismatches and
+	// name-enum noise when a real constraint failure shares the parent
+	// step subtree. We compare against the Path's step root (steps[N])
+	// — the sibling narrowing happens at `…name`, the real failure
+	// typically lives at a deeper subtree
+	// (`…prd.acceptanceCriteria[1].bindsTo[0]`).
+	//
+	// R-17: also track whether the real constraint failure for a step
+	// parent is exclusively an unknown-field. When it is, record the
+	// parent in seeAlsoParents for the annotation pass below.
+	seeAlsoParents := map[string]bool{}
 	stage2 := make([]Violation, 0, len(stage1))
 	for _, v := range stage1 {
 		if v.Code == "type-mismatch" && siblingNarrowingRe.MatchString(v.Message) {
 			parent := stepRootPath(v.Path)
-			if parent != "" && hasConstraintByParent[parent] {
+			if parent != "" && cls.hasConstraint[parent] {
 				continue
 			}
 		}
 		if isNameEnumNoise(v) {
 			parent := stepRootPath(v.Path)
-			if parent != "" && hasConstraintByParent[parent] {
+			if parent != "" && cls.hasConstraint[parent] {
+				// R-17: record this parent for "see also" annotation when
+				// the only real constraint for this step is unknown-field.
+				if !cls.hasNonUnknown[parent] {
+					if _, hasUF := cls.unknownFieldPath[parent]; hasUF {
+						seeAlsoParents[parent] = true
+					}
+				}
 				continue
 			}
 		}
 		stage2 = append(stage2, v)
+	}
+	// Step 5 — annotate: inject "see also" on the root-cause
+	// unknown-field violation for each seeAlsoParent (R-17 / FR-2).
+	if len(seeAlsoParents) > 0 {
+		annotateUnknownFieldRootCauses(stage2, cls.unknownFieldPath, seeAlsoParents)
 	}
 	return stage2
 }

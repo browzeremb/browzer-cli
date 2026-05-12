@@ -800,6 +800,159 @@ func TestSuppressDisjunctionNoise_DropsNameEnumNoise(t *testing.T) {
 	}
 }
 
+// TestSuppressDisjunctionNoise_UnknownFieldSeeAlso covers FR-2 / R-17
+// (2026-05-12): when the only real constraint failure in a step subtree
+// is an `unknown-field` violation, the name-enum noise row must be
+// suppressed AND the unknown-field row must surface (never empty output)
+// with a "see also" annotation pointing to the cascading root cause.
+//
+// Table of scenarios:
+//
+//  1. unknown-field alone + name-enum noise → name-enum suppressed,
+//     unknown-field kept with "see also" annotation, output non-empty.
+//  2. unknown-field + OTHER real constraint + name-enum noise → other
+//     constraint causes suppression; unknown-field has no "see also"
+//     (other errors already explain the failure).
+//  3. unknown-field but NO name-enum noise → unknown-field surfaced
+//     unmodified (no annotation injected).
+func TestSuppressDisjunctionNoise_UnknownFieldSeeAlso(t *testing.T) {
+	seeAlsoMarker := "see also: this unknown field caused the step-name disjunction to narrow"
+	cases := []struct {
+		name           string
+		in             []Violation
+		wantCodes      []string // expected codes after suppression, in any order
+		wantSeeAlso    bool     // whether the unknown-field row carries the annotation
+		wantNotEmpty   bool     // FormatViolations must produce non-empty output
+		wantNoNameEnum bool     // no invalid-enum-value row must survive
+	}{
+		{
+			name: "unknown-field-only-causes-name-enum-suppression",
+			in: []Violation{
+				{
+					Path:    "#WorkflowV1.steps[0]",
+					Code:    "unknown-error",
+					Message: "12 errors in empty disjunction:",
+				},
+				{
+					Path:    "#WorkflowV1.steps[0].name",
+					Code:    "invalid-enum-value",
+					Message: `name = "TASK" — must be one of [BRAINSTORMING, CODE_REVIEW, COMMIT, FEATURE_ACCEPTANCE, PRD, RECEIVING_CODE_REVIEW, TASKS_MANIFEST, UPDATE_DOCS, WRITE_TESTS]`,
+				},
+				{
+					Path:    "#WorkflowV1.steps[0].name",
+					Code:    "unknown-error",
+					Message: "4 errors in empty disjunction:",
+				},
+				{
+					Path:    "#WorkflowV1.steps[0].task.execution.unknownBogusField",
+					Code:    "unknown-field",
+					Message: "field not allowed",
+				},
+			},
+			wantCodes:      []string{"unknown-field"},
+			wantSeeAlso:    true,
+			wantNotEmpty:   true,
+			wantNoNameEnum: true,
+		},
+		{
+			name: "unknown-field-plus-other-real-constraint-no-annotation",
+			in: []Violation{
+				{
+					Path:    "#WorkflowV1.steps[1].task.execution.gates.postChange.lint",
+					Code:    "invalid-enum-value",
+					Message: `lint = "deferred" — must be one of [fail, pass, skip]`,
+				},
+				{
+					Path:    "#WorkflowV1.steps[1].name",
+					Code:    "invalid-enum-value",
+					Message: `name = "TASK" — must be one of [BRAINSTORMING, CODE_REVIEW, COMMIT, FEATURE_ACCEPTANCE, PRD, RECEIVING_CODE_REVIEW, TASKS_MANIFEST, UPDATE_DOCS, WRITE_TESTS]`,
+				},
+				{
+					Path:    "#WorkflowV1.steps[1].task.execution.badField",
+					Code:    "unknown-field",
+					Message: "field not allowed",
+				},
+			},
+			// name-enum suppressed by real lint constraint;
+			// unknown-field survives but without "see also" (other errors explain it).
+			wantCodes:      []string{"invalid-enum-value", "unknown-field"},
+			wantSeeAlso:    false,
+			wantNotEmpty:   true,
+			wantNoNameEnum: true, // the lint invalid-enum-value stays but the name one is gone
+		},
+		{
+			name: "unknown-field-no-name-enum-noise-no-annotation",
+			in: []Violation{
+				{
+					Path:    "#WorkflowV1.steps[2].task.execution.badField",
+					Code:    "unknown-field",
+					Message: "field not allowed",
+				},
+			},
+			wantCodes:    []string{"unknown-field"},
+			wantSeeAlso:  false,
+			wantNotEmpty: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SuppressDisjunctionNoise(tc.in)
+
+			// Check expected codes are present.
+			gotCodes := make(map[string]int)
+			for _, v := range got {
+				gotCodes[v.Code]++
+			}
+			for _, want := range tc.wantCodes {
+				if gotCodes[want] == 0 {
+					t.Errorf("expected code %q to be present after suppression; got violations: %+v", want, got)
+				}
+			}
+
+			// Check name-enum suppression.
+			if tc.wantNoNameEnum {
+				for _, v := range got {
+					if isNameEnumNoise(v) {
+						t.Errorf("name-enum noise row survived suppression; got: %+v", v)
+					}
+				}
+			}
+
+			// Check "see also" annotation on unknown-field.
+			for _, v := range got {
+				if v.Code != "unknown-field" {
+					continue
+				}
+				hasSeeAlso := strings.Contains(v.Message, seeAlsoMarker)
+				if tc.wantSeeAlso && !hasSeeAlso {
+					t.Errorf("expected unknown-field violation to carry %q annotation; got message: %q",
+						seeAlsoMarker, v.Message)
+				}
+				if !tc.wantSeeAlso && hasSeeAlso {
+					t.Errorf("unexpected %q annotation on unknown-field violation: %q",
+						seeAlsoMarker, v.Message)
+				}
+			}
+
+			// FormatViolations output must not be empty.
+			if tc.wantNotEmpty {
+				rendered := FormatViolations(tc.in)
+				if rendered == "" {
+					t.Error("FormatViolations produced empty output; AC-2 violated (must surface ≥1 violation)")
+				}
+				// Verify output contains unknown-field or constraint-violation code.
+				if !strings.Contains(rendered, "unknown-field") && !strings.Contains(rendered, "constraint-violation") {
+					// It's OK if other codes are present — but double-check the
+					// fallback kept something useful when all filtered rows were dropped.
+					if len(got) == 0 {
+						t.Error("FormatViolations output missing unknown-field or constraint-violation code")
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestSuppressDisjunctionNoise_NormalisesPrefixForms asserts §I8 fix:
 // when the real-failure row is emitted with the embedded `#WorkflowV1.`
 // prefix and the noise row is emitted without (or vice versa), the

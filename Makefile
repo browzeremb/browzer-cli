@@ -24,8 +24,21 @@ build:
 		   echo "    Add to your shell rc: export PATH=\"\$$HOME/.local/bin:\$$PATH\"" ;; \
 	esac
 
-mutate: ## Run go-mutesting against the validator + dispatch scope (~30-60min)
+mutate: ## Run go-mutesting against the validator + dispatch scope + any changed .go files (~30-60min)
 	@command -v go-mutesting >/dev/null 2>&1 || (echo "go-mutesting not installed; run: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest" && exit 1)
 	@mkdir -p mutate-out
-	go-mutesting --exec-timeout=120 ./internal/schema/ ./internal/commands/workflow_append_dispatch.go ./internal/commands/workflow_describe_step_type.go > mutate-out/report.txt 2>&1 || true
+	# Auto-discovery is best-effort: picks up changed non-test, non-schema files since the merge-base.
+	# The static list below (./internal/schema/ + the two workflow files) is the authoritative floor —
+	# auto-discovered files are additive extras. If git is unavailable or the cascade exhausts all
+	# fallbacks, MUTATE_CHANGED_FILES is empty and only the static list runs.
+	$(eval _MERGE_BASE := $(shell git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD upstream/main 2>/dev/null || echo HEAD~10))
+	$(eval MUTATE_CHANGED_FILES := $(shell git diff $(_MERGE_BASE) --name-only -- 'packages/cli/*.go' 2>/dev/null \
+		| sed 's|^packages/cli/||' \
+		| grep -Ev '(_test\.go$$|^internal/schema/)' \
+		| while IFS= read -r f; do [ -f "$$f" ] && echo "$$f"; done \
+		|| true))
+	@if [ -n "$(MUTATE_CHANGED_FILES)" ]; then \
+		echo "Auto-discovered changed files: $(MUTATE_CHANGED_FILES)"; \
+	fi
+	go-mutesting --exec-timeout=120 ./internal/schema/ ./internal/commands/workflow_append_dispatch.go ./internal/commands/workflow_describe_step_type.go $(MUTATE_CHANGED_FILES) > mutate-out/report.txt 2>&1 || true
 	@echo "Mutation report: packages/cli/mutate-out/report.txt"
