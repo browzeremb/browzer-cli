@@ -16,7 +16,7 @@ import (
 const MaxDepth = 32
 
 const (
-	maxContentLines = 100
+	maxContentLines = 1000
 	maxLineLength   = 4096
 )
 
@@ -35,7 +35,7 @@ type ParsedFolder struct {
 }
 
 // ParsedFile is a single non-binary, non-sensitive, non-ignored file
-// with its first ~100 lines of content (capped at 4096 chars/line).
+// with its first ~1000 lines of content (capped at 4096 chars/line).
 type ParsedFile struct {
 	Path       string `json:"path"`
 	Name       string `json:"name"`
