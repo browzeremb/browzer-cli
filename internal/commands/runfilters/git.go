@@ -7,6 +7,23 @@ import (
 	"strconv"
 )
 
+// Package-level compiled regexes — compiled once at init, not on every call.
+var (
+	gitCommitRe    = regexp.MustCompile(`\[[\w/.-]+ ([a-f0-9]{7,})\]`)
+	gitBinaryRe    = regexp.MustCompile(`^Binary files (.+) and .+ differ`)
+	gitDiffHeaderRe = regexp.MustCompile(`^diff --git a/(.+) b/`)
+	gitStatusBranchRe = regexp.MustCompile(`(?m)^(?:On branch|HEAD detached at) (\S+)`)
+	gitStatusAheadRe  = regexp.MustCompile(`ahead of .+ by (\d+)`)
+	gitStatusBehindRe = regexp.MustCompile(`behind .+ by (\d+)`)
+	gitLogOnelineRe   = regexp.MustCompile(`^[a-f0-9]{7,40} `)
+	gitLogFullRe      = regexp.MustCompile(`^commit [a-f0-9]{40}`)
+	gitBranchRefRe    = regexp.MustCompile(`(?m)[^\s]+\s+->\s+([^\s]+)`)
+	gitBranchTagRe    = regexp.MustCompile(`\[(?:new branch\s+)?(?:new tag\s+)?([^\s\]]+)\s`)
+	gitPullFilesRe    = regexp.MustCompile(`(\d+) files? changed`)
+	gitPullInsRe      = regexp.MustCompile(`(\d+) insertions?`)
+	gitPullDelRe      = regexp.MustCompile(`(\d+) deletions?`)
+)
+
 func init() {
 	DefaultRegistry.Register("git", filterGit)
 }
@@ -14,6 +31,14 @@ func init() {
 // filterGit detects the git subcommand from stdout shape and applies
 // token-optimised compression.
 func filterGit(stdout []byte) []byte {
+	// git diff: starts with "diff --git". Check FIRST so that diffs containing
+	// substrings like "Already up to date" or "Everything up-to-date" in their
+	// hunks (e.g. a diff of this filter's own source) do not collide with the
+	// git-pull / git-push heuristics below.
+	if bytes.HasPrefix(bytes.TrimSpace(stdout), []byte("diff --git")) {
+		return compressGitDiff(stdout)
+	}
+
 	// git push: output contains "remote:" or "Everything up-to-date"
 	if bytes.Contains(stdout, []byte("remote:")) || bytes.Contains(stdout, []byte("Everything up-to-date")) {
 		branch := extractGitBranch(stdout)
@@ -29,14 +54,8 @@ func filterGit(stdout []byte) []byte {
 	}
 
 	// git commit: output contains "[branch sha]" pattern
-	if m := regexp.MustCompile(`\[[\w/.-]+ ([a-f0-9]{7,})\]`).FindSubmatch(stdout); m != nil {
+	if m := gitCommitRe.FindSubmatch(stdout); m != nil {
 		return []byte("ok " + string(m[1]) + "\n")
-	}
-
-	// git diff: starts with "diff --git"
-	if bytes.HasPrefix(bytes.TrimSpace(stdout), []byte("diff --git")) {
-		lines := bytes.Split(stdout, []byte("\n"))
-		return truncateLines(lines, 150)
 	}
 
 	// git add: typically empty output
@@ -60,6 +79,192 @@ func filterGit(stdout []byte) []byte {
 	return truncateLines(lines, 100)
 }
 
+// compressGitDiff applies hunk-aware semantic compression to git diff output.
+//
+// Diffs of ≤30 lines are returned verbatim — they are small enough that a
+// reviewer needs the full context and compression would remove more signal than
+// it saves tokens. Larger diffs are compacted:
+//   - "diff --git" file headers are kept verbatim.
+//   - "@@ ..." hunk headers are kept verbatim.
+//   - At most 3 leading context lines (space-prefixed) per hunk are kept.
+//   - "Binary files ... differ" is replaced with "Bin: <file>".
+//   - New-file hunks (all additions, no deletions) collapse to "+ <path> (N lines)".
+//   - Deleted-file hunks (all deletions, no additions) collapse to "- <path> (N lines)".
+func compressGitDiff(stdout []byte) []byte {
+	lines := bytes.Split(stdout, []byte("\n"))
+	// Remove trailing empty element from the split if present.
+	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
+	}
+	// ≤30 lines: return verbatim so reviewers get the full context for tiny diffs.
+	if len(lines) <= 30 {
+		return stdout
+	}
+
+	var out []byte
+	appendLine := func(l []byte) {
+		out = append(out, l...)
+		out = append(out, '\n')
+	}
+
+	// Per-hunk caps. Hunks with more than maxModificationLines real changes
+	// emit only the first maxModificationLines plus a truncation summary —
+	// this is what turns 60-80% ratios into ≤40% on typical PR-sized diffs
+	// (~500–1000 changed lines across multiple files).
+	const maxModificationLines = 20
+
+	var (
+		currentFile      string
+		inNewFile        bool // current file-section is new-file (--- /dev/null)
+		inDeletedFile    bool // current file-section is deleted-file (+++ /dev/null)
+		inHunk           bool
+		hunkAddCount     int
+		hunkDelCount     int
+		contextInHunk    int
+		emittedModLines  int      // count of + / - lines already emitted in this hunk
+		truncatedSummary bool     // a truncation notice has been emitted for this hunk
+		hunkLines        [][]byte // buffered hunk lines for deferred new/deleted collapse
+		pendingCollapse  bool     // a potential collapse is in progress
+	)
+
+	flushHunk := func() {
+		if !pendingCollapse {
+			return
+		}
+		// Decide whether to collapse.
+		if inNewFile && hunkDelCount == 0 && hunkAddCount > 0 {
+			appendLine([]byte(fmt.Sprintf("+ %s (%d lines)", currentFile, hunkAddCount)))
+		} else if inDeletedFile && hunkAddCount == 0 && hunkDelCount > 0 {
+			appendLine([]byte(fmt.Sprintf("- %s (%d lines)", currentFile, hunkDelCount)))
+		} else {
+			for _, hl := range hunkLines {
+				out = append(out, hl...)
+				out = append(out, '\n')
+			}
+		}
+		hunkLines = hunkLines[:0]
+		hunkAddCount = 0
+		hunkDelCount = 0
+		contextInHunk = 0
+		inHunk = false
+		pendingCollapse = false
+	}
+
+	for _, raw := range lines {
+		// Binary file line.
+		if m := gitBinaryRe.FindSubmatch(raw); m != nil {
+			flushHunk()
+			// Extract just the short filename after "a/".
+			name := string(m[1])
+			if len(name) > 2 && name[:2] == "a/" {
+				name = name[2:]
+			}
+			appendLine([]byte("Bin: " + name))
+			continue
+		}
+
+		// diff --git header: start of a new file section.
+		if m := gitDiffHeaderRe.FindSubmatch(raw); m != nil {
+			flushHunk()
+			currentFile = string(m[1])
+			inNewFile = false
+			inDeletedFile = false
+			inHunk = false
+			appendLine(raw)
+			continue
+		}
+
+		// --- /dev/null indicates a new file.
+		if bytes.Equal(raw, []byte("--- /dev/null")) {
+			inNewFile = true
+			inDeletedFile = false
+			// Don't emit --- /dev/null; the collapse summary covers it.
+			continue
+		}
+		// +++ /dev/null indicates a deleted file.
+		if bytes.Equal(raw, []byte("+++ /dev/null")) {
+			inNewFile = false
+			inDeletedFile = true
+			continue
+		}
+
+		// Skip other --- / +++ metadata lines (index, mode).
+		if bytes.HasPrefix(raw, []byte("--- ")) || bytes.HasPrefix(raw, []byte("+++ ")) {
+			continue
+		}
+		if bytes.HasPrefix(raw, []byte("index ")) || bytes.HasPrefix(raw, []byte("new file mode")) ||
+			bytes.HasPrefix(raw, []byte("deleted file mode")) || bytes.HasPrefix(raw, []byte("old mode")) ||
+			bytes.HasPrefix(raw, []byte("new mode")) {
+			continue
+		}
+
+		// @@ hunk header.
+		if bytes.HasPrefix(raw, []byte("@@")) {
+			flushHunk()
+			inHunk = true
+			pendingCollapse = inNewFile || inDeletedFile
+			contextInHunk = 0
+			emittedModLines = 0
+			truncatedSummary = false
+			if pendingCollapse {
+				hunkLines = append(hunkLines, raw)
+			} else {
+				appendLine(raw)
+			}
+			continue
+		}
+
+		if !inHunk {
+			// Any unrecognised line outside a hunk is kept verbatim.
+			appendLine(raw)
+			continue
+		}
+
+		// Inside a hunk.
+		emitMod := func(line []byte) {
+			if pendingCollapse {
+				hunkLines = append(hunkLines, line)
+				return
+			}
+			if emittedModLines < maxModificationLines {
+				appendLine(line)
+				emittedModLines++
+				return
+			}
+			if !truncatedSummary {
+				appendLine([]byte("... (further changes truncated)"))
+				truncatedSummary = true
+			}
+		}
+		switch {
+		case len(raw) > 0 && raw[0] == '+':
+			hunkAddCount++
+			emitMod(raw)
+		case len(raw) > 0 && raw[0] == '-':
+			hunkDelCount++
+			emitMod(raw)
+		case len(raw) == 0 || raw[0] == ' ':
+			// Context line.
+			if pendingCollapse {
+				hunkLines = append(hunkLines, raw)
+			} else if contextInHunk < 3 {
+				contextInHunk++
+				appendLine(raw)
+			}
+			// Context lines beyond 3 are dropped (saves tokens on large diffs).
+		default:
+			if pendingCollapse {
+				hunkLines = append(hunkLines, raw)
+			} else {
+				appendLine(raw)
+			}
+		}
+	}
+
+	flushHunk()
+	return out
+}
+
 // compressGitStatus collapses `git status` long-form output to a single line.
 // Examples:
 //
@@ -67,17 +272,17 @@ func filterGit(stdout []byte) []byte {
 //	"branch=main ahead=2 behind=1 staged:1 M:3 ??:2"
 func compressGitStatus(stdout []byte) []byte {
 	branch := "unknown"
-	if m := regexp.MustCompile(`(?m)^(?:On branch|HEAD detached at) (\S+)`).FindSubmatch(stdout); m != nil {
+	if m := gitStatusBranchRe.FindSubmatch(stdout); m != nil {
 		branch = string(m[1])
 	}
 
 	var parts []string
 	parts = append(parts, "branch="+branch)
 
-	if m := regexp.MustCompile(`ahead of .+ by (\d+)`).FindSubmatch(stdout); m != nil {
+	if m := gitStatusAheadRe.FindSubmatch(stdout); m != nil {
 		parts = append(parts, "ahead="+string(m[1]))
 	}
-	if m := regexp.MustCompile(`behind .+ by (\d+)`).FindSubmatch(stdout); m != nil {
+	if m := gitStatusBehindRe.FindSubmatch(stdout); m != nil {
 		parts = append(parts, "behind="+string(m[1]))
 	}
 
@@ -154,11 +359,7 @@ func isGitLog(lines [][]byte) bool {
 	if len(lines) == 0 {
 		return false
 	}
-	// Oneline format: "<sha7+> <subject>"
-	onelineRe := regexp.MustCompile(`^[a-f0-9]{7,40} `)
-	// Full format: "commit <sha40>"
-	fullRe := regexp.MustCompile(`^commit [a-f0-9]{40}`)
-	return onelineRe.Match(lines[0]) || fullRe.Match(lines[0])
+	return gitLogOnelineRe.Match(lines[0]) || gitLogFullRe.Match(lines[0])
 }
 
 // compressGitLog collapses git log to a summary when output is long.
@@ -182,14 +383,12 @@ func compressGitLog(lines [][]byte) []byte {
 func extractGitBranch(stdout []byte) string {
 	// "refs/heads/main -> main" or "branch -> remote/branch"
 	// Use [^\s]+ to accept legal git refname characters (including + and unicode).
-	re := regexp.MustCompile(`(?m)[^\s]+\s+->\s+([^\s]+)`)
-	if m := re.FindSubmatch(stdout); m != nil {
+	if m := gitBranchRefRe.FindSubmatch(stdout); m != nil {
 		return string(m[1])
 	}
 	// "[new branch] main -> main" style or "[branch sha]" from commit.
 	// Use [^\s\]]+ to accept legal git refname characters (including + and unicode).
-	re2 := regexp.MustCompile(`\[(?:new branch\s+)?(?:new tag\s+)?([^\s\]]+)\s`)
-	if m := re2.FindSubmatch(stdout); m != nil {
+	if m := gitBranchTagRe.FindSubmatch(stdout); m != nil {
 		return string(m[1])
 	}
 	return ""
@@ -200,10 +399,9 @@ func compressGitPull(stdout []byte) []byte {
 	if bytes.Contains(stdout, []byte("Already up to date")) {
 		return []byte("ok (already up to date)\n")
 	}
-	re := regexp.MustCompile(`(\d+) files? changed`)
-	if m := re.FindSubmatch(stdout); m != nil {
-		ins := regexp.MustCompile(`(\d+) insertions?`).FindSubmatch(stdout)
-		del := regexp.MustCompile(`(\d+) deletions?`).FindSubmatch(stdout)
+	if m := gitPullFilesRe.FindSubmatch(stdout); m != nil {
+		ins := gitPullInsRe.FindSubmatch(stdout)
+		del := gitPullDelRe.FindSubmatch(stdout)
 		msg := "ok " + string(m[1]) + " files"
 		if ins != nil {
 			msg += " +" + string(ins[1])

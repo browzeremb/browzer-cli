@@ -46,13 +46,14 @@ When paired with the Claude Code plugin, the daemon and the plugin's hook guards
 | Source | What it tracks | Method |
 |---|---|---|
 | `hook-read` | Claude Code `Read` calls | measured (filtered output bytes) for ≥40 KB files; estimated otherwise |
-| `hook-grep` | Claude Code `Grep` calls | measured (actual tool output bytes) |
-| `hook-glob` | Claude Code `Glob` calls | measured in soft-mode; counterfactual (manifest-derived) in block-mode |
+| `hook-grep-suggested` | Claude Code `Grep` calls where the plugin suggested `browzer explore` | measured (actual tool output bytes) |
+| `hook-glob-blocked` | Claude Code `Glob` calls blocked by the guard (sensitive patterns) | counterfactual (manifest-derived) |
+| `hook-glob-suggested` | Claude Code `Glob` calls in soft-mode where `browzer explore` was suggested | measured in soft-mode |
 | `hook-cli-explore` | `browzer explore` invoked by the agent via Bash | measured |
 | `hook-cli-search` | `browzer search` invoked by the agent via Bash | measured |
 | `hook-cli-deps` | `browzer deps` invoked by the agent via Bash | measured |
 | `hook-cli-ask` | `browzer ask` invoked by the agent via Bash | measured |
-| `hook-run` | `browzer run <cmd>` proxy — compresses stdout from git / vitest / turbo / go test / cargo test / biome / tsc before the LLM sees it | measured |
+| `browzer-run-*` | `browzer run <cmd>` proxy — compresses stdout from git / vitest / turbo / go test / cargo test / biome / tsc before the LLM sees it; source name is `browzer-run-<family>` (e.g. `browzer-run-git`) | measured |
 | `wasted-grep` | A `Grep` that the plugin would have rewritten to `browzer explore` | counterfactual |
 | `wasted-find` | A `Bash(find ...)` that the plugin would have rewritten to `browzer explore` / `browzer deps` | counterfactual |
 
@@ -91,6 +92,14 @@ savedTokens = (rawBytes - filteredBytes) / charsPerToken[language]
 Calibration methodology: 70 files × `count_tokens` (claude-opus-4-7), corrected for the 11-token chat wrapper overhead, fit by language. Mean absolute error on the savings delta: **14%** (vs **35%** for the previous flat `÷4` heuristic). Family-4 models (Opus / Sonnet / Haiku) share the same tokenizer, so one model suffices.
 
 The absolute number still diverges from the Anthropic billing figure by single-digit percent — for exact per-request audits, use `count_tokens` directly or inspect the `usage` block the Anthropic API returns on every response.
+
+## Version compatibility
+
+| CLI | Plugin | Tracker schema |
+|---|---|---|
+| v4.x.x | v5.x.x | v2 |
+
+CLI v4.x.x ↔ Plugin v5.x.x ↔ Tracker schema v2
 
 ## Installation
 
@@ -227,7 +236,7 @@ Introduced in v0.8.0 to reduce token burn when Claude Code reads files, globs, o
 
 `browzer status --json` exposes a `staleness` block with the daemon's view of its caches. Notable fields:
 
-- `staleness.manifestCachePresent` (bool) — `true` iff the workspace manifest is currently cached on disk under `~/.browzer/manifests/`. `false` means the next Glob block-mode call will fall back to soft-mode and the next aggressive `Read` will downgrade to minimal until the manifest is re-pulled. Surfaces what was previously a silent failure mode.
+- `staleness.manifestCachePresent` (bool) — `true` iff the workspace manifest is currently cached on disk under `~/.browzer/workspaces/<id>/manifest.json`. `false` means the next Glob block-mode call will fall back to soft-mode and the next aggressive `Read` will downgrade to minimal until the manifest is re-pulled. Surfaces what was previously a silent failure mode.
 
 #### `~/.browzer/pending-events.jsonl` (durability)
 

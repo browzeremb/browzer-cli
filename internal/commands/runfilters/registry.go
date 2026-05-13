@@ -1,9 +1,18 @@
 // Package runfilters maps command patterns to token-compression FilterFns.
 // Each filter module registers its function via init() or explicit calls
-// against DefaultRegistry. TASK_02–04 populate the actual filter logic.
+// against DefaultRegistry.
 package runfilters
 
-import "strings"
+import (
+	"context"
+	"math"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/browzeremb/browzer-cli/internal/config"
+	"github.com/browzeremb/browzer-cli/internal/daemon"
+)
 
 // FilterFn receives the stdout bytes from a successful command and returns
 // compressed output.
@@ -56,20 +65,54 @@ func (r *Registry) CategoryOf(args []string) string {
 }
 
 // DefaultRegistry is a Registry pre-populated with all built-in filters.
-// Initially empty — each filter module registers via init() in TASK_02–04.
+// Filter modules register via init() calls against this instance.
 var DefaultRegistry = New()
+
+// bytesPerToken is the conservative fallback token coefficient used when
+// the command output cannot be attributed to a specific language.
+// Derived from the cross-language median in the calibration corpus.
+const bytesPerToken = 4
 
 // TrackRun emits a token economy Track event for the run proxy.
 // Best-effort: errors are silently discarded.
 //
-// TODO(TASK_07): replace stub with daemon Track wiring. When this starts
-// returning non-nil, callers using `_ = runfilters.TrackRun(...)` will
-// silently swallow errors — add a test that fails if TrackRun returns non-nil
-// so the wiring becomes visible at that time.
-func TrackRun(source string, raw, compressed []byte) error {
-	// Stub — wired to daemon Track in TASK_07.
-	_ = source
-	_ = raw
-	_ = compressed
+// savedTokens is derived from the raw-vs-compressed byte delta divided by
+// bytesPerToken. filterLevel labels the category column in the events ledger.
+// execMs is the child-process wall-clock duration in milliseconds.
+func TrackRun(source string, raw, compressed []byte, filterLevel string, execMs int) error {
+	saved := int(math.Round(float64(len(raw)-len(compressed)) / bytesPerToken))
+	if saved < 0 {
+		saved = 0
+	}
+
+	savingsPct := 0.0
+	if len(raw) > 0 {
+		savingsPct = float64(len(raw)-len(compressed)) / float64(len(raw))
+	}
+
+	method := "measured"
+	params := daemon.TrackParams{
+		TS:               time.Now().UTC().Format(time.RFC3339),
+		Source:           source,
+		InputBytes:       len(raw),
+		OutputBytes:      len(compressed),
+		SavedTokens:      saved,
+		SavingsPct:       savingsPct,
+		ExecMs:           execMs,
+		EstimationMethod: &method,
+	}
+	if filterLevel != "" {
+		params.FilterLevel = &filterLevel
+	}
+
+	// Use a bounded context timeout so the tracking hop never adds visible
+	// latency to the caller. 50 ms is enough for a warm daemon and gives a
+	// cold daemon (dial-once DialTimeout is 200 ms) a reasonable window
+	// before the best-effort call is abandoned. Any error is discarded.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	cli := daemon.NewClient(config.SocketPath(os.Getuid()))
+	_ = cli.Track(ctx, params)
 	return nil
 }

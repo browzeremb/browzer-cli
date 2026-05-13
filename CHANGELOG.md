@@ -8,6 +8,19 @@ CUE schema are documented in this file. The CLI follows semantic versioning
 
 ### Added
 
+- **`browzer plugin doctor`**: new Cobra subcommand. Reads `~/.claude/plugins/installed_plugins.json` and `~/.claude.json` to validate plugin enablement. Exit 0 = PASS, exit 1 = FAIL; warnings are soft (non-fatal). Useful as a preflight before any skill-driven session.
+- **`browzer gain --include-internal`**: `browzer gain --by method` now excludes `workflow-audit:*` sources by default (these are internal bookkeeping events, not operator-visible savings). Pass `--include-internal` to restore the previous aggregate-all behaviour. `QueryAggregated(start, end, includeInternal)` gained a third boolean parameter accordingly.
+- **New runfilters**: `pnpm install`, `terraform plan`, `kubectl get pods` are now classified and compressed by the filter pipeline.
+- **Stop hook `browzer-session-summary.mjs`**: injects a per-session summary line `[browzer] Session saved Nk tokens (adoption Mx). Top wasted: <source> (<Yk>).` as `additionalContext` on every `Stop` event.
+
+### Changed
+
+- **`TrackRun` is now a 5-arg function** (`source, raw, compressed, filterLevel, execMs`): previously a 3-arg stub, it now wires directly to `daemon.Client.Track` with `EstimationMethod="measured"` and a 50 ms context deadline. Callers that passed only 3 arguments must add `filterLevel` and `execMs`.
+- **`git diff` uses hunk-aware semantic compression**: the previous hard truncation at 150 lines is replaced by per-hunk semantic trimming; long diffs are reduced without cutting inside a hunk boundary.
+- **Source name fix — `wasted-rg`**: plugin hook events emitted for `rg` (ripgrep) invocations were incorrectly tagged `wasted-grep`. The correct source is now `wasted-rg`. Existing `browzer gain` aggregates from before this fix will retain the old label in the SQLite store.
+
+### Added
+
 - **`browzer save-step --hint-fixes`** (R-5): on validation failure, emits a worked example for each enum / unknown-field violation in the form `expected one of [a, b, c]; example: "<field>": "<a>"`. Default behaviour (no flag) is unchanged. Driven by the new `FormatViolationsWithHints` helper in `internal/schema/validator.go` and a shared `formatViolationsCore(emitHints bool)` private renderer.
 - **`browzer save-step-batch --from PHASE=PATH ...`** (R-6): persists multiple phase payloads atomically. All `--from` entries are CUE-validated against the in-memory mutated document under a single advisory flock; on any individual failure the batch rolls back without writing. Duplicate phase names emit `cliExitErr(2)`. Backed by a new `wf.ApplyBatchAndPersist` helper in `internal/workflow/apply.go`.
 - **`browzer workflow init --mode <autonomous|review>`** (R-1 / R-8): seeds `config.mode` directly at workflow init time. Default `autonomous`. The `BootstrapOptions.Mode` field is enum-validated against `{autonomous, review}`; bogus values exit non-zero.

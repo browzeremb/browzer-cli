@@ -9,7 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this package is
 
-`@browzer/cli` is a single-binary Go CLI (`browzer`, current version `3.0.0` — `VERSION`, requires Go **≥ 1.25**) that talks to the Browzer server over HTTPS and to a local Unix-socket daemon over JSON-RPC. It is the runtime side of the Browzer plugin: skills are thin markdown contracts; this CLI is what they actually invoke.
+`@browzer/cli` is a single-binary Go CLI (`browzer`, current version `4.0.0` — `VERSION`, requires Go **≥ 1.25**) that talks to the Browzer server over HTTPS and to a local Unix-socket daemon over JSON-RPC. It is the runtime side of the Browzer plugin: skills are thin markdown contracts; this CLI is what they actually invoke.
+
+Compatibility: CLI v4.x.x ↔ Plugin v5.x.x ↔ Tracker schema v2
 
 Two surfaces:
 

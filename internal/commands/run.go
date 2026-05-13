@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/browzeremb/browzer-cli/internal/commands/runfilters"
 	"github.com/spf13/cobra"
@@ -90,7 +91,9 @@ Examples:
 			var stdoutBuf bytes.Buffer
 			child.Stdout = &stdoutBuf
 
+			childStart := time.Now()
 			err := child.Run()
+			execMs := int(time.Since(childStart).Milliseconds())
 			exitCode := 0
 			if err != nil {
 				if exitErr, ok := err.(*exec.ExitError); ok {
@@ -112,6 +115,8 @@ Examples:
 
 			raw := capStdout(&stdoutBuf)
 
+			filterLevel := runfilters.DefaultRegistry.CategoryOf(childArgs)
+
 			// Exit gate: non-zero exit or no filter — return raw output.
 			if exitCode != 0 || filter == nil {
 				_, _ = os.Stdout.Write(raw)
@@ -125,7 +130,7 @@ Examples:
 				if exitCode != 0 {
 					source = "browzer-run-exitfail"
 				}
-				_ = runfilters.TrackRun(source, raw, raw)
+				_ = runfilters.TrackRun(source, raw, raw, filterLevel, execMs)
 				os.Exit(exitCode)
 			}
 
@@ -135,9 +140,11 @@ Examples:
 
 			// Track savings event (best-effort).
 			_ = runfilters.TrackRun(
-				"browzer-run-"+runfilters.DefaultRegistry.CategoryOf(childArgs),
+				"browzer-run-"+filterLevel,
 				raw,
 				compressed,
+				filterLevel,
+				execMs,
 			)
 
 			return nil

@@ -114,9 +114,13 @@ func TestRegistry_CategoryOf_EmptyArgs(t *testing.T) {
 	}
 }
 
-func TestTrackRun_IsNoOp(t *testing.T) {
-	err := TrackRun("browzer-run-passthrough", []byte("raw"), []byte("compressed"))
+func TestTrackRun_AlwaysReturnsNil(t *testing.T) {
+	// TrackRun is best-effort: daemon errors are silently discarded and
+	// the function always returns nil regardless of whether the daemon is
+	// reachable. This test runs without a live daemon to verify the
+	// return-nil contract even on dial failure.
+	err := TrackRun("browzer-run-passthrough", []byte("raw output bytes"), []byte("compressed"), "git", 10)
 	if err != nil {
-		t.Errorf("expected TrackRun stub to return nil, got %v", err)
+		t.Errorf("expected TrackRun to return nil, got %v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -150,7 +151,12 @@ type AggregatedRow struct {
 
 // QueryAggregated returns gain summary rows. `since` is e.g. "7d", "24h".
 // `groupBy` is one of: source, command, filter, model, session.
-func (t *Tracker) QueryAggregated(since, groupBy string) ([]AggregatedRow, error) {
+// When `includeInternal` is false, events whose source starts with
+// "workflow-audit:" are excluded from the result set.
+//
+// This method is internal to packages/cli — it is not part of any exported
+// public API contract. Call-sites are gain.go (two) and tracker_test.go.
+func (t *Tracker) QueryAggregated(since, groupBy string, includeInternal bool) ([]AggregatedRow, error) {
 	col, err := groupColumn(groupBy)
 	if err != nil {
 		return nil, err
@@ -159,11 +165,23 @@ func (t *Tracker) QueryAggregated(since, groupBy string) ([]AggregatedRow, error
 	if err != nil {
 		return nil, err
 	}
-	q := fmt.Sprintf(`
-		SELECT COALESCE(%s, '<unknown>') AS g, COUNT(*) AS n,
-		       SUM(input_bytes), SUM(output_bytes), SUM(saved_tokens)
-		FROM events WHERE ts >= ? GROUP BY g ORDER BY n DESC
-	`, col)
+
+	// Build WHERE clauses in Go so the SQL predicate is structural, not
+	// data-driven. Avoids passing boolean state as a SQL operand (which
+	// forces SQLite to evaluate the LIKE on every row even when the filter
+	// is disabled) and makes future optional filters easy to add.
+	where := []string{"ts >= ?"}
+	if !includeInternal {
+		where = append(where, "source NOT LIKE 'workflow-audit:%'")
+	}
+
+	q := fmt.Sprintf(
+		`SELECT COALESCE(%s, '<unknown>') AS g, COUNT(*) AS n,
+		        SUM(input_bytes), SUM(output_bytes), SUM(saved_tokens)
+		 FROM events WHERE %s
+		 GROUP BY g ORDER BY n DESC`,
+		col, strings.Join(where, " AND "),
+	)
 	rows, err := t.db.Query(q, cutoff.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
@@ -283,6 +301,46 @@ func (t *Tracker) MarkFlushed(ids []int64) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// HookSavedTokens is the event source written by the hook layer when it
+// reports per-hook saved-token deltas back to the tracker.
+const HookSavedTokens = "hook-saved-tokens"
+
+// HookDeltaRow is one row of the per-hook delta report.
+type HookDeltaRow struct {
+	Hook        string
+	N           int
+	SavedTokens int64
+}
+
+// QueryHookDeltas returns per-hook saved-token deltas for events whose source
+// is HookSavedTokens within the given lookback window. The `command` column
+// identifies which hook produced the event.
+func (t *Tracker) QueryHookDeltas(since string) ([]HookDeltaRow, error) {
+	cutoff, err := parseSince(since)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := t.db.Query(`
+		SELECT COALESCE(command, '<unknown>') AS hook, COUNT(*) AS n, SUM(saved_tokens)
+		FROM events
+		WHERE source = ? AND ts >= ?
+		GROUP BY hook ORDER BY n DESC
+	`, HookSavedTokens, cutoff.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []HookDeltaRow
+	for rows.Next() {
+		var r HookDeltaRow
+		if err := rows.Scan(&r.Hook, &r.N, &r.SavedTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func groupColumn(g string) (string, error) {
