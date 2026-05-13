@@ -3,8 +3,6 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -115,38 +113,6 @@ func makeThreeStepWorkflow(step1Status, step2Status, step3Status string) string 
     }
   ]
 }`, step1Status, startedAt, step2Status, startedAt, step3Status, startedAt)
-}
-
-// writeWFFile writes content to a new temp file and returns the path.
-func writeWFFile(t *testing.T, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "workflow.json")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("writeWFFile: %v", err)
-	}
-	return path
-}
-
-// readWF reads and parses a workflow.json file.
-func readWF(t *testing.T, path string) Workflow {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("readWF read: %v", err)
-	}
-	var wf Workflow
-	if err := json.Unmarshal(data, &wf); err != nil {
-		t.Fatalf("readWF unmarshal: %v", err)
-	}
-	return wf
-}
-
-// applyVerb is a thin helper that calls ApplyAndPersist with the given verb +
-// args and returns the result + error.
-func applyVerb(t *testing.T, path, verb string, args []string) (ApplyResult, error) {
-	t.Helper()
-	return ApplyAndPersist(path, verb, MutatorArgs{Args: args}, false)
 }
 
 // --- TASK_04 tests: stampWorkflowTotalElapsedIfFinal ---
