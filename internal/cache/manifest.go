@@ -136,7 +136,7 @@ func (m *WorkspaceManifest) All() []ManifestEntry {
 //	  rdeps/<file-slug>.json      # output of `browzer deps <path> --reverse --save`
 //	  mentions/<file-slug>.json   # output of `browzer mentions <path> --save`
 //
-// <file-slug> = path with / replaced by _ (mirrors fileSlug in internal/workflow/query.go).
+// <file-slug> = path with / replaced by _.
 type FeatureCacheEntry struct {
 	FeatureID     string    `json:"featureId"`
 	WarmedAt      time.Time `json:"warmedAt"`

@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 )
 
 // --- helpers ---
@@ -153,73 +151,102 @@ func applyVerb(t *testing.T, path, verb string, args []string) (ApplyResult, err
 
 // --- TASK_04 tests: stampWorkflowTotalElapsedIfFinal ---
 
-// TestCompleteStep_StampsOnlyOnFinalStep verifies that totalElapsedMin stays 0
-// after completing steps 1 and 2 of a 3-step workflow, and is set to > 0 only
-// after completing step 3 (the final step).
-func TestCompleteStep_StampsOnlyOnFinalStep(t *testing.T) {
-	// Steps start RUNNING so complete-step sees a status worth mutating.
-	wfPath := writeWFFile(t, makeThreeStepWorkflow(StatusRunning, StatusRunning, StatusRunning))
-
-	// Complete step 1 — not final yet.
-	if _, err := applyVerb(t, wfPath, "complete-step", []string{"STEP_01_BRAINSTORMING"}); err != nil {
-		t.Fatalf("complete-step 1: %v", err)
-	}
-	wf1 := readWF(t, wfPath)
-	if wf1.TotalElapsedMin != 0 {
-		t.Errorf("after step 1 complete: expected totalElapsedMin=0, got %v", wf1.TotalElapsedMin)
+// TestStampWorkflowTotalElapsedIfFinal_StampsOnlyOnFinalStep verifies that
+// totalElapsedMin stays 0 after completing steps 1 and 2 of a 3-step workflow,
+// and is set to > 0 only when the final step completes.
+// Tests stampWorkflowTotalElapsedIfFinal directly (complete-step mutator retired in v3.0.0).
+func TestStampWorkflowTotalElapsedIfFinal_StampsOnlyOnFinalStep(t *testing.T) {
+	now := "2026-05-01T10:10:00Z"
+	makeRaw := func(s1, s2, s3 string) map[string]any {
+		raw := map[string]any{}
+		if err := json.Unmarshal([]byte(makeThreeStepWorkflow(s1, s2, s3)), &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return raw
 	}
 
-	// Complete step 2 — not final yet.
-	if _, err := applyVerb(t, wfPath, "complete-step", []string{"STEP_02_PRD"}); err != nil {
-		t.Fatalf("complete-step 2: %v", err)
+	// Step 1 complete — not final.
+	raw := makeRaw(StatusRunning, StatusRunning, StatusRunning)
+	steps := raw["steps"].([]any)
+	sm1 := steps[0].(map[string]any)
+	sm1["status"] = StatusCompleted
+	steps[0] = sm1
+	raw["steps"] = steps
+	got := stampWorkflowTotalElapsedIfFinal(raw, sm1, now)
+	if got {
+		t.Error("step 1: stampWorkflowTotalElapsedIfFinal should return false (not final)")
 	}
-	wf2 := readWF(t, wfPath)
-	if wf2.TotalElapsedMin != 0 {
-		t.Errorf("after step 2 complete: expected totalElapsedMin=0, got %v", wf2.TotalElapsedMin)
+	if v, _ := raw["totalElapsedMin"].(float64); v != 0 {
+		t.Errorf("step 1: expected totalElapsedMin=0, got %v", v)
 	}
 
-	// Complete step 3 — final step, totalElapsedMin must be stamped.
-	if _, err := applyVerb(t, wfPath, "complete-step", []string{"STEP_03_COMMIT"}); err != nil {
-		t.Fatalf("complete-step 3: %v", err)
+	// Step 2 complete — not final.
+	sm2 := steps[1].(map[string]any)
+	sm2["status"] = StatusCompleted
+	steps[1] = sm2
+	raw["steps"] = steps
+	got = stampWorkflowTotalElapsedIfFinal(raw, sm2, now)
+	if got {
+		t.Error("step 2: stampWorkflowTotalElapsedIfFinal should return false (not final)")
 	}
-	wf3 := readWF(t, wfPath)
-	if wf3.TotalElapsedMin <= 0 {
-		t.Errorf("after final step complete: expected totalElapsedMin > 0, got %v", wf3.TotalElapsedMin)
+	if v, _ := raw["totalElapsedMin"].(float64); v != 0 {
+		t.Errorf("step 2: expected totalElapsedMin=0, got %v", v)
+	}
+
+	// Step 3 (COMMIT) complete — final step, totalElapsedMin must be stamped.
+	sm3 := steps[2].(map[string]any)
+	sm3["status"] = StatusCompleted
+	sm3["name"] = StepCommit
+	steps[2] = sm3
+	raw["steps"] = steps
+	raw["startedAt"] = "2026-05-01T10:00:00Z"
+	got = stampWorkflowTotalElapsedIfFinal(raw, sm3, now)
+	if !got {
+		t.Error("step 3: stampWorkflowTotalElapsedIfFinal should return true (final)")
+	}
+	if v, _ := raw["totalElapsedMin"].(float64); v <= 0 {
+		t.Errorf("step 3: expected totalElapsedMin > 0, got %v", v)
 	}
 }
 
-// TestSetStatus_StampsOnlyAfterFinalCompletion verifies the same stamp
-// invariant via the set-status path: totalElapsedMin must be 0 after
-// transitioning steps 1+2 to COMPLETED and > 0 after transitioning step 3.
-func TestSetStatus_StampsOnlyAfterFinalCompletion(t *testing.T) {
-	// All steps start RUNNING with startedAt set.
-	wfPath := writeWFFile(t, makeThreeStepWorkflow(StatusRunning, StatusRunning, StatusRunning))
-
-	// Transition step 1 → COMPLETED.
-	if _, err := applyVerb(t, wfPath, "set-status", []string{"STEP_01_BRAINSTORMING", StatusCompleted}); err != nil {
-		t.Fatalf("set-status step 1 COMPLETED: %v", err)
-	}
-	wf1 := readWF(t, wfPath)
-	if wf1.TotalElapsedMin != 0 {
-		t.Errorf("after step 1 COMPLETED: expected totalElapsedMin=0, got %v", wf1.TotalElapsedMin)
-	}
-
-	// Transition step 2 → COMPLETED.
-	if _, err := applyVerb(t, wfPath, "set-status", []string{"STEP_02_PRD", StatusCompleted}); err != nil {
-		t.Fatalf("set-status step 2 COMPLETED: %v", err)
-	}
-	wf2 := readWF(t, wfPath)
-	if wf2.TotalElapsedMin != 0 {
-		t.Errorf("after step 2 COMPLETED: expected totalElapsedMin=0, got %v", wf2.TotalElapsedMin)
+// TestStampWorkflowTotalElapsedIfFinal_AllCompletedViaDirectCall verifies
+// that stampWorkflowTotalElapsedIfFinal stamps totalElapsedMin > 0 only when
+// the last step is also complete (all-terminal).
+// (set-status mutator retired in v3.0.0; tests stampWorkflowTotalElapsedIfFinal directly.)
+func TestStampWorkflowTotalElapsedIfFinal_AllCompletedViaDirectCall(t *testing.T) {
+	now := "2026-05-01T10:10:00Z"
+	raw := map[string]any{
+		"totalElapsedMin": float64(0),
+		"startedAt":       "2026-05-01T10:00:00Z",
+		"steps": []any{
+			map[string]any{"status": StatusCompleted, "name": "BRAINSTORMING"},
+			map[string]any{"status": StatusCompleted, "name": "PRD"},
+			map[string]any{"status": StatusRunning, "name": StepCommit},
+		},
 	}
 
-	// Transition step 3 → COMPLETED — final step.
-	if _, err := applyVerb(t, wfPath, "set-status", []string{"STEP_03_COMMIT", StatusCompleted}); err != nil {
-		t.Fatalf("set-status step 3 COMPLETED: %v", err)
+	// Two completed, one running — not final.
+	steps := raw["steps"].([]any)
+	sm2 := steps[1].(map[string]any)
+	got := stampWorkflowTotalElapsedIfFinal(raw, sm2, now)
+	if got {
+		t.Error("step 2: expected false (not all terminal)")
 	}
-	wf3 := readWF(t, wfPath)
-	if wf3.TotalElapsedMin <= 0 {
-		t.Errorf("after final step COMPLETED via set-status: expected totalElapsedMin > 0, got %v", wf3.TotalElapsedMin)
+	if v, _ := raw["totalElapsedMin"].(float64); v != 0 {
+		t.Errorf("step 2: expected totalElapsedMin=0, got %v", v)
+	}
+
+	// All complete — final step triggers stamp.
+	sm3 := steps[2].(map[string]any)
+	sm3["status"] = StatusCompleted
+	steps[2] = sm3
+	raw["steps"] = steps
+	got = stampWorkflowTotalElapsedIfFinal(raw, sm3, now)
+	if !got {
+		t.Error("step 3: expected true (all terminal)")
+	}
+	if v, _ := raw["totalElapsedMin"].(float64); v <= 0 {
+		t.Errorf("step 3: expected totalElapsedMin > 0, got %v", v)
 	}
 }
 
@@ -255,199 +282,6 @@ func TestStampWorkflowTotalElapsedIfFinal_NotFinalSkipsStamp(t *testing.T) {
 	stampWorkflowTotalElapsedIfFinal(raw, stepMap, "2026-05-04T01:00:00Z")
 	if raw["totalElapsedMin"] != float64(0) {
 		t.Errorf("expected 0 (not final), got %v", raw["totalElapsedMin"])
-	}
-}
-
-// --- TASK_05 tests: .browzer/active-step cache ---
-
-// TestSetCurrentStep_WritesActiveStepCache verifies that set-current-step
-// writes the stepId to <workflowDir>/.browzer/active-step.
-func TestSetCurrentStep_WritesActiveStepCache(t *testing.T) {
-	wfPath := writeWFFile(t, makeThreeStepWorkflow(StatusPending, StatusPending, StatusPending))
-	wfDir := filepath.Dir(wfPath)
-
-	_, err := ApplyAndPersist(wfPath, "set-current-step", MutatorArgs{
-		Args:        []string{"STEP_01_BRAINSTORMING"},
-		WorkflowDir: wfDir,
-	}, false)
-	if err != nil {
-		t.Fatalf("set-current-step: %v", err)
-	}
-
-	cacheFile := filepath.Join(wfDir, ".browzer", "active-step")
-	data, err := os.ReadFile(cacheFile)
-	if err != nil {
-		t.Fatalf("active-step cache not written: %v", err)
-	}
-	if got := strings.TrimSpace(string(data)); got != "STEP_01_BRAINSTORMING" {
-		t.Errorf("active-step content: expected STEP_01_BRAINSTORMING, got %q", got)
-	}
-}
-
-// TestCompleteStep_ClearsActiveStepCacheOnFinal verifies that completing
-// step 3 of a 3-step workflow deletes .browzer/active-step, while completing
-// steps 1 and 2 does NOT delete it.
-func TestCompleteStep_ClearsActiveStepCacheOnFinal(t *testing.T) {
-	wfPath := writeWFFile(t, makeThreeStepWorkflow(StatusRunning, StatusRunning, StatusRunning))
-	wfDir := filepath.Dir(wfPath)
-
-	// Pre-create the cache file.
-	cacheDir := filepath.Join(wfDir, ".browzer")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cacheFile := filepath.Join(cacheDir, "active-step")
-	if err := os.WriteFile(cacheFile, []byte("STEP_03_COMMIT"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Complete step 1 — cache must survive.
-	if _, err := ApplyAndPersist(wfPath, "complete-step", MutatorArgs{
-		Args:        []string{"STEP_01_BRAINSTORMING"},
-		WorkflowDir: wfDir,
-	}, false); err != nil {
-		t.Fatalf("complete-step 1: %v", err)
-	}
-	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
-		t.Error("active-step cache should survive after step 1 complete")
-	}
-
-	// Complete step 2 — cache must survive.
-	if _, err := ApplyAndPersist(wfPath, "complete-step", MutatorArgs{
-		Args:        []string{"STEP_02_PRD"},
-		WorkflowDir: wfDir,
-	}, false); err != nil {
-		t.Fatalf("complete-step 2: %v", err)
-	}
-	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
-		t.Error("active-step cache should survive after step 2 complete")
-	}
-
-	// Complete step 3 — cache must be deleted.
-	if _, err := ApplyAndPersist(wfPath, "complete-step", MutatorArgs{
-		Args:        []string{"STEP_03_COMMIT"},
-		WorkflowDir: wfDir,
-	}, false); err != nil {
-		t.Fatalf("complete-step 3: %v", err)
-	}
-	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
-		t.Error("active-step cache should be deleted after final step complete")
-	}
-}
-
-// --- TASK_09 tests: AWAITING_REVIEW transitions ---
-
-// TestSetStatus_AwaitingReviewToPending verifies that AWAITING_REVIEW → PENDING
-// is now a legal transition (returns nil error).
-func TestSetStatus_AwaitingReviewToPending(t *testing.T) {
-	wfJSON := makeThreeStepWorkflow(StatusAwaitingReview, StatusPending, StatusPending)
-	wfPath := writeWFFile(t, wfJSON)
-
-	if _, err := applyVerb(t, wfPath, "set-status", []string{"STEP_01_BRAINSTORMING", StatusPending}); err != nil {
-		t.Fatalf("AWAITING_REVIEW→PENDING should be legal, got: %v", err)
-	}
-	wf := readWF(t, wfPath)
-	if wf.Steps[0].Status != StatusPending {
-		t.Errorf("expected PENDING after transition, got %q", wf.Steps[0].Status)
-	}
-}
-
-// TestSetStatus_AwaitingReviewToRunning verifies that AWAITING_REVIEW → RUNNING
-// is legal and auto-stamps startedAt if previously unset.
-func TestSetStatus_AwaitingReviewToRunning(t *testing.T) {
-	// Build a workflow where step 1 is AWAITING_REVIEW without a startedAt.
-	// Use a minimal inline JSON so we can precisely control startedAt="".
-	wfRaw := `{
-  "schemaVersion": 2,
-  "pluginVersion": null,
-  "featureId": "feat-20260501-ar-running",
-  "featureName": "AR Running Test",
-  "featDir": "docs/browzer/feat-20260501-ar-running",
-  "originalRequest": "test",
-  "operator": {"locale": "pt-BR"},
-  "config": {"mode": "autonomous", "setAt": "2026-05-01T00:00:00Z"},
-  "startedAt": "2026-05-01T10:00:00Z",
-  "updatedAt": "2026-05-01T10:00:00Z",
-  "completedAt": null,
-  "totalElapsedMin": 0,
-  "currentStepId": "",
-  "nextStepId": "",
-  "totalSteps": 1,
-  "completedSteps": 0,
-  "notes": [],
-  "globalWarnings": [],
-  "steps": [
-    {
-      "stepId": "STEP_01_BRAINSTORMING",
-      "name": "BRAINSTORMING",
-      "status": "AWAITING_REVIEW",
-      "applicability": {"applicable": true, "reason": "default"},
-      "startedAt": "2026-05-01T10:00:00Z",
-      "completedAt": null,
-      "elapsedMin": 0,
-      "retryCount": 0,
-      "itDependsOn": [],
-      "nextStep": "",
-      "skillsToInvoke": [],
-      "skillsInvoked": [],
-      "owner": null,
-      "warnings": [],
-      "reviewHistory": [],
-      "dispatches": [],
-      "brainstorming": {
-        "questionsAsked": 0,
-        "researchRoundRun": false,
-        "researchAgents": 0,
-        "dimensions": {
-          "primaryUser": "test",
-          "jobToBeDone": "test",
-          "successSignal": "test",
-          "inScope": [],
-          "outOfScope": []
-        }
-      }
-    }
-  ]
-}`
-	wfPath := writeWFFile(t, wfRaw)
-
-	if _, err := applyVerb(t, wfPath, "set-status", []string{"STEP_01_BRAINSTORMING", StatusRunning}); err != nil {
-		t.Fatalf("AWAITING_REVIEW→RUNNING should be legal, got: %v", err)
-	}
-	wf := readWF(t, wfPath)
-	step := wf.Steps[0]
-	if step.Status != StatusRunning {
-		t.Errorf("expected RUNNING after transition, got %q", step.Status)
-	}
-	// startedAt must remain set + RFC3339 parseable. Auto-stamp on
-	// previously-empty startedAt is exercised transitively when other
-	// PENDING→RUNNING tests fire — CUE v2 forbids an empty-string
-	// startedAt at the schema gate so this test cannot seed one.
-	if step.StartedAt == "" {
-		t.Error("expected startedAt to remain set after AWAITING_REVIEW→RUNNING")
-	}
-	if _, err := time.Parse(time.RFC3339, step.StartedAt); err != nil {
-		t.Fatalf("startedAt is not RFC3339: %q", step.StartedAt)
-	}
-}
-
-// TestSetStatus_AwaitingReviewTerminalsStillWork verifies that terminal
-// transitions from AWAITING_REVIEW (COMPLETED, SKIPPED, STOPPED) all still
-// work after adding PENDING/RUNNING — regression guard.
-func TestSetStatus_AwaitingReviewTerminalsStillWork(t *testing.T) {
-	for _, target := range []string{StatusCompleted, StatusSkipped, StatusStopped} {
-		t.Run("→"+target, func(t *testing.T) {
-			wfJSON := makeThreeStepWorkflow(StatusAwaitingReview, StatusPending, StatusPending)
-			wfPath := writeWFFile(t, wfJSON)
-
-			if _, err := applyVerb(t, wfPath, "set-status", []string{"STEP_01_BRAINSTORMING", target}); err != nil {
-				t.Fatalf("AWAITING_REVIEW→%s should be legal, got: %v", target, err)
-			}
-			wf := readWF(t, wfPath)
-			if wf.Steps[0].Status != target {
-				t.Errorf("expected %s after transition, got %q", target, wf.Steps[0].Status)
-			}
-		})
 	}
 }
 
@@ -540,93 +374,3 @@ func TestStampWorkflowTotalElapsedIfFinal_MixedTerminal(t *testing.T) {
 	}
 }
 
-// --- F-24: empty WorkflowDir skips cache write ---
-
-// TestSetCurrentStep_EmptyWorkflowDirSkipsCache verifies that set-current-step
-// does not create any active-step cache file when WorkflowDir is empty.
-func TestSetCurrentStep_EmptyWorkflowDirSkipsCache(t *testing.T) {
-	wfPath := writeWFFile(t, makeThreeStepWorkflow(StatusPending, StatusPending, StatusPending))
-
-	var result ApplyResult
-	raw := map[string]any{}
-	if err := json.Unmarshal([]byte(makeThreeStepWorkflow(StatusPending, StatusPending, StatusPending)), &raw); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if err := Mutators["set-current-step"](raw, MutatorArgs{Args: []string{"STEP_01_BRAINSTORMING"}, WorkflowDir: ""}, &result); err != nil {
-		t.Fatalf("set-current-step: %v", err)
-	}
-
-	// No active-step file should exist anywhere near the workflow file.
-	cacheFile := filepath.Join(filepath.Dir(wfPath), ".browzer", "active-step")
-	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
-		t.Error("active-step cache file must not be created when WorkflowDir is empty")
-	}
-}
-
-// --- F-26: clear cache no-ops when file does not exist ---
-
-// TestCompleteStep_ClearsActiveStepCacheOnFinal_NoCacheExists verifies that
-// completing the final step succeeds and does not error when the active-step
-// cache file was never created.
-func TestCompleteStep_ClearsActiveStepCacheOnFinal_NoCacheExists(t *testing.T) {
-	// Single RUNNING step — completing it makes the workflow terminal.
-	wfJSON := makeThreeStepWorkflow(StatusRunning, StatusSkipped, StatusSkipped)
-	wfPath := writeWFFile(t, wfJSON)
-	wfDir := filepath.Dir(wfPath)
-
-	// Intentionally do NOT create the cache file.
-	cacheFile := filepath.Join(wfDir, ".browzer", "active-step")
-	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
-		t.Fatal("cache file should not exist before the test")
-	}
-
-	_, err := ApplyAndPersist(wfPath, "complete-step", MutatorArgs{
-		Args:        []string{"STEP_01_BRAINSTORMING"},
-		WorkflowDir: wfDir,
-	}, false)
-	if err != nil {
-		t.Fatalf("complete-step on final step without cache file: %v", err)
-	}
-
-	// Cache file must still be absent — no-op delete is correct.
-	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
-		t.Error("cache file should remain absent after no-op delete")
-	}
-}
-
-// --- F-10 test: set-status STOPPED clears cache when all steps terminal ---
-
-// TestSetStatus_ClearsActiveStepCacheOnAborted verifies that transitioning the
-// final non-terminal step to STOPPED triggers active-step cache deletion when
-// all steps end up in a terminal state.
-func TestSetStatus_ClearsActiveStepCacheOnAborted(t *testing.T) {
-	// Steps: STOPPED, STOPPED, RUNNING — the RUNNING one is the final live step.
-	wfJSON := makeThreeStepWorkflow(StatusStopped, StatusStopped, StatusRunning)
-	wfPath := writeWFFile(t, wfJSON)
-	wfDir := filepath.Dir(wfPath)
-
-	// Pre-create the cache file.
-	cacheDir := filepath.Join(wfDir, ".browzer")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cacheFile := filepath.Join(cacheDir, "active-step")
-	writeActiveStepCache(wfDir, "STEP_03_COMMIT")
-	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
-		t.Fatal("pre-condition: cache file must exist before transition")
-	}
-
-	// Transition the last RUNNING step to STOPPED.
-	_, err := ApplyAndPersist(wfPath, "set-status", MutatorArgs{
-		Args:        []string{"STEP_03_COMMIT", StatusStopped},
-		WorkflowDir: wfDir,
-	}, false)
-	if err != nil {
-		t.Fatalf("set-status STOPPED: %v", err)
-	}
-
-	// Cache must be cleared now that all steps are terminal.
-	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
-		t.Error("active-step cache must be deleted after all steps reach terminal status via STOPPED")
-	}
-}

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,9 +11,10 @@ import (
 
 // TestRotateWorkflowBackups_ProducesNumericChain (B6 / FR-3, 2026-05-07):
 // after K mutations against the same workflow.json, the directory
-// contains at most workflowBackupCount (now 2) numbered backups, each
-// holding the SAME contents as the workflow had K-i mutations ago.
+// contains at most workflowBackupCount (now 2) numbered backups.
+// Uses append-step (a kept mutator) to trigger backup rotation.
 func TestRotateWorkflowBackups_ProducesNumericChain(t *testing.T) {
+	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.json")
 
@@ -24,8 +26,20 @@ func TestRotateWorkflowBackups_ProducesNumericChain(t *testing.T) {
 	// Apply 3 distinct mutations so rotation passes the workflowBackupCount
 	// cap (2) and we can prove only .bak.1 and .bak.2 survive, not .bak.3.
 	for i := 0; i < 3; i++ {
-		_, err := ApplyAndPersist(path, "patch", MutatorArgs{
-			JQExpr: fmt.Sprintf(`.featureName = "tag-%d"`, i),
+		stepID := fmt.Sprintf("STEP_%02d_EXTRA", i+10)
+		payload, _ := json.Marshal(map[string]any{
+			"stepId":        stepID,
+			"name":          "TASK",
+			"taskId":        fmt.Sprintf("TASK_%02d", i+10),
+			"status":        "PENDING",
+			"applicability": map[string]any{"applicable": true, "reason": "default"},
+			"completedAt":   nil,
+			"owner":         nil,
+			"worktrees":     map[string]any{"used": false, "worktrees": []any{}},
+			"task":          map[string]any{},
+		})
+		_, err := ApplyAndPersist(path, "append-step", MutatorArgs{
+			Payload: payload,
 		}, false)
 		if err != nil {
 			t.Fatalf("apply iteration %d: %v", i, err)
@@ -44,27 +58,27 @@ func TestRotateWorkflowBackups_ProducesNumericChain(t *testing.T) {
 		t.Errorf("rotation cap exceeded — %s should not exist", excess)
 	}
 
-	// .bak.1 must contain the document one mutation behind the current
-	// state ("tag-1"), and .bak.2 must contain the document two
-	// mutations behind ("tag-0"). The rotation walks from oldest →
-	// newest before copying current → .bak.1, so:
-	//   current  = tag-2
-	//   .bak.1   = tag-1
-	//   .bak.2   = tag-0
-	expectations := map[string]string{
-		path + ".bak.1": `"tag-1"`,
-		path + ".bak.2": `"tag-0"`,
+	// .bak.1 must contain fewer steps than the current workflow (one
+	// append-step behind); .bak.2 must have even fewer. Both must be
+	// valid JSON with a "steps" array.
+	bak1, err1 := os.ReadFile(path + ".bak.1")
+	bak2, err2 := os.ReadFile(path + ".bak.2")
+	current, err3 := os.ReadFile(path)
+	if err1 != nil || err2 != nil || err3 != nil {
+		t.Fatalf("backup read errors: %v / %v / %v", err1, err2, err3)
 	}
-	for fp, marker := range expectations {
-		data, err := os.ReadFile(fp)
-		if err != nil {
-			t.Errorf("read %s: %v", fp, err)
-			continue
+	stepCount := func(b []byte) int {
+		var doc struct {
+			Steps []any `json:"steps"`
 		}
-		if !strings.Contains(string(data), marker) {
-			t.Errorf("%s expected to contain %s; got first 100 bytes: %q",
-				fp, marker, truncateForTest(string(data), 100))
-		}
+		_ = json.Unmarshal(b, &doc)
+		return len(doc.Steps)
+	}
+	if stepCount(bak2) >= stepCount(bak1) {
+		t.Errorf("expected bak.2 step count < bak.1: bak2=%d bak1=%d", stepCount(bak2), stepCount(bak1))
+	}
+	if stepCount(bak1) >= stepCount(current) {
+		t.Errorf("expected bak.1 step count < current: bak1=%d current=%d", stepCount(bak1), stepCount(current))
 	}
 }
 
@@ -88,9 +102,3 @@ func TestRotateWorkflowBackups_FirstWriteSkipsBackup(t *testing.T) {
 	}
 }
 
-func truncateForTest(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "…"
-	}
-	return s
-}

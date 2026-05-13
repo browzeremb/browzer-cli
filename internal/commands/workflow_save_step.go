@@ -20,10 +20,10 @@ import (
 
 
 // registerSaveStep wires the top-level `browzer save-step <PHASE> --id <feat>`
-// command. It is the persistence half of the staging-file UX: skills write
-// their output to `docs/browzer/<feat>/staging/<PHASE>.{md,json}`, the
-// PostToolUse autosave hook execs this verb, which validates the payload
-// against the CUE schema and atomically updates `workflow.json`.
+// command. Callers (skills, the orchestrator, operators) invoke
+// `browzer save-step <PHASE> --from <staged-file>` directly. The
+// PostToolUse(Write) autosave bridge from
+// `packages/skills/hooks/_auto-save-step.mjs` was retired in v5.0.0.
 func registerSaveStep(root *cobra.Command) {
 	var (
 		idFlag       string
@@ -61,7 +61,7 @@ Behaviour:
   - --hint-fixes: on enum or unknown-field violations, emit a worked
     example showing a valid value, e.g.
     expected one of [a, b, c]; example: "<key>": "<a>"
-  - Honors BROWZER_WORKFLOW_MODE=sync|async|await like other mutators.
+  - Honors BROWZER_WORKFLOW_MODE=sync|await (--async is not accepted; use --await or --sync).
   - Stdout silent on success; --quiet (default under BROWZER_LLM=1)
     suppresses the success line on stderr.`,
 		Args:         cobra.ExactArgs(1),
@@ -127,17 +127,6 @@ Behaviour:
 				NoBackup: noBackup,
 			}
 
-			// FR-4: --async is deprecated in save-step. Always ran synchronously;
-			// the flag was misleading. Passing it now returns exit code 2.
-			// Users must remove --async from their call-sites.
-			// Check BEFORE validate-only so the deprecation fires even when
-			// --validate-only is passed alongside --async.
-			if asyncFlag, _ := cmd.Flags().GetBool("async"); asyncFlag {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-					"save-step: --async is deprecated; remove the flag (it always ran synchronously)")
-				return cliExitErr(2, errors.New("--async is deprecated; remove the flag (it always ran synchronously)"))
-			}
-
 			if validateOnly {
 				dr, err := wf.ApplyDryRun(path, "save-step", args2)
 				if err != nil {
@@ -162,9 +151,8 @@ Behaviour:
 			// save-step defaults to durable (await) — the very next agent
 			// command typically reads the persisted step (e.g. orchestrator
 			// running get-step right after the autosave hook fires). The
-			// generic mutator default is "async" because most mutators are
-			// fire-and-forget bookkeeping; save-step is read-after-write.
-			// Operators can still force --sync explicitly.
+			// generic mutator default is fire-and-forget; save-step is
+			// read-after-write. Operators can still force --sync explicitly.
 			sync, _ := cmd.Flags().GetBool("sync")
 			await, _ := cmd.Flags().GetBool("await")
 			envMode := os.Getenv("BROWZER_WORKFLOW_MODE")
@@ -198,7 +186,6 @@ Behaviour:
 	cmd.Flags().BoolVar(&noBackup, "no-backup", false, "skip backup rotation before write (opt-in; default rotates up to 2 backups)")
 	// Honor the global write-mode flags (defined on the workflow group). Save
 	// is a top-level command, so re-declare here.
-	cmd.Flags().Bool("async", false, "DEPRECATED: send via daemon, return immediately (rejected with exit 2)")
 	cmd.Flags().Bool("sync", false, "skip daemon, apply in-process")
 	cmd.Flags().Bool("await", false, "send via daemon, block until durable")
 	cmd.Flags().Bool("no-lock", false, "skip advisory lock")
@@ -284,15 +271,6 @@ phase. --hint-fixes emits worked examples on enum/unknown-field violations.`,
 
 			if idFlag == "" && workflowFlag == "" {
 				return cliExitErr(2, errors.New("--id or --workflow is required"))
-			}
-
-			// FR-4: --async is deprecated (same as save-step). Emit the error
-			// here so callers that migrate from save-step to save-step-batch and
-			// carry over --async are notified immediately.
-			if asyncFlag, _ := cmd.Flags().GetBool("async"); asyncFlag {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-					"save-step-batch: --async is deprecated; remove the flag (it always ran synchronously)")
-				return cliExitErr(2, errors.New("--async is deprecated; remove the flag (it always ran synchronously)"))
 			}
 
 			// FR-5: BROWZER_LLM=1 implies --hint-fixes unless --no-hint-fixes is set.
@@ -408,7 +386,6 @@ phase. --hint-fixes emits worked examples on enum/unknown-field violations.`,
 	cmd.Flags().BoolVar(&hintFixes, "hint-fixes", false, "on enum/unknown-field violations emit a worked example")
 	cmd.Flags().BoolVar(&noHintFixes, "no-hint-fixes", false, "suppress hint-fixes even when BROWZER_LLM=1 implies it")
 	cmd.Flags().BoolVar(&noBackup, "no-backup", false, "skip backup rotation before write (opt-in; default rotates up to 2 backups)")
-	cmd.Flags().Bool("async", false, "DEPRECATED: send via daemon, return immediately (rejected with exit 2)")
 	cmd.Flags().Bool("sync", false, "skip daemon, apply in-process")
 	cmd.Flags().Bool("await", false, "send via daemon, block until durable")
 	cmd.Flags().Bool("no-lock", false, "skip advisory lock")

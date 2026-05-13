@@ -410,86 +410,61 @@ func TestProtocolVersion_RejectsV1(t *testing.T) {
 	}
 }
 
-// TestWorkflowMutate_LiveDaemonJQVarsRoundtrip (TEST-DAEMON-1) exercises the
-// full wire-protocol path for JQVars: CLI → JSON-RPC → daemon drainer →
-// ApplyJQWithVars → disk.
+// TestWorkflowMutate_LiveDaemonAppendStepRoundtrip (TEST-DAEMON-1) exercises the
+// full wire-protocol path for append-step over a live daemon socket:
+// CLI → JSON-RPC → daemon drainer → ApplyAndPersist → disk.
 //
-// Motivation: the unit-level tests in workflow_mutate_test.go
-// (TestWorkflowMutateParams_AdditiveJQVarsContract) confirm decode
-// correctness but never send bytes over a live socket. This test closes that
-// gap by:
-//
-//  1. Spinning up a real EphemeralDaemon.
-//  2. Writing a minimal valid workflow.json.
-//  3. Appending a step so the file has at least one step.
-//  4. Sending a `patch` verb with JQVars that bind $mystr and $myjson.
-//  5. Asserting the daemon returns success AND the mutation is reflected
-//     on disk (both scalar and JSON-object bindings survive the round trip).
-func TestWorkflowMutate_LiveDaemonJQVarsRoundtrip(t *testing.T) {
+// The patch verb (and JQVars usage) was removed in v3.0.0. This test verifies
+// the daemon's live append-step path end-to-end so the core daemon
+// communication contract remains covered.
+func TestWorkflowMutate_LiveDaemonAppendStepRoundtrip(t *testing.T) {
 	ed := SpinUpEphemeralDaemon(t)
 
 	wfPath := writeMinimalWorkflow(t)
 
-	// Step 1: append a step so the file is non-empty.
+	// Append two steps and verify both land on disk.
 	ctx5s, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if _, err := ed.Client.WorkflowMutate(ctx5s, WorkflowMutateParams{
-		Verb: "append-step",
-		Path: wfPath,
-		Payload: json.RawMessage(`{
-		  "stepId": "STEP_00_JQ",
-		  "name": "TASK",
-		  "taskId": "TASK_JQ",
-		  "status": "PENDING",
-		  "applicability": {"applicable": true, "reason": "default"},
-		  "completedAt": null,
-		  "owner": null,
-		  "worktrees": {"used": false, "worktrees": []},
-		  "task": {}
-		}`),
-		ProtocolVersion: CurrentProtocolVersion,
-		AwaitDurability: true,
-		LockTimeoutMs:   5000,
-	}); err != nil {
-		t.Fatalf("append-step: %v", err)
+	for _, stepID := range []string{"STEP_01_TASK_01", "STEP_02_TASK_02"} {
+		taskID := stepID[len(stepID)-7:] // last 7 chars: TASK_NN
+		payload, _ := json.Marshal(map[string]any{
+			"stepId":        stepID,
+			"name":          "TASK",
+			"taskId":        taskID,
+			"status":        "PENDING",
+			"startedAt":     "2026-05-01T10:00:00Z",
+			"applicability": map[string]any{"applicable": true, "reason": "default"},
+			"completedAt":   nil,
+			"owner":         nil,
+			"worktrees":     map[string]any{"used": false, "worktrees": []any{}},
+			"task":          map[string]any{},
+		})
+		if _, err := ed.Client.WorkflowMutate(ctx5s, WorkflowMutateParams{
+			Verb:            "append-step",
+			Path:            wfPath,
+			Payload:         json.RawMessage(payload),
+			ProtocolVersion: CurrentProtocolVersion,
+			AwaitDurability: true,
+			LockTimeoutMs:   5000,
+		}); err != nil {
+			t.Fatalf("append-step %s: %v", stepID, err)
+		}
 	}
 
-	// Step 2: patch with JQVars. Inject a string var ($mystr) and a JSON
-	// object var ($myjson). The expression stamps both onto the featureId
-	// field (scalar) and globalWarnings (array of one string derived from
-	// myjson.label — confirms the object binding survives round-trip).
-	jqExpr := `.featureId = $mystr`
-	res, err := ed.Client.WorkflowMutate(t.Context(), WorkflowMutateParams{
-		Verb:            "patch",
-		Path:            wfPath,
-		JQExpr:          jqExpr,
-		JQVars:          map[string]any{"mystr": "jqvars-rt-ok", "myjson": map[string]any{"label": "x"}},
-		ProtocolVersion: CurrentProtocolVersion,
-		AwaitDurability: true,
-		LockTimeoutMs:   5000,
-		WriteID:         "jqvars-rt",
-	})
-	if err != nil {
-		t.Fatalf("patch with JQVars: %v", err)
-	}
-	if res.Mode != "daemon-sync" {
-		t.Errorf("mode = %q, want daemon-sync", res.Mode)
-	}
-	if !res.ValidatedOk {
-		t.Errorf("validatedOk=false after JQVars patch")
-	}
-
-	// Step 3: verify disk — featureId must reflect the $mystr binding.
 	data, err := os.ReadFile(wfPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("unmarshal after JQVars patch: %v", err)
+	var doc struct {
+		Steps []struct {
+			StepID string `json:"stepId"`
+		} `json:"steps"`
 	}
-	if got, _ := doc["featureId"].(string); got != "jqvars-rt-ok" {
-		t.Errorf("featureId on disk = %q, want %q", got, "jqvars-rt-ok")
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("unmarshal after append-step: %v", err)
+	}
+	if len(doc.Steps) != 2 {
+		t.Errorf("expected 2 steps on disk, got %d", len(doc.Steps))
 	}
 }
 

@@ -390,7 +390,7 @@ func envBoolish(v string) bool {
 //  3. daemon path succeeded → emit audit with the daemon's reported mode
 //     (`daemon-async` | `daemon-sync`).
 //
-// The caller passes `verb`, `args.Args`, `args.Payload`, `args.JQExpr`
+// The caller passes `verb`, `args.Args`, `args.Payload`
 // already-populated. Caller also owns deciding whether `noLock` was
 // requested — the daemon path REJECTS noLock=true so we surface that
 // decision here: when `noLock=true` is set AND mode != standalone, we
@@ -503,8 +503,6 @@ func dispatchToDaemonOrFallback(cmd *cobra.Command, wfPath, verb string, args wf
 		Path:            wfPath,
 		Payload:         json.RawMessage(args.Payload),
 		Args:            args.Args,
-		JQExpr:          args.JQExpr,
-		JQVars:          args.JQVars,
 		ProtocolVersion: daemon.CurrentProtocolVersion,
 		AwaitDurability: awaitDurability,
 		LockTimeoutMs:   lockTimeout.Milliseconds(),

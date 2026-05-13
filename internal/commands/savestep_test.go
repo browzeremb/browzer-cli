@@ -6,17 +6,14 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"strings"
 	"testing"
-
-	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 )
 
-// TestSaveStep_AsyncDeprecated verifies that passing --async returns exit
-// code 2 with the deprecation message (FR-4).
-func TestSaveStep_AsyncDeprecated(t *testing.T) {
+// TestSaveStep_AsyncRemoved verifies that --async is no longer a recognised
+// flag on save-step (removed in v3.0.0). Cobra rejects it as an unknown flag.
+func TestSaveStep_AsyncRemoved(t *testing.T) {
 	root, _ := seedWorkflowForFeat(t, "feat-test", minimalWorkflow)
 	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
 	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
@@ -26,7 +23,6 @@ func TestSaveStep_AsyncDeprecated(t *testing.T) {
 	cmd := NewRootCommand("test")
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
-	// --async together with --stdin and valid JSON — should be rejected before parsing.
 	cmd.SetArgs([]string{
 		"save-step", "PRD",
 		"--id", "feat-test",
@@ -37,19 +33,11 @@ func TestSaveStep_AsyncDeprecated(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error for deprecated --async; got nil")
+		t.Fatal("expected error for removed --async flag; got nil")
 	}
-
-	// Should mention deprecation in stderr.
-	stderr := errBuf.String()
-	if !strings.Contains(stderr, "--async is deprecated") {
-		t.Errorf("expected deprecation message on stderr; got:\n%s", stderr)
-	}
-
-	// Exit code should be 2.
-	exitCode := extractExitCode(err)
-	if exitCode != 2 {
-		t.Errorf("expected exit code 2 for --async deprecation; got %d (err=%v)", exitCode, err)
+	// Cobra emits "unknown flag: --async" — verify the flag is truly gone.
+	if strings.Contains(errBuf.String(), "--async is deprecated") {
+		t.Errorf("unexpected deprecation message: --async should be fully removed, not deprecated; stderr:\n%s", errBuf.String())
 	}
 }
 
@@ -151,10 +139,10 @@ func TestSaveStep_BackwardCompat_NoNewFlags(t *testing.T) {
 	}
 }
 
-// TestSaveStep_AsyncWithValidateOnly_Exit2 verifies F-013 / F-003:
-// the --async deprecation check fires BEFORE --validate-only is processed,
-// so `save-step --validate-only --async` returns exit 2 (not silent pass).
-func TestSaveStep_AsyncWithValidateOnly_Exit2(t *testing.T) {
+// TestSaveStep_AsyncRemovedWithValidateOnly verifies that --async is no longer
+// a recognised flag on save-step (removed in v3.0.0), even when combined with
+// --validate-only. Cobra rejects it as an unknown flag.
+func TestSaveStep_AsyncRemovedWithValidateOnly(t *testing.T) {
 	root, _ := seedWorkflowForFeat(t, "feat-test", minimalWorkflow)
 	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
 	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
@@ -175,33 +163,23 @@ func TestSaveStep_AsyncWithValidateOnly_Exit2(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected exit-2 error when --async and --validate-only are combined; got nil")
+		t.Fatal("expected error for removed --async flag combined with --validate-only; got nil")
 	}
-
-	// The deprecation message must appear on stderr.
-	stderr := errBuf.String()
-	if !strings.Contains(stderr, "--async is deprecated") {
-		t.Errorf("expected '--async is deprecated' on stderr; got:\n%s", stderr)
-	}
-
-	// Must be exit code 2 (not 0 which --validate-only would produce on success).
-	exitCode := extractExitCode(err)
-	if exitCode != 2 {
-		t.Errorf("expected exit code 2 for --async+--validate-only; got %d", exitCode)
+	// --async should be fully removed, not deprecated.
+	if strings.Contains(errBuf.String(), "--async is deprecated") {
+		t.Errorf("unexpected deprecation message; --async should be removed, not deprecated; stderr:\n%s", errBuf.String())
 	}
 }
 
-// TestSaveStepBatch_AsyncDeprecated verifies that passing --async to
-// save-step-batch returns exit code 2 with the deprecation message (FR-4,
-// parallel to TestSaveStep_AsyncDeprecated for the batch variant).
-func TestSaveStepBatch_AsyncDeprecated(t *testing.T) {
+// TestSaveStepBatch_AsyncRemoved verifies that --async is no longer a recognised
+// flag on save-step-batch (removed in v3.0.0). Cobra rejects it as an unknown flag.
+func TestSaveStepBatch_AsyncRemoved(t *testing.T) {
 	root, _ := seedWorkflowForFeat(t, "feat-test", minimalWorkflow)
 	t.Setenv("BROWZER_WORKFLOW_MODE", "sync")
 	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
 	t.Chdir(root)
 
-	// Write a minimal staging file so --from parsing does not fail before the
-	// --async check fires.
+	// Write a minimal staging file so --from is parseable.
 	stagingDir := root + "/docs/browzer/feat-test/staging"
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll staging: %v", err)
@@ -224,19 +202,12 @@ func TestSaveStepBatch_AsyncDeprecated(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error for deprecated --async on save-step-batch; got nil")
+		t.Fatal("expected error for removed --async flag on save-step-batch; got nil")
 	}
 
-	// Should mention deprecation in stderr.
-	stderr := errBuf.String()
-	if !strings.Contains(stderr, "--async is deprecated") {
-		t.Errorf("expected deprecation message on stderr; got:\n%s", stderr)
-	}
-
-	// Exit code must be 2.
-	exitCode := extractExitCode(err)
-	if exitCode != 2 {
-		t.Errorf("expected exit code 2 for --async deprecation; got %d (err=%v)", exitCode, err)
+	// --async should be fully removed, not deprecated.
+	if strings.Contains(errBuf.String(), "--async is deprecated") {
+		t.Errorf("unexpected deprecation message; --async should be removed, not deprecated; stderr:\n%s", errBuf.String())
 	}
 }
 
@@ -338,15 +309,3 @@ func writeTempFile(t *testing.T, name, content string) string {
 	return p
 }
 
-// extractExitCode extracts the numeric exit code from a *cliErrors.CliError,
-// returning 1 as the default when the error chain contains no CliError.
-func extractExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	var ce *cliErrors.CliError
-	if errors.As(err, &ce) {
-		return ce.ExitCode
-	}
-	return 1
-}

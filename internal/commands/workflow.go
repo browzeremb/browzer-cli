@@ -18,17 +18,19 @@ var workflowCmd = &cobra.Command{
 		"\n" +
 		"Mutator verbs (acquire advisory lock + validate post-mutation):\n" +
 		"  append-step, append-steps (plural / single-lock batch),\n" +
-		"  update-step, complete-step, set-status, set-config,\n" +
-		"  set-current-step, append-review-history, append-dispatch, append-agent,\n" +
-		"  audit-model-override, truncation-audit, reapply-additional-context,\n" +
-		"  backfill-elapsed (idempotent recovery verb for elapsedMin),\n" +
-		"  patch --jq <expr> (generic; supports --arg KEY=VAL / --argjson KEY=<json>).\n" +
+		"  backfill-elapsed (idempotent recovery verb for elapsedMin).\n" +
 		"\n" +
-		"Read verbs (no lock):\n" +
-		"  get-step [--field <jq-path>] [--render <template>] [--bash-vars]\n" +
-		"           [--save <path>] [--quiet]\n" +
-		"  get-config <key>, validate, schema [--json-schema], query <named>,\n" +
-		"  describe-step-type <NAME> (alias: describe-step).\n" +
+		"Read / utility verbs (no lock):\n" +
+		"  get-step [--field <a,b,c>] [--save <path>] [--quiet]\n" +
+		"  init [--execution-strategy <serial|parallel|parallel-worktrees|agent-teams>]\n" +
+		"       [--mode <autonomous|review>]\n" +
+		"  validate\n" +
+		"  schema [--json-schema]\n" +
+		"  describe-step-type <NAME> (alias: describe-step)\n" +
+		"\n" +
+		"Top-level persistence verbs (registered directly on `browzer`, not here):\n" +
+		"  save-step <PHASE> --from <file> --id <feat>\n" +
+		"  save-step-batch   --from PHASE=PATH ... --id <feat>\n" +
 		"\n" +
 		"Quiet modes (silence the per-mutation audit line on stderr — errors\n" +
 		"and structured hints still print):\n" +
@@ -38,21 +40,6 @@ var workflowCmd = &cobra.Command{
 		"                                audit line routes to the SQLite tracker\n" +
 		"                                (workflow-audit:llm-*) so `browzer gain`\n" +
 		"                                aggregation continues to work.\n" +
-		"\n" +
-		"There is no `patch step` / `patch <stepId>` verb. Generic mutations of\n" +
-		"a step's payload always go through `patch --jq '<expr>'`.\n" +
-		"\n" +
-		"--async fence pattern (TE2-T4.2):\n" +
-		"  When a phase pipeline emits N independent mutations followed by ONE\n" +
-		"  durability checkpoint, prefer the `--async … --async … --async … --await`\n" +
-		"  fence over four `--await` calls. The first three calls return as soon as\n" +
-		"  the daemon enqueues the write; the trailing `--await` blocks until the\n" +
-		"  full queue is fsynced, amortising the parent-dir fsync cost across the\n" +
-		"  batch. A typical 4-step phase emit drops from ~120ms to ~35ms wall-clock.\n" +
-		"  Only use when every async mutation is independent of the next — if step N+1\n" +
-		"  reads what step N just wrote, the trailing await must move forward to\n" +
-		"  cover the dependency. The corresponding skill cheat-sheet lives in\n" +
-		"  `packages/skills/skills/orchestrate-task-delivery/references/pipeline-phases.md`.\n" +
 		"\n" +
 		"Run `browzer workflow [command] --help` for subcommand details.",
 }
@@ -96,7 +83,6 @@ func registerWorkflow(parent *cobra.Command) {
 	registerWorkflowGetStep(cmd)
 	registerWorkflowInit(cmd)
 	registerWorkflowSchema(cmd)
-	registerWorkflowSetFindingStatuses(cmd)
 	registerWorkflowValidate(cmd)
 
 	parent.AddCommand(cmd)

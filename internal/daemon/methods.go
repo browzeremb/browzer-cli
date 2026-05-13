@@ -35,7 +35,6 @@ const CurrentSchemaVersion = 2
 // integration test. Adding a new feature requires keeping the slice sorted.
 var protocolFeatures = []string{
 	"estimationMethod",
-	"jqVars",
 	"save",
 	"schemaV2",
 }
@@ -125,7 +124,6 @@ type WorkflowMutateParams struct {
 	Path    string          `json:"path"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Args    []string        `json:"args,omitempty"`
-	JQExpr  string          `json:"jqExpr,omitempty"`
 	// ProtocolVersion is the wire-protocol version the caller speaks. Required
 	// for daemon-path calls since WF-SYNC-1 (2026-05-04). The daemon rejects
 	// requests where ProtocolVersion != CurrentProtocolVersion with JSON-RPC
@@ -137,24 +135,8 @@ type WorkflowMutateParams struct {
 	// CLIs that predate the field send 0 implicitly; they would not reach
 	// this code path because their preflight (or `method_not_found` fallback)
 	// already routed them to standalone.
-	ProtocolVersion int `json:"protocolVersion,omitempty"`
-	// JQVars binds variables for the patch verb's jq expression. Keys are
-	// bare identifiers (no leading `$`); values are arbitrary JSON-decoded
-	// scalars/objects/arrays. Used only when Verb=="patch". Older daemons
-	// will silently ignore this field (additive contract, JSON unknown-field
-	// tolerance).
-	//
-	// Version-skew failure mode: when a NEW CLI sends --arg/--argjson
-	// bindings to an OLDER daemon binary that predates JQVars support, the
-	// daemon silently drops the field and executes the jq expression without
-	// any variable bindings. gojq then fails at compile time with
-	// "undefined variable $<name>". The caller sees a cryptic jq error, not a
-	// clear "daemon too old" message. Operators encountering this error should
-	// restart the daemon to pick up the new binary:
-	//
-	//   browzer daemon stop && browzer daemon start
-	JQVars          map[string]any  `json:"jqVars,omitempty"`
-	NoLock          bool            `json:"noLock,omitempty"`
+	ProtocolVersion int  `json:"protocolVersion,omitempty"`
+	NoLock          bool `json:"noLock,omitempty"`
 	AwaitDurability bool            `json:"awaitDurability,omitempty"`
 	LockTimeoutMs   int64           `json:"lockTimeoutMs,omitempty"`
 	WriteID         string          `json:"writeId,omitempty"`
@@ -302,8 +284,6 @@ func (s *Server) handleWorkflowMutate(ctx context.Context, raw json.RawMessage) 
 		args: wf.MutatorArgs{
 			Args:    p.Args,
 			Payload: []byte(p.Payload),
-			JQExpr:  p.JQExpr,
-			JQVars:  p.JQVars,
 		},
 		awaitDurability: p.AwaitDurability,
 		lockTimeout:     lockTimeout,

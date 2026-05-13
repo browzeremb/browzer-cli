@@ -149,10 +149,8 @@ func TestAppendStep_ConcurrencyN8AcrossModes(t *testing.T) {
 				}
 			}
 
-			// daemon-async: drain by sending a no-op-ish --await call. We
-			// use update-step on a known-existing step (the seed has none —
-			// instead we use append-step for a sentinel step then verify N+1).
-			// Simpler: re-issue a sync call that triggers a flush.
+			// daemon-async: drain by sending one --await append-step as a
+			// sentinel so all prior async writes are flushed before reading.
 			if m.name == "daemon-async" {
 				// Fire one --await append on the same path. The FIFO is
 				// per-path; this call blocks until all 8 prior writes

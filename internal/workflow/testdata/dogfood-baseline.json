@@ -4675,7 +4675,7 @@
           "skillDriftPatterns": [
             "Session-budget as universal skip token across write-tests, update-docs, code-review parallel dispatch. Pattern suggests skills lack formal 'budget exhausted' escalation — they collapse silently rather than pause for operator decision.",
             "Two FEATURE_ACCEPTANCE redo cycles (STEP_11→STEP_13→STEP_14) required because STEP_11 was code-presence-only inspect. Skill should require ≥1 live HTTP call per AC when host-mode stack available. STEP_13 found AC-3 regression that STEP_11 missed — direct cost of skipping live verification first pass.",
-            "14 steps, schema allows duplicate names (FEATURE_ACCEPTANCE appears 3x as STEP_11/13/14, COMMIT 2x as STEP_12/15). Schema doesn't prohibit but CLI query registry (next-step-id) may return ambiguous results when steps share a name. Worth auditing browzer workflow query named-queries for this edge."
+            "14 steps, schema allows duplicate names (FEATURE_ACCEPTANCE appears 3x as STEP_11/13/14, COMMIT 2x as STEP_12/15). Schema doesn't prohibit but get-step may return ambiguous results when steps share a name. Worth auditing for this edge."
           ]
         },
         "preRegistered": true,

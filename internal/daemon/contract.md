@@ -161,7 +161,7 @@ Apply a single mutation to a `workflow.json` file. Used by the `browzer workflow
 **Params:**
 ```json
 {
-  "verb": "set-status",
+  "verb": "append-step",
   "path": "/abs/path/to/docs/browzer/feat-X/workflow.json",
   "payload": {},
   "args": ["step-1", "RUNNING"],
@@ -176,12 +176,12 @@ Apply a single mutation to a `workflow.json` file. Used by the `browzer workflow
 
 | Field | Type | Notes |
 |---|---|---|
-| `verb` | string | Required. Must be one of `append-step`, `update-step`, `complete-step`, `set-status`, `set-config`, `append-review-history`, `set-current-step`, `patch`. Daemon rejects unknown verbs with `unknown_verb`. |
+| `verb` | string | Required. Must be one of `append-step`, `append-steps`, `backfill-elapsed`. Daemon rejects unknown verbs with `unknown_verb`. The previously accepted verbs `update-step`, `complete-step`, `set-status`, `set-config`, `append-review-history`, `set-current-step`, and `patch` were removed from `internal/workflow/apply.go::Mutators` in CLI v3.0.0 (markdown-chains pipeline) and the staging/autosave path was retired in v5.0.0 (`feat-20260513-cleanup-old-workflow`). |
 | `path` | string (abs) | Required. Must be absolute — relative paths rejected with `path_must_be_absolute`. |
-| `payload` | object \| undefined | Optional JSON payload (used by `append-step` + `append-review-history`). Embedded as `json.RawMessage` so structure is verb-defined. |
-| `args` | string[] \| undefined | Optional positional args after the verb (e.g. `["step-1", "RUNNING"]` for `set-status`). |
-| `jqExpr` | string \| undefined | Optional. Required for `verb: "patch"`. |
-| `jqVars` | map[string]any \| undefined | Optional. Used only by `verb: "patch"`. Bind variables for the jq expression — gojq equivalent of `jq --arg KEY VALUE` / `jq --argjson KEY <json>`. Keys are bare identifiers (no leading `$`); values are arbitrary JSON-decoded scalars/objects/arrays. **Additive contract:** older daemons (pre CLI 1.6.0) silently drop this field via standard `json.Unmarshal` (no `DisallowUnknownFields`); the operator-visible failure mode is then a runtime `gojq: undefined variable $<name>` from the patch verb's expression. Restart the daemon (`browzer daemon stop && browzer daemon start`) when upgrading the CLI. Tests pin both decode directions in `internal/daemon/workflow_mutate_test.go` (`TestWorkflowMutateParams_AdditiveJQVarsContract`, `TestWorkflowMutateParams_AbsentJQVarsDecodesAsNilMap`). |
+| `payload` | object \| undefined | Optional JSON payload (used by `append-step` + `append-steps`). Embedded as `json.RawMessage` so structure is verb-defined. |
+| `args` | string[] \| undefined | Optional positional args after the verb (e.g. `["2026-05-13T00:00:00Z"]` for `backfill-elapsed`). |
+| `jqExpr` | string \| undefined | Not used by any surviving verb. Kept for wire compatibility; daemon ignores the field when verb is `append-step`, `append-steps`, or `backfill-elapsed`. (Previously required for the removed `patch` verb.) |
+| `jqVars` | map[string]any \| undefined | Not used by any surviving verb. Kept for wire compatibility. (Previously used only by the removed `patch` verb.) |
 | `noLock` | bool \| undefined | **REJECTED** in the daemon path. Setting `noLock: true` returns `noLock_unsupported_in_daemon_path` so the caller falls back to standalone where `--no-lock` is honored. |
 | `awaitDurability` | bool \| undefined | When `true`, daemon returns only after the mutation has been written and `fsync`'d (file + parent dir). When `false`/omitted, daemon returns immediately after enqueue (`mode: "daemon-async"`). |
 | `lockTimeoutMs` | int \| undefined | Advisory lock acquisition timeout in milliseconds. Default 5000. The daemon's response ceiling for `awaitDurability=true` is `lockTimeoutMs + 2s`. |
@@ -204,7 +204,7 @@ Apply a single mutation to a `workflow.json` file. Used by the `browzer workflow
 |---|---|---|
 | `writeId` | string | Echo of request `writeId`. |
 | `mode` | string | `daemon-async` (returned immediately) or `daemon-sync` (blocked on durability). Mirrors the audit line's `mode=` field. |
-| `stepId` | string | Set for step-scoped verbs; empty for `set-config` / `patch` that target the workflow document itself. |
+| `stepId` | string | Set for step-scoped verbs (`append-step`, `append-steps`); empty for `backfill-elapsed` which targets the workflow document itself. |
 | `lockHeldMs` | int | How long the advisory lock was held. 0 for `mode: "daemon-async"` because the response is returned before the drainer acquires the lock. |
 | `queueDepthAhead` | int | Number of jobs that were buffered ahead of this one when it was enqueued. 0 means the drainer was idle and this job runs first. |
 | `validatedOk` | bool | True iff `Validate()` returned no errors after the mutation. Always `true` for `mode: "daemon-async"` because the daemon returned before validation; the drainer's later validation failures are silently dropped (mirrors fire-and-forget semantics). |
@@ -248,7 +248,7 @@ Pre-`workflow.v1` daemons return `method_not_found: WorkflowMutate`. Clients cal
 **Audit format additions** (vs the historic `verb=… stepId=… lockHeldMs=… validatedOk=true` line):
 
 ```
-verb=set-status path=/abs/.../workflow.json mode=daemon-async writeId=01HXXX \
+verb=append-step path=/abs/.../workflow.json mode=daemon-async writeId=01HXXX \
      stepId=step-1 lockHeldMs=0 validatedOk=true durable=false \
      queueDepthAhead=0 elapsedMs=2 reason=
 ```
@@ -425,3 +425,17 @@ acquisition and the file read (concurrent prune, stale TTL eviction).
 The loader treats `ENOENT` on the cached path as a cold miss — it
 re-pulls and re-populates rather than returning an error to the
 caller.
+
+---
+
+## Changelog
+
+### 2026-05-13 — `feat-20260513-cleanup-old-workflow`
+
+**`WorkflowMutate` verb surface narrowed to 3 surviving mutators.**
+
+The `internal/workflow/apply.go::Mutators` registry previously exposed 8 verbs. CLI v3.0.0 deleted `update-step`, `complete-step`, `set-status`, `set-config`, `append-review-history`, `set-current-step`, and `patch` as part of the markdown-chains pipeline migration (skills write phase output as plain `.md` files; `save-step` / `get-step` are the canonical read/write surface). CLI v5.0.0 (`feat-20260513-cleanup-old-workflow`) retired the staging/autosave path that previously relied on those verbs.
+
+Surviving verbs accepted by the daemon: `append-step`, `append-steps`, `backfill-elapsed`.
+
+The wire fields `jqExpr` and `jqVars` are retained for backward compatibility but are no longer used by any surviving verb.
