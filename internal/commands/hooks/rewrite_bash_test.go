@@ -55,6 +55,18 @@ func setupWorkspaceFixture(t *testing.T) string {
 
 	t.Setenv("HOME", filepath.Join(tmp, "home"))
 
+	// Hard-disable the daemon-respawn fallback inside this test's process.
+	// Without this guard, hook decide functions that call TrackEvent /
+	// EmitHookDelta indirectly invoke EnsureDaemon → fork a real
+	// `browzer daemon start --background` child that inherits this test's
+	// tempdir HOME, opens a tracker DB under <tempdir>/home/.browzer/
+	// history.db, and SURVIVES the test process because the spawn is
+	// detached. Subsequent CLI calls in the same OS session bind to the
+	// orphan daemon and silently route production telemetry into the test
+	// tempdir. See internal/hooks/daemon_call.go::EnsureDaemon for the
+	// matching env-var check.
+	t.Setenv("BROWZER_HOOK_NO_DAEMON_SPAWN", "1")
+
 	// Move cwd into the workspace fixture so the walk-up matches.
 	origWD, err := os.Getwd()
 	if err != nil {

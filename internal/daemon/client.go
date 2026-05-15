@@ -246,10 +246,32 @@ func (c *Client) Read(ctx context.Context, p ReadParams) (ReadResult, error) {
 	return out, nil
 }
 
-// Track calls the daemon's Track method (best-effort).
+// Track calls the daemon's Track method.
+//
+// Returns a non-nil error in two cases:
+//
+//  1. JSON-RPC envelope failure (transport, marshal, server-side panic).
+//  2. Server-side application failure — the daemon successfully received
+//     the call but the underlying `tracker.Record` rejected the event
+//     (disk full, schema migration error, foreign-key conflict). The
+//     daemon reports this via an inner `{"ok": false, "error": "..."}`
+//     ack envelope; previously this branch was silently swallowed because
+//     the JSON-RPC envelope itself reported success, leaving callers
+//     unaware that the event was dropped. Surfacing the inner failure
+//     lets `DaemonCall` route the payload to `pending-events.jsonl` for
+//     later replay rather than losing it.
 func (c *Client) Track(ctx context.Context, p TrackParams) error {
 	var ack map[string]any
-	return c.call(ctx, "Track", p, &ack)
+	if err := c.call(ctx, "Track", p, &ack); err != nil {
+		return err
+	}
+	if ok, _ := ack["ok"].(bool); !ok {
+		if msg, _ := ack["error"].(string); msg != "" {
+			return fmt.Errorf("daemon Track refused event: %s", msg)
+		}
+		return errors.New("daemon Track refused event (no error message)")
+	}
+	return nil
 }
 
 // SessionRegister calls the daemon's SessionRegister method.

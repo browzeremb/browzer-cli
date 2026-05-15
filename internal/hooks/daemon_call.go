@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -261,6 +262,23 @@ func pendingEnvelope(method string, params any) map[string]any {
 // the daemon is up or the call falls back again. The hook surface is
 // designed to tolerate either outcome.
 func EnsureDaemon() error {
+	// Test escape hatch: BROWZER_HOOK_NO_DAEMON_SPAWN=1 (or "true") disables
+	// the respawn entirely. Hook unit tests set this via
+	// `setupWorkspaceFixture` because the test process runs decide functions
+	// after `t.Setenv("HOME", t.TempDir())`, and an unguarded EnsureDaemon
+	// would fork a real `browzer daemon start --background` child that
+	// inherits the test's tempdir HOME, opens a tracker DB under
+	// `<tempdir>/home/.browzer/history.db`, and SURVIVES the test process
+	// because it is launched detached. Subsequent CLI calls in the same OS
+	// session then bind to the test-spawned daemon and silently route
+	// production telemetry into the test tempdir. Setting this env var in
+	// test fixtures keeps `EnsureDaemon` a no-op; production paths leave it
+	// unset and respawn as usual.
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BROWZER_HOOK_NO_DAEMON_SPAWN"))) {
+	case "1", "true", "yes", "on":
+		return nil
+	}
+
 	// Intra-process hot-path: if this process already attempted a spawn
 	// (successfully or with a permanent exec failure), skip the lock probe.
 	if !ensureDaemonOnce.CompareAndSwap(false, true) {
