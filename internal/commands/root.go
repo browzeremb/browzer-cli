@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/browzeremb/browzer-cli/internal/commands/hooks"
 	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/browzeremb/browzer-cli/internal/ui"
 	"github.com/spf13/cobra"
@@ -99,6 +100,7 @@ func NewRootCommand(version string) *cobra.Command {
 	registerRun(root)
 	registerDaemon(root)
 	registerConfig(root)
+	hooks.RegisterHooks(root)
 	registerGain(root)
 	registerPlugin(root)
 
