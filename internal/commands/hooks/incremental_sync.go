@@ -87,7 +87,7 @@ func incrementalSyncDecide(raw []byte) bool {
 
 	filePath := in.ToolInput.FilePath
 	if filePath == "" {
-
+		return false
 	}
 
 	ext := strings.ToLower(filepath.Ext(filePath))

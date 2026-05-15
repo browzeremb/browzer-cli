@@ -2,7 +2,6 @@ package hooks
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,7 +113,7 @@ func TestContractDecide_ShellOperatorRE_MatchesPipe(t *testing.T) {
 		{"browzer search foo || fallback", true, "logical-OR"},
 		{"browzer search foo && bar", true, "logical-AND"},
 		{"browzer search foo; bar", true, "semicolon"},
-		{fmt.Sprintf("browzer search foo\nbar"), true, "newline"},
+		{"browzer search foo\nbar", true, "newline"},
 		{"browzer search foo", false, "plain — no operator"},
 	}
 

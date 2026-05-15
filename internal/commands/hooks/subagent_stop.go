@@ -128,7 +128,7 @@ func subagentStopDecide(raw []byte) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write(line); err != nil {
 		return ""
 	}

@@ -163,7 +163,7 @@ func readHead(absPath string) (head string, binary bool) {
 	if err != nil {
 		return "", false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	n, err := f.Read(buf)
 	if err != nil && n == 0 {
