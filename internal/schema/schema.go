@@ -1,10 +1,17 @@
-// Package schema provides helpers for printing JSON Schema 2020-12
-// response shapes for CLI commands that expose a --schema flag.
+// Package schema renders the per-command JSON Schema payloads consumed
+// by the --schema flag on workspace_* and org_* CLI verbs.
 //
 // Each exported PrintXxxSchema function writes the schema for one
 // command's response payload to stdout (or a --save file). Callers
 // pass the raw JSON string via PrintOrSave; baked-in constants live
 // next to the response type they describe.
+//
+// Despite the historic name, this package no longer relates to the CUE
+// workflow validator (packages/cli/schemas/workflow-v1.cue) which was
+// removed in v5.0.0 together with the legacy workflow.json mechanics.
+// The full package rename (schema → flagschema or printschema) is
+// deferred to a follow-up rename-only PR (touches 7 reverse importers
+// across workspace_*/org_* commands).
 package schema
 
 import (

@@ -8,7 +8,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/browzeremb/browzer-cli/internal/commands/hooks"
 	"github.com/browzeremb/browzer-cli/internal/output"
@@ -61,7 +60,7 @@ func NewRootCommand(version string) *cobra.Command {
 	// a user who really wants the banner in piped output can unset the
 	// pipe (unusual).
 	pipedStdout := !term.IsTerminal(int(os.Stdout.Fd()))
-	if envLLMEnabled() || pipedStdout {
+	if output.EnvLLMEnabled() || pipedStdout {
 		applyLLMMode(true)
 	} else {
 		for _, a := range os.Args[1:] {
@@ -73,7 +72,7 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		llm, _ := cmd.Flags().GetBool("llm")
-		if envLLMEnabled() || pipedStdout {
+		if output.EnvLLMEnabled() || pipedStdout {
 			llm = true
 		}
 		applyLLMMode(llm)
@@ -106,13 +105,6 @@ func NewRootCommand(version string) *cobra.Command {
 
 	// `codereview` subcommand group.
 	registerCodeReview(root)
-
-	// `workflow` subcommand group.
-	registerWorkflow(root)
-
-	// Top-level `get-step` / `save-step` aliases (LLM-first surface).
-	registerGetStep(root)
-	registerSaveStep(root)
 
 	// `org` subcommand group.
 	registerOrg(root)
@@ -205,23 +197,6 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	})
 
 	return root
-}
-
-// envLLMEnabled reports whether BROWZER_LLM requests LLM mode. Presence
-// alone is NOT enough — we parse the value so users can set
-// `BROWZER_LLM=0` (or `false`/`off`/empty) to explicitly disable,
-// unlike NO_COLOR where presence is the signal. The truthy set matches
-// GNU-ish conventions: 1, true, yes, on (case-insensitive).
-func envLLMEnabled() bool {
-	v, ok := os.LookupEnv("BROWZER_LLM")
-	if !ok {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-	return false
 }
 
 // rootExitCodes is a condensed view of output.ExitCodesHelp for the

@@ -1,9 +1,14 @@
 package commands
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/browzeremb/browzer-cli/internal/output"
+	"github.com/browzeremb/browzer-cli/internal/testutil"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -84,6 +89,84 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestInternalWorkflowPackageRemoved pins that the internal/workflow
+// directory no longer exists in the source tree.
+func TestInternalWorkflowPackageRemoved(t *testing.T) {
+	repoRoot := testutil.RepoRoot(t)
+	workflowDir := filepath.Join(repoRoot, "packages", "cli", "internal", "workflow")
+
+	_, err := os.Stat(workflowDir)
+	if err == nil {
+		t.Fatalf("expected internal/workflow directory to be absent, but os.Stat(%q) succeeded", workflowDir)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) returned unexpected error: %v", workflowDir, err)
+	}
+}
+
+// TestSchemasDirectoryRemoved pins that the packages/cli/schemas/
+// directory (CUE schema sources, generated artifacts, and fixtures)
+// no longer exists. It was retired together with workflow.json once
+// the markdown-chains pipeline became the only contract.
+func TestSchemasDirectoryRemoved(t *testing.T) {
+	repoRoot := testutil.RepoRoot(t)
+	schemasDir := filepath.Join(repoRoot, "packages", "cli", "schemas")
+
+	_, err := os.Stat(schemasDir)
+	if err == nil {
+		t.Fatalf("expected packages/cli/schemas directory to be absent, but os.Stat(%q) succeeded", schemasDir)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) returned unexpected error: %v", schemasDir, err)
+	}
+}
+
+// makefileSchemasCouplingRE matches any re-introduction of the deleted
+// schemas/ codegen path, cuelang dependency, or go-mutesting in the
+// Makefile. Each alternative covers the full surface of that coupling
+// class — adding a new cuelang module or a new schemas/ target is
+// caught without updating the list.
+var makefileSchemasCouplingRE = regexp.MustCompile(
+	`cuelang\.org/go|make\s+-C\s+schemas|schemas/|go-mutesting`,
+)
+
+// ciLocalSchemasCouplingRE mirrors makefileSchemasCouplingRE for the
+// ci-local.sh script, which carries distinct coupling patterns (module
+// path + versioned cue tag).
+var ciLocalSchemasCouplingRE = regexp.MustCompile(
+	`cuelang\.org/go|make\s+-C\s+schemas|cue\s+v0\.`,
+)
+
+// TestBuildSurfaceFreeOfSchemasCoupling pins that the host Makefile and
+// ci-local.sh no longer chain through the deleted schemas/ codegen or
+// auto-install cuelang. Smoke-level regression against accidental
+// re-introduction of either coupling.
+func TestBuildSurfaceFreeOfSchemasCoupling(t *testing.T) {
+	repoRoot := testutil.RepoRoot(t)
+	cases := []struct {
+		path string
+		re   *regexp.Regexp
+	}{
+		{
+			path: filepath.Join(repoRoot, "packages", "cli", "Makefile"),
+			re:   makefileSchemasCouplingRE,
+		},
+		{
+			path: filepath.Join(repoRoot, "packages", "cli", "scripts", "ci-local.sh"),
+			re:   ciLocalSchemasCouplingRE,
+		},
+	}
+	for _, tc := range cases {
+		body, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.path, err)
+		}
+		if loc := tc.re.FindString(string(body)); loc != "" {
+			t.Errorf("%s still contains forbidden pattern matched by %s: %q", tc.path, tc.re, loc)
+		}
+	}
 }
 
 func TestVerbose_FlagCountIncrements(t *testing.T) {

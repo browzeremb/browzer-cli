@@ -1,8 +1,120 @@
 # Changelog
 
-All notable user-facing changes to the `browzer` Go CLI and the workflow-v1
-CUE schema are documented in this file. The CLI follows semantic versioning
-(`cli-vX.Y.Z` tags); individual line items are grouped by release window.
+All notable user-facing changes to the `browzer` Go CLI are documented in
+this file. The CLI follows semantic versioning (`cli-vX.Y.Z` tags);
+individual line items are grouped by release window.
+
+## [5.0.0] - 2026-05-15
+
+### Removed
+
+The legacy `workflow.json` mechanics are retired in their entirety. Every
+verb, package, embed, dependency, and daemon RPC surface listed below is
+gone from the binary and the published mirror.
+
+**Top-level Cobra verbs**
+
+- `browzer save-step` (and the duplicate `browzer workflow save-step`)
+- `browzer save-step-batch` (and `browzer workflow save-step-batch`)
+- `browzer get-step` (and `browzer workflow get-step`)
+
+**`browzer workflow` subcommand tree (the entire group)**
+
+- `browzer workflow init`
+- `browzer workflow validate`
+- `browzer workflow schema`
+- `browzer workflow describe-step-type`
+- `browzer workflow append-step`
+- `browzer workflow append-steps`
+- `browzer workflow backfill-elapsed`
+- `browzer workflow set-finding-statuses` (already retired pre-5.0;
+  the README entry is removed in this release)
+
+The root `browzer workflow` subcommand registrar itself is no longer
+wired into the command tree. Invoking any of the above exits non-zero
+with Cobra's standard `Error: unknown command "<verb>" for "browzer"`.
+
+**Go packages**
+
+- `internal/workflow/` — entire package (apply, render, jqx, validate,
+  schema, audit, bootstrap, io, lock, file_resolution, view/,
+  view/templates/, testdata/).
+- `internal/schema/` CUE surface — `validator.go`, `describe.go`,
+  `scaffold.go`, `allowed_fields.go`, plus the embedded
+  `workflow-v1.cue` / `workflow-v1.schema.json` mirrors and
+  `testdata/`. `internal/schema/schema.go` is PRESERVED — it carries
+  the unrelated `Print` / `PrintOrSave` / `PrintToFile` helpers and
+  seven JSON-schema constants consumed by the `--schema` flag on every
+  `workspace_*` / `org_*` command.
+
+**Code-generation pipeline**
+
+- `packages/cli/schemas/` — entire directory (the CUE SSOT pipeline,
+  its directory-local Makefile, the generated Go types, fixtures, and
+  README).
+- `packages/cli/Makefile`'s `mutate` target (referenced
+  `internal/schema/` paths that no longer exist).
+- `packages/cli/scripts/ci-local.sh`'s "CUE codegen drift gate" block
+  (auto-installed `cuelang.org/go/cmd/cue` and invoked
+  `make -C schemas ci-check`).
+
+**Daemon JSON-RPC surface**
+
+- `WorkflowMutate` method handler, plus `WorkflowMutateParams` /
+  `WorkflowMutateResult` types, plus `*Client.WorkflowMutate` method,
+  plus `internal/daemon/workflow_queue.go` (the per-path dispatcher).
+- Health-response capabilities `workflow.v1` and `workflow.fsync.v1`
+  are no longer advertised.
+- `Daemon.Version.protocolFeatures` no longer includes `save` or
+  `schemaV2`.
+- `CurrentSchemaVersion` constant removed;
+  `DaemonVersionResponse.SchemaVersion` field removed.
+
+**Daemon wire-protocol bump**
+
+- `CurrentProtocolVersion` advanced from `2` to `3`. Clients pinned to
+  protocol v2 expecting `WorkflowMutate` receive a clean JSON-RPC
+  `-32602` "protocol version mismatch" on handshake and the CLI's
+  preflight path falls through to the standalone fallback (which is
+  itself now `unknown command`, the desired terminal behaviour).
+
+**Go module dependencies**
+
+- `cuelang.org/go` and approximately 30 transitive dependencies
+  (`cockroachdb/apd/v3`, `emicklei/proto`, `mitchellh/go-wordwrap`,
+  `pelletier/go-toml/v2`, `protocolbuffers/txtpbfmt`, `yaml.in/yaml/v3`,
+  etc.) evicted from `go.mod` and `go.sum`. `go.sum` shrank from
+  192 → 147 lines (-45). `github.com/itchyny/gojq` and its
+  `timefmt-go` indirect were also evicted as a bonus removal — their
+  last consumer was inside the cluster.
+
+### Migration
+
+The legacy `workflow.json` pipeline is replaced by the **markdown-chains
+pipeline**: phase artefacts now live as plain `.md` files under
+`docs/browzer/<feat>/staging/` (organized by per-phase subfolder:
+`planning/`, `tasks/`, `review/`, `review-lanes/`, `fixes/`,
+`acceptance/`). Each phase skill writes its output via the `Write` tool
+and the next phase skill reads it via `Read`. The only file committed
+to git is `docs/browzer/<feat>/README.md`, written by `finalize-feature`.
+
+Skills should not invoke any of the removed verbs. The Browzer plugin
+shipped on `browzeremb/skills` is coordinated to drop all historical
+call sites — operators upgrading the CLI should also upgrade the
+plugin to the matching major.
+
+Operators with on-disk `workflow.json` artefacts from older runs may
+delete them safely; the file is no longer read or written by any CLI
+or plugin code path.
+
+### Changed
+
+- Binary size reduced by the `cuelang.org/go` removal (single largest
+  contributor — the CUE engine carries its own embed, parser, and
+  evaluator subsystems).
+- Daemon dispatch loop emits handler errors as JSON-RPC `-32000`
+  uniformly; the workflow-mutate-coupled `codedError` machinery was
+  removed alongside the verb.
 
 ## Unreleased
 

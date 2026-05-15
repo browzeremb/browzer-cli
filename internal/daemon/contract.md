@@ -129,9 +129,7 @@ When `model` cannot be extracted, returns `{"model": null}`. Daemon caches in `~
   "capabilities": [
     "read.v1",
     "track.v1",
-    "session-register.v1",
-    "workflow.v1",
-    "workflow.fsync.v1"
+    "session-register.v1"
   ]
 }
 ```
@@ -140,7 +138,7 @@ Used by `browzer daemon status`. No tracking, no side effects.
 
 | Field | Type | Notes |
 |---|---|---|
-| `capabilities` | string[] \| undefined | Optional. Pre-2026-04-29 daemons omit this field; clients treat absence as "no advertised capabilities — fall back". `workflow.v1` indicates the daemon accepts the `WorkflowMutate` method. `workflow.fsync.v1` indicates `awaitDurability=true` produces a fsync'd file + parent dir before responding. |
+| `capabilities` | string[] \| undefined | Optional. Pre-2026-04-29 daemons omit this field; clients treat absence as "no advertised capabilities — fall back". |
 
 ---
 
@@ -151,109 +149,6 @@ Used by `browzer daemon status`. No tracking, no side effects.
 **Result:** `{"ok": true}`.
 
 Daemon flushes telemetry, closes DB, removes socket and PID file, exits. `browzer daemon status` after Shutdown returns "not running".
-
----
-
-### `WorkflowMutate`
-
-Apply a single mutation to a `workflow.json` file. Used by the `browzer workflow <verb>` CLI when `--async`, `--await`, or `--sync` selects the daemon path. The daemon runs each verb's mutator from `internal/workflow/apply.go` (`Mutators` map) inside a per-path FIFO drainer goroutine that owns the advisory lock for the duration of the mutation.
-
-**Params:**
-```json
-{
-  "verb": "append-step",
-  "path": "/abs/path/to/docs/browzer/feat-X/workflow.json",
-  "payload": {},
-  "args": ["step-1", "RUNNING"],
-  "jqExpr": "",
-  "jqVars": null,
-  "noLock": false,
-  "awaitDurability": false,
-  "lockTimeoutMs": 5000,
-  "writeId": "ulid-or-uuid"
-}
-```
-
-| Field | Type | Notes |
-|---|---|---|
-| `verb` | string | Required. Must be one of `append-step`, `append-steps`, `backfill-elapsed`. Daemon rejects unknown verbs with `unknown_verb`. The previously accepted verbs `update-step`, `complete-step`, `set-status`, `set-config`, `append-review-history`, `set-current-step`, and `patch` were removed from `internal/workflow/apply.go::Mutators` in CLI v3.0.0 (markdown-chains pipeline) and the staging/autosave path was retired in v5.0.0 (`feat-20260513-cleanup-old-workflow`). |
-| `path` | string (abs) | Required. Must be absolute — relative paths rejected with `path_must_be_absolute`. |
-| `payload` | object \| undefined | Optional JSON payload (used by `append-step` + `append-steps`). Embedded as `json.RawMessage` so structure is verb-defined. |
-| `args` | string[] \| undefined | Optional positional args after the verb (e.g. `["2026-05-13T00:00:00Z"]` for `backfill-elapsed`). |
-| `jqExpr` | string \| undefined | Not used by any surviving verb. Kept for wire compatibility; daemon ignores the field when verb is `append-step`, `append-steps`, or `backfill-elapsed`. (Previously required for the removed `patch` verb.) |
-| `jqVars` | map[string]any \| undefined | Not used by any surviving verb. Kept for wire compatibility. (Previously used only by the removed `patch` verb.) |
-| `noLock` | bool \| undefined | **REJECTED** in the daemon path. Setting `noLock: true` returns `noLock_unsupported_in_daemon_path` so the caller falls back to standalone where `--no-lock` is honored. |
-| `awaitDurability` | bool \| undefined | When `true`, daemon returns only after the mutation has been written and `fsync`'d (file + parent dir). When `false`/omitted, daemon returns immediately after enqueue (`mode: "daemon-async"`). |
-| `lockTimeoutMs` | int \| undefined | Advisory lock acquisition timeout in milliseconds. Default 5000. The daemon's response ceiling for `awaitDurability=true` is `lockTimeoutMs + 2s`. |
-| `writeId` | string | Recommended. Echoed back in the response so callers correlate audit lines across processes. |
-
-**Result:**
-```json
-{
-  "writeId": "ulid-or-uuid",
-  "mode": "daemon-async",
-  "stepId": "step-1",
-  "lockHeldMs": 7,
-  "queueDepthAhead": 0,
-  "validatedOk": true,
-  "durable": false
-}
-```
-
-| Field | Type | Notes |
-|---|---|---|
-| `writeId` | string | Echo of request `writeId`. |
-| `mode` | string | `daemon-async` (returned immediately) or `daemon-sync` (blocked on durability). Mirrors the audit line's `mode=` field. |
-| `stepId` | string | Set for step-scoped verbs (`append-step`, `append-steps`); empty for `backfill-elapsed` which targets the workflow document itself. |
-| `lockHeldMs` | int | How long the advisory lock was held. 0 for `mode: "daemon-async"` because the response is returned before the drainer acquires the lock. |
-| `queueDepthAhead` | int | Number of jobs that were buffered ahead of this one when it was enqueued. 0 means the drainer was idle and this job runs first. |
-| `validatedOk` | bool | True iff `Validate()` returned no errors after the mutation. Always `true` for `mode: "daemon-async"` because the daemon returned before validation; the drainer's later validation failures are silently dropped (mirrors fire-and-forget semantics). |
-| `durable` | bool | True iff `awaitDurability=true` AND fsync of file + parent dir succeeded. Always `false` for `mode: "daemon-async"`. |
-
-**Errors:**
-
-| Code (string) | When | Caller behavior |
-|---|---|---|
-| `unknown_verb` | Verb not in the whitelist | DO NOT retry; verb is bogus. Surface to user. |
-| `invalid_params` | Malformed JSON request | Surface to user. |
-| `path_must_be_absolute` | `path` is empty or relative | Caller fixes path; do not fall back. |
-| `noLock_unsupported_in_daemon_path` | `noLock: true` was passed | Caller falls back to standalone where `--no-lock` is honored. |
-| `queue_full` | Per-path FIFO at capacity (64) | Caller falls back to standalone — same write semantics, lower throughput. |
-| `timeout` | `awaitDurability=true` and drainer didn't finish within `lockTimeoutMs+2s` | Caller falls back to standalone and re-applies idempotently. |
-| `workflow_dispatcher_disabled` | Server constructed without dispatcher (test harness) | Caller falls back. |
-| `method_not_found: WorkflowMutate` | Pre-`workflow.v1` daemon | Caller checks `HasCapability("workflow.v1")` first to avoid this; if missed, falls back. |
-| (any `wf.ApplyAndPersist` error) | Mutator / validation / write error | Surface verbatim. |
-
-**Lifecycle:**
-
-1. Handler parses params + validates verb, path, noLock guard.
-2. Pushes a `mutateJob` onto the per-path FIFO (`enqueue` in `workflow_queue.go`). Channel cap is 64 per path; overflow returns `queue_full`.
-3. The lazy per-path drainer goroutine pulls FIFO, acquires `wf.NewLock(path)`, runs `wf.ApplyAndPersist(path, verb, args, awaitDurability)`, releases lock, signals completion via the job's `done` channel.
-4. `mode: "daemon-async"`: handler returns BEFORE step 3 completes.
-5. `mode: "daemon-sync"`: handler blocks on `done` (ceiling `lockTimeoutMs+2s`) and returns the drainer's recorded `validatedOk` + `durable` bits.
-6. Drainer self-collects after 30 minutes (default; tunable via `daemon.workflow_keepalive_seconds`) of empty channel + zero in-flight sync waiters. The double-check under `dispatcher.mu` prevents loss of jobs that race in past the timer.
-
-**fsync semantics (`awaitDurability=true`):**
-
-- Tmp file: write → `f.Sync()` → close.
-- Rename tmp → real path.
-- Open dir (containing `workflow.json`) → `dir.Sync()` → close.
-
-A crash anywhere before the dir.Sync() returns leaves the file in a recoverable state (either old contents or new contents on next mount, never partial). A crash after dir.Sync() returns guarantees the new contents survive a power loss.
-
-**Capability negotiation:**
-
-Pre-`workflow.v1` daemons return `method_not_found: WorkflowMutate`. Clients call `Health()` once per 60s and cache the capability set; `HasCapability("workflow.v1")` returns false → caller falls back without ever sending `WorkflowMutate`. A one-shot stderr warning fires the first time the cache misses `workflow.v1` so operators know to restart their daemon.
-
-**Audit format additions** (vs the historic `verb=… stepId=… lockHeldMs=… validatedOk=true` line):
-
-```
-verb=append-step path=/abs/.../workflow.json mode=daemon-async writeId=01HXXX \
-     stepId=step-1 lockHeldMs=0 validatedOk=true durable=false \
-     queueDepthAhead=0 elapsedMs=2 reason=
-```
-
-`verb=` stays first; `validatedOk=` stays present; new fields are appended in stable order. Skill stderr parsers anchored on `/^verb=/` and `validatedOk=` keep working unchanged.
 
 ---
 
@@ -268,11 +163,11 @@ verb=append-step path=/abs/.../workflow.json mode=daemon-async writeId=01HXXX \
 - The `Health` result includes the daemon's binary version once it ships (post-Phase 0 — added in the Daemon plan).
 - Methods are append-only. Removing a method or a required field is a breaking change. Adding optional fields is safe.
 
-## Handshake protocol (v2, since 2026-05-04)
+## Handshake protocol (v3)
 
-A new method `Daemon.Version` answers the protocol-negotiation handshake. The
+The `Daemon.Version` method answers the protocol-negotiation handshake. The
 CLI calls it once per `daemon.Client` lifetime (cached for subsequent calls)
-BEFORE sending the first `WorkflowMutate` of the run.
+to detect protocol mismatch with the running daemon binary.
 
 **`Daemon.Version` params:** `{}`.
 
@@ -281,30 +176,25 @@ BEFORE sending the first `WorkflowMutate` of the run.
 ```json
 {
   "daemonVersion": "1.7.0",
-  "schemaVersion": 2,
-  "protocolFeatures": ["jqVars", "save", "schemaV2"],
-  "protocolVersion": 2
+  "protocolFeatures": ["estimationMethod"],
+  "protocolVersion": 3
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
 | `daemonVersion` | string | CLI binary version, ldflag-injected from `internal/version.Version`. Empty in dev/test builds; populated in goreleaser builds. |
-| `schemaVersion` | int | The workflow.json schema version this binary validates against. v2 since 2026-05-04 (CUE-based validator). |
-| `protocolFeatures` | string[] | Sorted lexicographically. Capability flags the CLI may consult to gate optional surfaces (e.g. `jqVars` for `--arg/--argjson` bindings). Stable across calls — the response is byte-deterministic. |
-| `protocolVersion` | int | This is the gate. The CLI compares against its own `daemon.CurrentProtocolVersion` constant; a mismatch routes the call to the standalone fallback. |
+| `protocolFeatures` | string[] | Sorted lexicographically. Capability flags the CLI may consult to gate optional surfaces. Stable across calls — the response is byte-deterministic. |
+| `protocolVersion` | int | This is the gate. The CLI compares against its own `daemon.CurrentProtocolVersion` constant; a mismatch instructs the CLI to refuse to issue methods that may have changed shape across the version break. |
 
 **Mismatch handling:**
 
-- **CLI side**: when the preflight returns a `protocolVersion` different from the CLI's compile-time constant, the CLI emits a single stderr warning (`warn: daemon protocol mismatch (expected v2, got v1) — falling back to standalone`) and runs the mutation in-process via `wf.ApplyAndPersist`. The audit line carries `mode=fallback-sync reason=daemon_protocol_mismatch`.
-- **Daemon side**: `WorkflowMutate` validates `params.protocolVersion == CurrentProtocolVersion` BEFORE the verb whitelist, the path validator, and the queue handoff. On mismatch the daemon returns JSON-RPC `-32602` (invalid params) with message `protocol version mismatch: client=<n>, daemon=<n>`. The CLI's high-level Client surfaces this as a regular error, the dispatch helper maps it to `reason=daemon_error`, and the standalone fallback runs.
-
-**Backward compatibility:**
-
-- A v1 daemon predating this method returns JSON-RPC `-32601` (`method_not_found: Daemon.Version`). The CLI treats any error from `Daemon.Version` as "no handshake possible → fall back" (`reason=daemon_version_unavailable`). Operationally, this is the same outcome as a stale v2 daemon — the CLI reaches the standalone path with one warning emitted.
-- A v1 CLI sending `WorkflowMutate` to a v2 daemon: the daemon-side guard catches the missing `protocolVersion` field (default 0 ≠ 2) and rejects with `-32602`. The v1 CLI surfaces the error and exits non-zero — it predates the fallback wiring, so it cannot recover. This is acceptable: the CLI binary in question is the older one, and the operator-visible failure points at the upgrade requirement. Document forces the operator to update.
-
-**`WorkflowMutate` change (v2, 2026-05-04):** the request gains a required `protocolVersion: int` field. Older daemons that have not been recompiled silently dropped the field via JSON unknown-field tolerance, so OLD-CLI ↔ OLD-DAEMON pairings keep working — but a NEW CLI ↔ OLD DAEMON sees a `method_not_found: Daemon.Version` from the preflight and falls back to standalone before any `WorkflowMutate` is sent.
+When the preflight returns a `protocolVersion` different from the CLI's
+compile-time constant, the CLI emits a single stderr warning and refuses to
+issue any method whose wire contract depends on the missing version. Older
+daemons predating the `Daemon.Version` method return JSON-RPC `-32601`
+(`method_not_found: Daemon.Version`); the CLI treats any error from
+`Daemon.Version` as "no handshake possible".
 
 ---
 
@@ -430,12 +320,6 @@ caller.
 
 ## Changelog
 
-### 2026-05-13 — `feat-20260513-cleanup-old-workflow`
+### `WorkflowMutate` removed
 
-**`WorkflowMutate` verb surface narrowed to 3 surviving mutators.**
-
-The `internal/workflow/apply.go::Mutators` registry previously exposed 8 verbs. CLI v3.0.0 deleted `update-step`, `complete-step`, `set-status`, `set-config`, `append-review-history`, `set-current-step`, and `patch` as part of the markdown-chains pipeline migration (skills write phase output as plain `.md` files; `save-step` / `get-step` are the canonical read/write surface). CLI v5.0.0 (`feat-20260513-cleanup-old-workflow`) retired the staging/autosave path that previously relied on those verbs.
-
-Surviving verbs accepted by the daemon: `append-step`, `append-steps`, `backfill-elapsed`.
-
-The wire fields `jqExpr` and `jqVars` are retained for backward compatibility but are no longer used by any surviving verb.
+The daemon previously exposed a `WorkflowMutate` JSON-RPC method for applying mutations to `workflow.json` files (with `workflow.v1` and `workflow.fsync.v1` capability advertisements, a per-path FIFO drainer, and a verb whitelist). The method, its drainer, and both capabilities have been removed; the daemon no longer accepts workflow-write traffic. Clients that target this method receive the standard JSON-RPC `method_not_found: WorkflowMutate` response.

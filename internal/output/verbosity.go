@@ -4,9 +4,31 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
+
+// EnvLLMEnabled reports whether BROWZER_LLM requests LLM mode. Presence
+// alone is NOT enough — we parse the value so callers can set
+// `BROWZER_LLM=0` (or `false`/`off`/empty) to explicitly disable,
+// unlike NO_COLOR where presence is the signal. The truthy set matches
+// GNU-ish conventions: 1, true, yes, on (case-insensitive).
+//
+// This is the single authoritative parser for BROWZER_LLM truthy
+// semantics. All call sites that need to detect LLM mode from the
+// environment MUST use this function rather than inlining the switch.
+func EnvLLMEnabled() bool {
+	v, ok := os.LookupEnv("BROWZER_LLM")
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 
 // RegisterQuietFlag adds a `--quiet` boolean flag to the given cobra
 // command. The flag is accepted everywhere a top-level read verb may be

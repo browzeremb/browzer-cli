@@ -8,8 +8,28 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/codereview"
 	cliErrors "github.com/browzeremb/browzer-cli/internal/errors"
 	"github.com/browzeremb/browzer-cli/internal/git"
+	"github.com/browzeremb/browzer-cli/internal/output"
 	"github.com/spf13/cobra"
 )
+
+// quietByDefaultUnderLLM reports whether the command should suppress
+// decorative stderr output. True when BROWZER_LLM is truthy (via the
+// shared output.EnvLLMEnabled() parser) or when the inherited --llm
+// flag is set on the command tree.
+func quietByDefaultUnderLLM(cmd *cobra.Command) bool {
+	if output.EnvLLMEnabled() {
+		return true
+	}
+	if cmd != nil {
+		if f := cmd.Flags().Lookup("llm"); f != nil && f.Value.String() == "true" {
+			return true
+		}
+		if f := cmd.InheritedFlags().Lookup("llm"); f != nil && f.Value.String() == "true" {
+			return true
+		}
+	}
+	return false
+}
 
 // codeReviewCmd is the parent cobra command for all `browzer codereview`
 // subcommands.  Paired with TASK_06's documented aggregator contract:

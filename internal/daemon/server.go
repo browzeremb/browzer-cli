@@ -26,11 +26,6 @@ type Options struct {
 	IdleTimeout time.Duration
 	// DBPath is reported by the Health method. Optional in tests.
 	DBPath string
-	// WorkflowKeepalive is how long a per-path workflow drainer stays
-	// alive after the queue goes empty. Zero falls back to
-	// defaultQueueIdleTimeout (30 min). Sourced from the
-	// `daemon.workflow_keepalive_seconds` config key by daemon_cmd.
-	WorkflowKeepalive time.Duration
 }
 
 // Server is the Browzer daemon JSON-RPC server.
@@ -55,14 +50,10 @@ type Server struct {
 	tokensEconomized atomic.Int64
 	stopOnce         sync.Once
 	stopped          chan struct{}
-	// workflowDispatcher owns the per-path FIFO + drainer goroutines that
-	// serialise workflow.json mutations. nil-safe: when nil (e.g. tests
-	// that construct a bare Server), WorkflowMutate returns
-	// "workflow_dispatcher_disabled". Allocated by NewServer.
-	workflowDispatcher *workflowDispatcher
-	// capabilities is the static list of feature strings the daemon
-	// advertises via Health. Frozen at startup. Order matters for stable
-	// diffs in tests/snapshots.
+	// capabilities is the list of feature strings the daemon advertises via
+	// Health. Initialized in NewServer; may be replaced via SetCapabilities
+	// (tests only). All reads and writes are guarded by s.mu. Order matters
+	// for stable diffs in tests/snapshots.
 	capabilities []string
 }
 
@@ -84,24 +75,12 @@ func NewServer(opts Options) *Server {
 		"Daemon.Version":   s.handleDaemonVersion,
 		// Read, Track, SessionRegister wired by methods.go (Task 3).
 	}
-	s.workflowDispatcher = newWorkflowDispatcher(opts.WorkflowKeepalive)
 	// Baseline capabilities reflecting the methods this binary always
-	// supports. WorkflowMutate is added when the dispatcher exists (always
-	// today; left guarded so a future codepath that disables it stays
-	// honest).
+	// supports.
 	s.capabilities = []string{
 		"read.v1",
 		"track.v1",
 		"session-register.v1",
-	}
-	if s.workflowDispatcher != nil {
-		s.capabilities = append(s.capabilities, "workflow.v1", "workflow.fsync.v1")
-		// Register WorkflowMutate eagerly. Unlike Read/Track/SessionRegister
-		// (wired by methods.Wire with external Deps), WorkflowMutate has no
-		// external dependencies — the dispatcher + workflow package are the
-		// whole story. This lets tests that don't call Wire still exercise
-		// the verb.
-		s.handlers["WorkflowMutate"] = s.handleWorkflowMutate
 	}
 	return s
 }
@@ -247,24 +226,16 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// codedError is the handler-side error carrier that lets a method return a
-// JSON-RPC error with a non-default code. The default `-32000` (server error)
-// is fine for transient/internal failures; method-specific contracts (e.g.
-// `Daemon.Version`/`WorkflowMutate` returning `-32602` "invalid params" on
-// protocol-version mismatch) need control over the code so callers can
-// branch on it without string-matching.
-type codedError struct {
-	code    int
-	message string
-}
-
-func (c *codedError) Error() string { return c.message }
-
-// newCodedError returns an error carrying a specific JSON-RPC error code.
-// The connection-level dispatch loop unwraps it and emits the matching
-// `{code, message}` pair to the wire.
-func newCodedError(code int, msg string) error { return &codedError{code: code, message: msg} }
-
+// handleConn reads newline-delimited JSON-RPC 2.0 requests from conn and
+// writes responses until the connection is closed.
+//
+// Error code selection: transport/protocol errors use fixed JSON-RPC codes
+// (-32700 parse_error, -32601 method_not_found). Handler errors default to
+// -32000 (server_error). A handler may opt into a more specific code by
+// returning an error that satisfies interface{ Code() int }; handleConn
+// type-asserts the error and uses Code() when present. This lets future
+// handlers signal -32602 (invalid_params) or any other JSON-RPC code without
+// requiring changes here.
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	rdr := bufio.NewReader(conn)
@@ -291,9 +262,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		result, err := h(ctx, req.Params)
 		if err != nil {
 			code := -32000
-			var ce *codedError
-			if errors.As(err, &ce) {
-				code = ce.code
+			if cer, ok := err.(interface{ Code() int }); ok {
+				code = cer.Code()
 			}
 			s.writeErr(conn, req.ID, code, err.Error())
 			s.queueLen.Add(-1)
@@ -320,37 +290,52 @@ func (s *Server) handleHealth(_ context.Context, _ json.RawMessage) (any, error)
 	// preserved verbatim and we only ADD `capabilities` to it. Older
 	// clients ignore unknown fields; newer clients (HasCapability) read
 	// the new field.
+	//
+	// Take a snapshot of capabilities under RLock so a concurrent
+	// SetCapabilities call cannot mutate the slice while we hold a
+	// reference to it.
+	s.mu.RLock()
+	caps := make([]string, len(s.capabilities))
+	copy(caps, s.capabilities)
+	s.mu.RUnlock()
+
 	return map[string]any{
 		"uptimeSec":    int(time.Since(s.startedAt).Seconds()),
 		"queueLen":     s.queueLen.Load(),
 		"dbPath":       s.opts.DBPath,
-		"capabilities": s.capabilities,
+		"capabilities": caps,
 	}, nil
 }
 
-// RegisterHandler is the post-Wire override hook used by tests. Re-export
-// the capability list adjustment when a handler is added at runtime: tests
-// that inject a stub WorkflowMutate handler still want the matching
-// capability advertised. We DO NOT auto-add — registry semantics are
-// "register OR override", not "register AND advertise". Capabilities are
-// authored by NewServer; tests wanting custom advertise-sets call
-// SetCapabilities.
-
 // SetCapabilities replaces the advertised capability list. Tests that
-// stand up a degraded daemon (e.g. "no workflow.v1 to verify fallback")
-// call SetCapabilities([]string{...}) before Serve.
+// stand up a degraded daemon (e.g. one that drops a normally-advertised
+// capability to verify fallback) call SetCapabilities([]string{...})
+// before or after Serve. Registry semantics are "register OR override",
+// not "register AND advertise" — adding a handler via RegisterHandler does
+// NOT auto-add a matching capability; callers must opt in via this
+// method when they want the advertise side to track.
+//
+// Guarded by s.mu so concurrent Health reads never race with a
+// mid-flight SetCapabilities call.
 func (s *Server) SetCapabilities(c []string) {
 	cp := make([]string, len(c))
 	copy(cp, c)
+	s.mu.Lock()
 	s.capabilities = cp
+	s.mu.Unlock()
 }
 
 // Capabilities returns a copy of the advertised capability list. Mostly
 // useful for tests; production callers read the list via Health over the
 // socket.
+//
+// Guarded by s.mu so concurrent SetCapabilities calls never race with
+// this read.
 func (s *Server) Capabilities() []string {
+	s.mu.RLock()
 	cp := make([]string, len(s.capabilities))
 	copy(cp, s.capabilities)
+	s.mu.RUnlock()
 	return cp
 }
 

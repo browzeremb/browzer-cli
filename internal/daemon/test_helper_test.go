@@ -28,45 +28,13 @@ func (e *EphemeralDaemon) Stop() {
 	}
 }
 
-// SpinUpEphemeralDaemon starts a Server on a fresh socket under t.TempDir()
-// with a 30-minute keepalive (so the idle drainer is inert during a test).
-// The returned EphemeralDaemon's Client is ready to drive WorkflowMutate or
-// any other JSON-RPC method. Failure modes (socket-bind, dial timeout) call
-// t.Fatal directly — callers don't need to check error returns.
-//
-// By default BROWZER_NO_SCHEMA_CHECK=1 is set so that tests exercising
-// daemon mechanics with minimal fixtures do not hit CUE validation. Tests
-// that specifically want to exercise schema validation should call
-// SpinUpEphemeralDaemonWithValidation (does NOT set the bypass) instead
-// of trying to clear the env var after the fact — t.Setenv is restored
-// at test end, but writes to it after this helper has returned mean the
-// daemon goroutine may have already cached the bypass decision.
-//
-// QA-005 (2026-05-04): the bypass was originally documented as "callers
-// can clear it" but in practice the bypass is consulted at apply time,
-// not daemon-init time, so clearing it later does work — however the
-// dedicated WithValidation variant makes the intent unambiguous and
-// keeps the bypass coverage scoped.
+// SpinUpEphemeralDaemon starts a Server on a fresh socket under t.TempDir().
+// The returned EphemeralDaemon's Client is ready to drive Read / Track /
+// SessionRegister or any other JSON-RPC method served by the daemon.
+// Failure modes (socket-bind, dial timeout) call t.Fatal directly — callers
+// don't need to check error returns.
 func SpinUpEphemeralDaemon(t *testing.T) *EphemeralDaemon {
 	t.Helper()
-	// Bypass schema validation by default — these tests exercise daemon
-	// mechanics (queue ordering, crash recovery, version handshake), not
-	// schema enforcement (the CUE validator has dedicated tests).
-	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "1")
-	return spinUpEphemeralDaemonImpl(t)
-}
-
-// SpinUpEphemeralDaemonWithValidation is the variant that does NOT set
-// BROWZER_NO_SCHEMA_CHECK. Use this when the test specifically exercises
-// CUE validation through the daemon path (e.g. asserting that the daemon
-// rejects a malformed payload).
-//
-// QA-005 (2026-05-04): introduced so schema-enforcement tests don't have
-// to chase down the default env-var bypass.
-func SpinUpEphemeralDaemonWithValidation(t *testing.T) *EphemeralDaemon {
-	t.Helper()
-	// Explicitly clear the env var in case the parent test set it.
-	t.Setenv("BROWZER_NO_SCHEMA_CHECK", "")
 	return spinUpEphemeralDaemonImpl(t)
 }
 
@@ -79,8 +47,7 @@ func spinUpEphemeralDaemonImpl(t *testing.T) *EphemeralDaemon {
 	sock := filepath.Join(sockDir, "daemon.sock")
 
 	srv := NewServer(Options{
-		SocketPath:        sock,
-		WorkflowKeepalive: 30 * time.Minute,
+		SocketPath: sock,
 	})
 
 	ctx, cancel := context.WithCancel(t.Context())
