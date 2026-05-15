@@ -34,10 +34,14 @@ type Options struct {
 }
 
 // Server is the Browzer daemon JSON-RPC server.
+//
+// mu is a sync.RWMutex so the per-request handler lookup (read-mostly: the
+// registry is mutated only at startup or by tests) can use RLock and avoid
+// serializing concurrent requests behind one another.
 type Server struct {
 	opts      Options
 	startedAt time.Time
-	mu        sync.Mutex // guards listener
+	mu        sync.RWMutex // guards listener + handlers
 	listener  net.Listener
 	handlers  map[string]Handler
 	queueLen  atomic.Int64
@@ -140,9 +144,11 @@ func (s *Server) RegisterHandler(method string, h Handler) {
 // lookupHandler returns the registered handler for method, holding s.mu
 // for the duration of the read. Mirrors RegisterHandler's lock so the
 // map read in handleConn never races with a concurrent write (F-01).
+// Uses RLock so concurrent requests don't serialize against each other —
+// the handlers map is read-mostly (registered once at startup).
 func (s *Server) lookupHandler(method string) (Handler, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	h, ok := s.handlers[method]
 	return h, ok
 }
@@ -185,9 +191,9 @@ func (s *Server) Serve(ctx context.Context) error {
 // Stop shuts the daemon down idempotently.
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
-		s.mu.Lock()
+		s.mu.RLock()
 		l := s.listener
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		if l != nil {
 			_ = l.Close()
 		}

@@ -119,10 +119,15 @@ func NewManifestCacheWithFetchOptions(pathFor func(string) string, fetch FetchFn
 }
 
 // Get returns the manifest for a workspace. Cache hit is O(1); miss reads
-// the file once. On ENOENT with a configured fetcher, kicks a background
+// the file once OUTSIDE any held lock so concurrent Gets don't serialize on
+// disk I/O. On ENOENT with a configured fetcher, kicks a background
 // single-flight fetch (deduped per workspaceID) and returns the original
 // not-found error so the current Read call falls back to "minimal" — the
 // next Read after the fetcher completes will hit the warmed cache.
+//
+// Cache install uses a CAS check: if another goroutine raced ahead and
+// installed an entry for the same workspaceID, we return that one instead
+// so callers see a single shared *Manifest per workspace.
 func (c *ManifestCache) Get(workspaceID string) (*Manifest, error) {
 	c.mu.RLock()
 	if m, ok := c.cache[workspaceID]; ok {
@@ -131,13 +136,8 @@ func (c *ManifestCache) Get(workspaceID string) (*Manifest, error) {
 	}
 	c.mu.RUnlock()
 
-	c.mu.Lock()
-	if m, ok := c.cache[workspaceID]; ok {
-		c.mu.Unlock()
-		return m, nil
-	}
+	// Disk read with no lock held.
 	body, err := os.ReadFile(c.pathFor(workspaceID))
-	c.mu.Unlock()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && c.fetch != nil {
 			c.kickRefetch(workspaceID)
@@ -149,6 +149,10 @@ func (c *ManifestCache) Get(workspaceID string) (*Manifest, error) {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 	c.mu.Lock()
+	if existing, ok := c.cache[workspaceID]; ok {
+		c.mu.Unlock()
+		return existing, nil
+	}
 	c.cache[workspaceID] = &m
 	c.mu.Unlock()
 	return &m, nil

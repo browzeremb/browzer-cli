@@ -42,10 +42,24 @@ type Event struct {
 }
 
 // Tracker owns the SQLite connection. Single writer, multiple readers.
+//
+// Performance: insertStmt is prepared once in Open and reused across every
+// Record call. SQLite's WAL allows concurrent readers but a single writer;
+// SetMaxOpenConns(1) avoids the driver re-preparing the statement on a
+// freshly-opened connection from the pool.
 type Tracker struct {
-	db *sql.DB
-	mu sync.Mutex
+	db         *sql.DB
+	insertStmt *sql.Stmt
+	mu         sync.Mutex
 }
+
+// insertSQL is the canonical event insert statement, prepared once per Tracker.
+const insertSQL = `
+INSERT INTO events (ts, source, command, path_hash, input_bytes, output_bytes,
+                    saved_tokens, savings_pct, filter_level, exec_ms,
+                    workspace_id, session_id, model, filter_failed,
+                    estimation_method)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // Open creates the parent directory, opens the SQLite database in WAL mode,
 // and applies the schema. Idempotent.
@@ -58,6 +72,11 @@ func Open(path string) (*Tracker, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite is single-writer; mu already serializes Go-side. Pin one
+	// connection so the prepared insert stmt stays cached on it instead
+	// of re-preparing every time the pool hands out a fresh conn.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if _, err := db.Exec(schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -67,7 +86,12 @@ func Open(path string) (*Tracker, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate estimation_method: %w", err)
 	}
-	return &Tracker{db: db}, nil
+	insertStmt, err := db.Prepare(insertSQL)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("prepare insert: %w", err)
+	}
+	return &Tracker{db: db, insertStmt: insertStmt}, nil
 }
 
 // ensureEstimationMethodColumn adds the `estimation_method` column to the
@@ -106,8 +130,14 @@ func ensureEstimationMethodColumn(db *sql.DB) error {
 	return nil
 }
 
-// Close releases the connection.
-func (t *Tracker) Close() error { return t.db.Close() }
+// Close releases the connection. Closes the cached insert statement first
+// so the underlying conn is fully released back to the pool.
+func (t *Tracker) Close() error {
+	if t.insertStmt != nil {
+		_ = t.insertStmt.Close()
+	}
+	return t.db.Close()
+}
 
 // Record inserts one event into SQLite. Retention cleanup is handled
 // separately by Cleanup, which is called from a periodic goroutine in
@@ -116,13 +146,7 @@ func (t *Tracker) Close() error { return t.db.Close() }
 func (t *Tracker) Record(e Event) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	_, err := t.db.Exec(`
-		INSERT INTO events (ts, source, command, path_hash, input_bytes, output_bytes,
-		                    saved_tokens, savings_pct, filter_level, exec_ms,
-		                    workspace_id, session_id, model, filter_failed,
-		                    estimation_method)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+	_, err := t.insertStmt.Exec(
 		e.TS, e.Source, e.Command, e.PathHash, e.InputBytes, e.OutputBytes,
 		e.SavedTokens, e.SavingsPct, e.FilterLevel, e.ExecMs,
 		e.WorkspaceID, e.SessionID, e.Model, boolToInt(e.FilterFailed),
@@ -277,30 +301,34 @@ func (t *Tracker) UnsentBuckets() ([]Bucket, []int64, error) {
 	return out, ids, nil
 }
 
-// MarkFlushed sets flushed_at = now() for the given rows.
+// markFlushedChunk is the SQLite-friendly batch size for IN-clause updates.
+// SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds; 500
+// is a comfortable margin that works on every modernc.org/sqlite version.
+const markFlushedChunk = 500
+
+// MarkFlushed sets flushed_at = now() for the given rows in chunked
+// IN-clause batches. Replaces the per-id prepared-statement loop so N rows
+// cost ceil(N/markFlushedChunk) round trips instead of N.
 func (t *Tracker) MarkFlushed(ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	tx, err := t.db.Begin()
-	if err != nil {
-		return err
-	}
-	stmt, err := tx.Prepare(`UPDATE events SET flushed_at = datetime('now') WHERE id = ?`)
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	defer func() { _ = stmt.Close() }()
-	for _, id := range ids {
-		if _, err := stmt.Exec(id); err != nil {
-			_ = tx.Rollback()
+	for start := 0; start < len(ids); start += markFlushedChunk {
+		end := min(start+markFlushedChunk, len(ids))
+		chunk := ids[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		query := "UPDATE events SET flushed_at = datetime('now') WHERE id IN (" + placeholders + ")"
+		if _, err := t.db.Exec(query, args...); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // HookSavedTokens is the event source written by the hook layer when it

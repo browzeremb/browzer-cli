@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,10 +33,25 @@ const MaxResponseBytes = 32 * 1024 * 1024
 // verbs (GET/HEAD/PUT/DELETE only — POST is intentionally non-retryable
 // because /documents/batch and /workspaces/parse aren't idempotent).
 type Client struct {
-	BaseURL    string
-	Token      string
-	HTTP       *http.Client
-	UserAgent  string
+	BaseURL   string
+	Token     string
+	HTTP      *http.Client
+	UserAgent string
+}
+
+// sharedTransport is the package-level http.Transport used by every Client
+// built via NewClient. Defaults from http.DefaultTransport keep
+// MaxIdleConnsPerHost at 2, which throttles burst workloads like
+// `workspace sync` and `documents/batch`. Bumping to 20 keeps the keep-alive
+// pool warm during parallel CLI operations against a single API host.
+var sharedTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   20,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	ForceAttemptHTTP2:     true,
 }
 
 // NewClient builds a Client. Use NewAuthenticatedClient when you need
@@ -48,7 +64,8 @@ func NewClient(server, token string, timeout time.Duration) *Client {
 		BaseURL: strings.TrimRight(server, "/"),
 		Token:   token,
 		HTTP: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: sharedTransport,
 		},
 		UserAgent: "browzer-cli/go",
 	}
@@ -79,31 +96,60 @@ func NewAuthenticatedClient(timeout time.Duration) (*AuthenticatedClient, error)
 	}, nil
 }
 
-// retryableStatuses are the HTTP status codes treated as transient. The
-// list mirrors ky's defaults: 408, 429, 500, 502, 503, 504.
-var retryableStatuses = map[int]bool{
-	408: true,
-	429: true,
-	500: true,
-	502: true,
-	503: true,
-	504: true,
+// isRetryableStatus reports whether HTTP status code s is transient.
+// The set mirrors ky's defaults (408, 429, 500, 502, 503, 504). Switch
+// instead of a map: zero allocs and faster than map lookup for fixed sets.
+func isRetryableStatus(s int) bool {
+	switch s {
+	case 408, 429, 500, 502, 503, 504:
+		return true
+	}
+	return false
 }
 
-// retryableMethods are the verbs we retry. POST is intentionally absent.
-var retryableMethods = map[string]bool{
-	http.MethodGet:    true,
-	http.MethodHead:   true,
-	http.MethodPut:    true,
-	http.MethodDelete: true,
+// isRetryableMethod reports whether the verb is safe to retry. POST is
+// intentionally absent because /documents/batch and /workspaces/parse
+// aren't idempotent.
+func isRetryableMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete:
+		return true
+	}
+	return false
+}
+
+// retryBackoffs is the fixed escalation schedule used between retries.
+// Package-level so the slice is not re-allocated on every request. Each
+// delay is further perturbed by ±25% jitter at use site to avoid the
+// thundering-herd pattern when many CLIs back off in sync against the
+// same 429.
+var retryBackoffs = [...]time.Duration{
+	500 * time.Millisecond,
+	2 * time.Second,
+	8 * time.Second,
+}
+
+// jitter applies ±25% uniform noise to base. crypto-grade randomness is
+// not needed — the purpose is decorrelation, not security.
+func jitter(base time.Duration) time.Duration {
+	if base <= 0 {
+		return base
+	}
+	span := int64(base / 2) // ±25% = a 50% window
+	if span <= 0 {
+		return base
+	}
+	return base - time.Duration(span/2) + time.Duration(rand.Int64N(span))
 }
 
 // doWithHeaders is the underlying request runner that supports custom
 // per-request headers (used by ParseWorkspace's X-Force-Parse plumbing).
-// `do` is a thin wrapper that passes nil headers — the existing
-// callsites are unchanged.
 //
-// The caller is responsible for closing the response body.
+// The caller is responsible for closing the response body. Retries are
+// applied to idempotent verbs on both network errors and transient HTTP
+// statuses (see isRetryableStatus / isRetryableMethod). Backoff delays
+// come from retryBackoffs with ±25% jitter applied per attempt to break
+// up correlated retry storms (the cache-thundering-herd pattern).
 func (c *Client) doWithHeaders(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, headers map[string]string) (*http.Response, error) {
 	full := c.BaseURL + "/" + strings.TrimLeft(path, "/")
 	if len(query) > 0 {
@@ -111,12 +157,13 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 	}
 
 	const maxAttempts = 4 // 1 initial + 3 retries
+	retryable := isRetryableMethod(method)
 	var resp *http.Response
 
 	// Buffer the body once so we can replay on retry. Non-retryable
 	// methods (POST) skip this and pass the io.Reader through directly.
 	var bodyBuf []byte
-	if body != nil && retryableMethods[method] {
+	if body != nil && retryable {
 		var err error
 		bodyBuf, err = io.ReadAll(body)
 		if err != nil {
@@ -124,9 +171,7 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 		}
 	}
 
-	backoffs := []time.Duration{500 * time.Millisecond, 2 * time.Second, 8 * time.Second}
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		var reqBody io.Reader
 		if bodyBuf != nil {
 			reqBody = bytes.NewReader(bodyBuf)
@@ -158,10 +203,10 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 		resp, err = c.HTTP.Do(req)
 		if err != nil {
 			// Network-level error: retry only on idempotent verbs.
-			if !retryableMethods[method] || attempt == maxAttempts-1 {
+			if !retryable || attempt == maxAttempts-1 {
 				return nil, err
 			}
-		} else if !retryableStatuses[resp.StatusCode] || !retryableMethods[method] {
+		} else if !isRetryableStatus(resp.StatusCode) || !retryable {
 			return resp, nil
 		} else {
 			// Retryable status — drain and close before sleeping.
@@ -170,10 +215,7 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 		}
 
 		if attempt < maxAttempts-1 {
-			delay := backoffs[attempt]
-			if delay > 30*time.Second {
-				delay = 30 * time.Second // backoffLimit cap
-			}
+			delay := min(jitter(retryBackoffs[attempt]), 30*time.Second)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -187,86 +229,13 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 	return resp, nil
 }
 
-// do is the core request runner. It builds an absolute URL, attaches
-// auth headers, retries idempotent verbs on transient failures with a
-// capped backoff, and returns the raw http.Response on success.
+// do is the standard request runner: same contract as doWithHeaders but
+// without caller-supplied headers. Kept as a thin wrapper so existing
+// call sites don't need to thread a nil map argument.
 //
 // The caller is responsible for closing the response body.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string) (*http.Response, error) {
-	full := c.BaseURL + "/" + strings.TrimLeft(path, "/")
-	if len(query) > 0 {
-		full += "?" + query.Encode()
-	}
-
-	const maxAttempts = 4 // 1 initial + 3 retries
-	var resp *http.Response
-
-	// Buffer the body once so we can replay on retry. Non-retryable
-	// methods (POST) skip this and pass the io.Reader through directly.
-	var bodyBuf []byte
-	if body != nil && retryableMethods[method] {
-		var err error
-		bodyBuf, err = io.ReadAll(body)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	backoffs := []time.Duration{500 * time.Millisecond, 2 * time.Second, 8 * time.Second}
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		var reqBody io.Reader
-		if bodyBuf != nil {
-			reqBody = bytes.NewReader(bodyBuf)
-		} else {
-			reqBody = body
-		}
-
-		req, err := http.NewRequestWithContext(ctx, method, full, reqBody)
-		if err != nil {
-			return nil, err
-		}
-		if c.Token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.Token)
-		}
-		if contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-		req.Header.Set("Accept", "application/json")
-		if c.UserAgent != "" {
-			req.Header.Set("User-Agent", c.UserAgent)
-		}
-
-		resp, err = c.HTTP.Do(req)
-		if err != nil {
-			// Network-level error: retry only on idempotent verbs.
-			if !retryableMethods[method] || attempt == maxAttempts-1 {
-				return nil, err
-			}
-		} else if !retryableStatuses[resp.StatusCode] || !retryableMethods[method] {
-			return resp, nil
-		} else {
-			// Retryable status — drain and close before sleeping.
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
-
-		if attempt < maxAttempts-1 {
-			delay := backoffs[attempt]
-			if delay > 30*time.Second {
-				delay = 30 * time.Second // backoffLimit cap
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-	}
-	if resp == nil {
-		return nil, errors.New("request failed after retries")
-	}
-	return resp, nil
+	return c.doWithHeaders(ctx, method, path, query, body, contentType, nil)
 }
 
 // getJSON is a convenience wrapper that issues a GET and decodes the
@@ -453,11 +422,11 @@ func httpStatusError(resp *http.Response) error {
 // is kept as raw JSON (decoded lazily via envString) so we don't have
 // to enumerate every possible sub-key.
 type errorEnvelope struct {
-	Error   string                 `json:"error"`
-	Message string                 `json:"message"`
-	Hint    string                 `json:"hint"`
-	Details map[string]any         `json:"details"`
-	DocsURL string                 `json:"docsUrl"`
+	Error   string         `json:"error"`
+	Message string         `json:"message"`
+	Hint    string         `json:"hint"`
+	Details map[string]any `json:"details"`
+	DocsURL string         `json:"docsUrl"`
 }
 
 // parseErrorEnvelope best-effort decodes the response body. Returns nil

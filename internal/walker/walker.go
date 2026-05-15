@@ -180,7 +180,9 @@ func walk(absDir, relDir string, matcher *ignoreMatcher, browzerMatcher *Browzer
 			continue
 		}
 
-		info, err := os.Stat(absPath)
+		// entry.Info() reuses the FileInfo already produced by ReadDir on
+		// most platforms — one syscall less than a fresh os.Stat per file.
+		info, err := entry.Info()
 		if err != nil {
 			continue
 		}

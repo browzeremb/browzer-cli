@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -78,6 +79,10 @@ func (m *WorkspaceManifest) Save(cachePath, orgID string) error {
 	for _, e := range m.entries {
 		raw = append(raw, e)
 	}
+	// Deterministic on-disk order: map iteration is random, but git/fsnotify
+	// consumers see a touched file even when the entry set hasn't changed.
+	// Sort by ID so the marshalled bytes are stable across runs.
+	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
 
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -141,7 +146,7 @@ type FeatureCacheEntry struct {
 	FeatureID     string    `json:"featureId"`
 	WarmedAt      time.Time `json:"warmedAt"`
 	WarmedAtSHA   string    `json:"warmedAtSHA"`   // git rev-parse HEAD when warming started
-	CacheDir      string    `json:"cacheDir"`       // absolute path to .browzer-cache/ for the feature
+	CacheDir      string    `json:"cacheDir"`      // absolute path to .browzer-cache/ for the feature
 	DepsFiles     []string  `json:"depsFiles"`     // source files with deps cached
 	MentionsFiles []string  `json:"mentionsFiles"` // source files with mentions cached
 }
@@ -187,6 +192,8 @@ func SaveFeatureCache(cachePath string, cache map[string]FeatureCacheEntry) erro
 	for _, e := range cache {
 		raw = append(raw, e)
 	}
+	// Stable on-disk order — see WorkspaceManifest.Save rationale.
+	sort.Slice(raw, func(i, j int) bool { return raw[i].FeatureID < raw[j].FeatureID })
 
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
