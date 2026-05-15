@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/browzeremb/browzer-cli/internal/daemon"
 )
 
 // fakeRunner captures Start calls without forking a real process so
@@ -152,6 +154,57 @@ func TestDaemonCall_UnsupportedMethodReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not wired") && !strings.Contains(err.Error(), "daemon call") {
 		t.Fatalf("unexpected error shape: %v", err)
+	}
+}
+
+// TestDaemonCall_TypedTrackParams_ZeroCoerceMarshal pins FR-04 / AC-04:
+// when DaemonCall receives a typed daemon.TrackParams, the coerce layer
+// must take the type-assertion fast path and skip json.Marshal entirely.
+// The probe marshal previously at the top of DaemonCall is gone, so the
+// counter must NOT increment on this path.
+func TestDaemonCall_TypedTrackParams_ZeroCoerceMarshal(t *testing.T) {
+	setupTempHome(t)
+	restore := WithCommandRunner(&fakeRunner{})
+	t.Cleanup(restore)
+	ResetEnsureDaemonGuard()
+
+	before := CoerceMarshalCount()
+	typed := daemon.TrackParams{
+		TS:      "2026-05-15T00:00:00Z",
+		Source:  "test",
+		Command: "test",
+	}
+	// Daemon socket is missing (setupTempHome wires a no-such path),
+	// so DaemonCall falls back. The coerce layer still runs before the
+	// dial attempt.
+	_, _ = DaemonCall("Track", typed)
+	after := CoerceMarshalCount()
+	if delta := after - before; delta != 0 {
+		t.Fatalf("typed daemon.TrackParams must skip the coerce marshal; counter delta = %d, want 0", delta)
+	}
+}
+
+// TestDaemonCall_MapTrackParams_SingleCoerceMarshal pins the
+// complementary half of FR-04: map / untyped payloads round-trip through
+// coerce exactly once. Pre-refactor this path paid TWO marshals (the
+// probe at the top of DaemonCall plus the coerce round-trip); post-
+// refactor it pays one.
+func TestDaemonCall_MapTrackParams_SingleCoerceMarshal(t *testing.T) {
+	setupTempHome(t)
+	restore := WithCommandRunner(&fakeRunner{})
+	t.Cleanup(restore)
+	ResetEnsureDaemonGuard()
+
+	before := CoerceMarshalCount()
+	payload := map[string]any{
+		"ts":      "2026-05-15T00:00:00Z",
+		"source":  "test",
+		"command": "test",
+	}
+	_, _ = DaemonCall("Track", payload)
+	after := CoerceMarshalCount()
+	if delta := after - before; delta != 1 {
+		t.Fatalf("map payload must round-trip through coerce exactly once; counter delta = %d, want 1", delta)
 	}
 }
 

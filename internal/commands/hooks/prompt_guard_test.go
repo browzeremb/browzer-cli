@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,5 +246,96 @@ func TestPromptGuard_CollectHits_ImportSourceSkipsRelative(t *testing.T) {
 	}
 	if !hasFastify {
 		t.Fatalf("expected fastify hit, got %v", hits)
+	}
+}
+
+// TestCollectHits_StaticVocab_CompilesOnce pins FR-01 / AC-01: the unified
+// single-token regex is built at most once per process lifetime regardless
+// of how many times collectHits runs. Pre-refactor each call paid ~140
+// `regexp.Compile` invocations; post-refactor the count must stay at 1.
+func TestCollectHits_StaticVocab_CompilesOnce(t *testing.T) {
+	// Warm the cache: any call exercising the static vocab path triggers
+	// the OnceValue. Using a vocab term lets us confirm collectHits hits
+	// the unified regex (not just allocates the builder).
+	_ = collectHits("implementing fastify with drizzle and zod", DefaultVocab())
+	base := UnifiedVocabCompileCount()
+	if base != 1 {
+		t.Fatalf("expected compile count == 1 after warm, got %d", base)
+	}
+	vocab := DefaultVocab()
+	for i := 0; i < 1000; i++ {
+		// Each prompt is unique so the cache cannot satisfy via memoised
+		// per-prompt result (collectHits has none — uniqueness only proves
+		// the regex itself is reused).
+		prompt := fmt.Sprintf("call %d: build something with react, deploy to vercel, ship", i)
+		_ = collectHits(prompt, vocab)
+	}
+	if got := UnifiedVocabCompileCount(); got != base {
+		t.Fatalf("regex recompiled during 1000 collectHits calls: count went %d → %d", base, got)
+	}
+}
+
+// TestCollectHits_OperatorExtension_NotInStaticSet exercises the branch
+// where vocab carries operator-supplied terms that defaultVocab does not
+// — those must still be detected even though the unified regex does not
+// cover them.
+func TestCollectHits_OperatorExtension_NotInStaticSet(t *testing.T) {
+	vocab := append(DefaultVocab(), "tatersaurus")
+	hits := collectHits("we are switching to tatersaurus for compaction", vocab)
+	found := false
+	for _, h := range hits {
+		if h == "tatersaurus" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("operator-extension term not detected; hits=%v", hits)
+	}
+}
+
+// TestDedupSessionReminder_SentinelFastPath pins FR-02 / AC-02: first call
+// for a given (sessionID, fingerprint) returns false and creates the
+// sentinel file; the second call returns true; no JSON ledger is ever
+// written.
+func TestDedupSessionReminder_SentinelFastPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	restore := WithTmpDir(func() string { return tmpDir })
+	t.Cleanup(restore)
+
+	if first := dedupSessionReminder("session-A", "fp-123"); first != false {
+		t.Fatalf("first call: expected false, got true")
+	}
+	sentinel := filepath.Join(tmpDir, ".browzer-guard", "session-A", "fp-123")
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("sentinel file missing after first call: %v", err)
+	}
+	// Legacy JSON ledger filename — must NOT be written by the fast path.
+	legacyJSON := filepath.Join(tmpDir, ".browzer-guard", "session-A.json")
+	if _, err := os.Stat(legacyJSON); err == nil {
+		t.Fatalf("unexpected JSON ledger written at %s", legacyJSON)
+	}
+	if second := dedupSessionReminder("session-A", "fp-123"); second != true {
+		t.Fatalf("second call: expected true, got false")
+	}
+}
+
+// TestDedupSessionReminder_DistinctFingerprintsIndependent confirms two
+// different fingerprints under the same session ID both fire their own
+// first-emission decision — the sentinel layout keys on the pair, not
+// the session alone.
+func TestDedupSessionReminder_DistinctFingerprintsIndependent(t *testing.T) {
+	tmpDir := t.TempDir()
+	restore := WithTmpDir(func() string { return tmpDir })
+	t.Cleanup(restore)
+
+	if r := dedupSessionReminder("session-B", "fp-1"); r != false {
+		t.Fatalf("first call fp-1: expected false, got %v", r)
+	}
+	if r := dedupSessionReminder("session-B", "fp-2"); r != false {
+		t.Fatalf("first call fp-2: expected false (distinct fingerprint), got %v", r)
+	}
+	if r := dedupSessionReminder("session-B", "fp-1"); r != true {
+		t.Fatalf("repeat fp-1: expected true, got %v", r)
 	}
 }

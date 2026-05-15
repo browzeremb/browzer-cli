@@ -11,7 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
+	"sync"
+	"sync/atomic"
 
 	internalhooks "github.com/browzeremb/browzer-cli/internal/hooks"
 	"github.com/spf13/cobra"
@@ -53,19 +54,137 @@ type excludeFile struct {
 	Patterns []string `json:"exclude_patterns"`
 }
 
-// clock indirection lets tests stamp deterministic dedup timestamps.
-var nowMs = func() int64 { return time.Now().UnixMilli() }
-
 // tmpDirFn lets tests override the dedup-state directory location.
 var tmpDirFn = os.TempDir
 
-// WithNowMs swaps the package-level clock seam and returns a restore
-// closure that reverts it. Test-only — never call from production code.
-func WithNowMs(fn func() int64) (restore func()) {
-	prev := nowMs
-	nowMs = fn
-	return func() { nowMs = prev }
+// unifiedVocabCompileCounter records how many times the unified
+// single-token regex has been built. The wrapper closure below increments
+// it; tests assert it stays at 1 after thousands of collectHits calls to
+// pin the "compile once per process" contract (FR-01 / AC-01).
+var unifiedVocabCompileCounter atomic.Int64
+
+// unifiedSingleTokenRE compiles a single (?i)\b(t1|t2|...)\b regex out of
+// every single-token entry in defaultVocab + cooccurrenceVocab.Term.
+// Multi-token entries (containing space, slash, or dot) stay on the
+// strings.Contains path in collectHits — \b cannot mark word-boundaries
+// inside them. sync.OnceValue is lazy: processes that never reach
+// collectHits (assistant-turn passthrough, short prompts, slash-command
+// prompts) skip the construction entirely.
+var unifiedSingleTokenRE = sync.OnceValue(func() *regexp.Regexp {
+	unifiedVocabCompileCounter.Add(1)
+	parts := make([]string, 0, len(defaultVocab)+len(cooccurrenceVocab))
+	for _, t := range defaultVocab {
+		if !strings.ContainsAny(t, " /.") {
+			parts = append(parts, regexp.QuoteMeta(t))
+		}
+	}
+	for _, r := range cooccurrenceVocab {
+		if !strings.ContainsAny(r.Term, " /.") {
+			parts = append(parts, regexp.QuoteMeta(r.Term))
+		}
+	}
+	if len(parts) == 0 {
+		// Caller treats nil as "no static vocab terms to match";
+		// avoids the need for a RE2-incompatible never-matching
+		// pattern.
+		return nil
+	}
+	return regexp.MustCompile(`(?i)\b(?:` + strings.Join(parts, "|") + `)\b`)
+})
+
+// unifiedSingleTokenIndex maps the lowercased form of every static
+// single-token vocab entry back to its canonical (original-case) form,
+// so collectHits can normalize the regex's case-insensitive matches into
+// the preview strings the operator sees.
+var unifiedSingleTokenIndex = sync.OnceValue(func() map[string]string {
+	idx := make(map[string]string, len(defaultVocab)+len(cooccurrenceVocab))
+	for _, t := range defaultVocab {
+		if !strings.ContainsAny(t, " /.") {
+			idx[strings.ToLower(t)] = t
+		}
+	}
+	for _, r := range cooccurrenceVocab {
+		if !strings.ContainsAny(r.Term, " /.") {
+			idx[strings.ToLower(r.Term)] = r.Term
+		}
+	}
+	return idx
+})
+
+// defaultVocabSingleTokenSet is the lookup the collectHits operator-extension
+// branch consults so terms covered by the unified regex are not re-compiled
+// per call. Built lazily for symmetry with the regex itself.
+var defaultVocabSingleTokenSet = sync.OnceValue(func() map[string]struct{} {
+	set := make(map[string]struct{}, len(defaultVocab)+len(cooccurrenceVocab))
+	for _, t := range defaultVocab {
+		if !strings.ContainsAny(t, " /.") {
+			set[strings.ToLower(t)] = struct{}{}
+		}
+	}
+	for _, r := range cooccurrenceVocab {
+		if !strings.ContainsAny(r.Term, " /.") {
+			set[strings.ToLower(r.Term)] = struct{}{}
+		}
+	}
+	return set
+})
+
+// compiledExclude holds the parsed + pre-compiled .browzer/search-triggers.exclude.json
+// content. Keywords are lowercased once at load time; regex patterns are compiled
+// once. The whole struct is cached in compiledExcludeCache by file path so repeated
+// calls in the same process pay no recompile cost.
+type compiledExclude struct {
+	keywords []string         // already lowercased
+	regexes  []*regexp.Regexp // compiled with `(?i)` prefix
 }
+
+// compiledExcludeCache memoises loadCompiledExclude by file path so the
+// regex compile path is exercised at most once per (process, path) pair
+// — satisfying FR-01's "exclude regex compiled at most once per process".
+// A nil value in the map means "file absent / malformed; do not retry".
+var compiledExcludeCache sync.Map // key: string -> value: *compiledExclude
+
+// loadCompiledExclude reads + parses + compiles the exclude file at `path`
+// the first time it is called for that path; subsequent calls in the same
+// process return the cached value. Returns nil when the file is missing
+// or malformed (treated as "no exclude rules").
+func loadCompiledExclude(path string) *compiledExclude {
+	if v, ok := compiledExcludeCache.Load(path); ok {
+		return v.(*compiledExclude)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		compiledExcludeCache.Store(path, (*compiledExclude)(nil))
+		return nil
+	}
+	var ex excludeFile
+	if err := json.Unmarshal(raw, &ex); err != nil {
+		compiledExcludeCache.Store(path, (*compiledExclude)(nil))
+		return nil
+	}
+	ce := &compiledExclude{
+		keywords: make([]string, 0, len(ex.Keywords)),
+		regexes:  make([]*regexp.Regexp, 0, len(ex.Patterns)),
+	}
+	for _, k := range ex.Keywords {
+		ce.keywords = append(ce.keywords, strings.ToLower(k))
+	}
+	for _, src := range ex.Patterns {
+		re, err := regexp.Compile(`(?i)` + src)
+		if err != nil {
+			continue
+		}
+		ce.regexes = append(ce.regexes, re)
+	}
+	compiledExcludeCache.Store(path, ce)
+	return ce
+}
+
+// UnifiedVocabCompileCount returns the number of times the unified
+// single-token regex has been built across this process's lifetime.
+// Test seam for the FR-01 contract: collectHits must trigger at most
+// one compile no matter how many times it is invoked.
+func UnifiedVocabCompileCount() int64 { return unifiedVocabCompileCounter.Load() }
 
 // WithTmpDir swaps the package-level temp-dir seam and returns a restore
 // closure that reverts it. Test-only — never call from production code.
@@ -170,18 +289,17 @@ func promptGuardDecide(raw []byte) (int, *promptEnvelope) {
 	// Exclude file is optional; keyword + regex matches → passthrough.
 	// is_assistant_turn was already checked above and returns early, so only
 	// the shared Keywords and Patterns fields are evaluated here.
-	if excl, ok := readExcludeFile(filepath.Join(cwd, ".browzer", "search-triggers.exclude.json")); ok {
+	// Both the keyword list (lowercased) and the pattern list (compiled) are
+	// cached per-process by loadCompiledExclude so the hot path performs zero
+	// regex compiles after the first prompt warms the cache.
+	if excl := loadCompiledExclude(filepath.Join(cwd, ".browzer", "search-triggers.exclude.json")); excl != nil {
 		lower := strings.ToLower(prompt)
-		for _, k := range excl.Keywords {
-			if strings.Contains(lower, strings.ToLower(k)) {
+		for _, k := range excl.keywords {
+			if strings.Contains(lower, k) {
 				return internalhooks.ExitPassthrough, nil
 			}
 		}
-		for _, src := range excl.Patterns {
-			re, err := regexp.Compile(`(?i)` + src)
-			if err != nil {
-				continue
-			}
+		for _, re := range excl.regexes {
 			if re.MatchString(prompt) {
 				return internalhooks.ExitPassthrough, nil
 			}
@@ -217,22 +335,27 @@ func promptGuardDecide(raw []byte) (int, *promptEnvelope) {
 // collectHits applies vocab, co-occurrence, scoped-package, install, and
 // import detection to the prompt and returns a deduplicated, stably-
 // ordered slice of hit strings.
+//
+// The static vocab (defaultVocab + cooccurrenceVocab.Term) is matched in a
+// single FindAllString pass against the unified word-boundary regex built
+// once per process by unifiedSingleTokenRE. Multi-token vocab entries and
+// operator-supplied extensions (vocab params not already in the static
+// set) keep the per-term path; the static set covers ~90% of the vocab.
 func collectHits(prompt string, vocab []string) []string {
 	seen := make(map[string]struct{}, 16)
 	add := func(s string) {
 		if s == "" {
 			return
 		}
-		if _, ok := seen[s]; ok {
-			return
-		}
 		seen[s] = struct{}{}
 	}
 
 	lower := strings.ToLower(prompt)
+	staticSet := defaultVocabSingleTokenSet()
 
-	// Vocab match: word-boundary for single tokens, substring for
-	// multi-token entries (which already carry whitespace or `.` or `/`).
+	// Multi-token vocab + operator-extension single tokens: per-term path.
+	// Static single-token defaultVocab + cooccurrenceVocab entries are
+	// covered by the unified regex below, so we skip them here.
 	for _, term := range vocab {
 		t := strings.ToLower(term)
 		if strings.ContainsAny(t, " /.") {
@@ -241,6 +364,12 @@ func collectHits(prompt string, vocab []string) []string {
 			}
 			continue
 		}
+		if _, isStatic := staticSet[t]; isStatic {
+			continue
+		}
+		// Operator-supplied extension (term not in defaultVocab); the
+		// extension set is typically tiny (≤ 5 entries), so per-call
+		// compilation is acceptable.
 		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(t) + `\b`)
 		if err != nil {
 			continue
@@ -250,14 +379,35 @@ func collectHits(prompt string, vocab []string) []string {
 		}
 	}
 
-	// Co-occurrence vocab: term only counts when its required cue also matches.
-	for _, rule := range CooccurrenceVocab() {
-		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(rule.Term) + `\b`)
-		if err != nil {
+	// Static single-token sweep: one regex, one FindAllString call,
+	// normalized back to canonical case via unifiedSingleTokenIndex.
+	// nil regex means the static vocab set is empty (e.g. a future
+	// build that strips defaultVocab to zero entries) — the loop
+	// trivially produces no hits.
+	if re := unifiedSingleTokenRE(); re != nil {
+		idx := unifiedSingleTokenIndex()
+		for _, m := range re.FindAllString(prompt, -1) {
+			if canon, ok := idx[strings.ToLower(m)]; ok {
+				add(canon)
+			}
+		}
+	}
+
+	// Co-occurrence rules: gate each static-vocab hit by its cue regex.
+	// The Term match already happened in the unified sweep; we just
+	// remove false positives whose cue is absent.
+	for _, rule := range cooccurrenceVocab {
+		if strings.ContainsAny(rule.Term, " /.") {
+			// Multi-token co-occurrence terms (none today) — would need
+			// the substring path above. Not used currently, but the
+			// branch keeps the table forward-compatible.
 			continue
 		}
-		if re.MatchString(prompt) && rule.RequiresRE.MatchString(prompt) {
-			add(rule.Term)
+		if _, hit := seen[rule.Term]; !hit {
+			continue
+		}
+		if !rule.RequiresRE.MatchString(prompt) {
+			delete(seen, rule.Term)
 		}
 	}
 
@@ -286,8 +436,8 @@ func collectHits(prompt string, vocab []string) []string {
 		add(src)
 	}
 
-	// Return in stable insertion-ish order: collect keys then sort for
-	// reproducible fingerprints / preview strings across runs.
+	// Return in stable order: sort the deduplicated set so fingerprints
+	// and preview strings are reproducible.
 	out := make([]string, 0, len(seen))
 	for k := range seen {
 		out = append(out, k)
@@ -320,29 +470,33 @@ func hitsFingerprint(hits []string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// dedupSessionReminder records the fingerprint under
-// $TMPDIR/.browzer-guard/<sessionID>.json and returns true when the same
-// fingerprint was already seen for this session. Best-effort: any I/O
-// failure returns false so a real prompt is never silently swallowed.
+// dedupSessionReminder is a once-per-(sessionID, fingerprint) emission
+// gate. First call returns false (caller emits the advisory); subsequent
+// calls with the same (sessionID, fingerprint) return true (caller
+// suppresses). The state lives in a sentinel file
+// `$TMPDIR/.browzer-guard/<sessionID>/<fingerprint>` created via
+// `O_CREATE|O_EXCL|O_WRONLY` — the canonical atomic-create idiom that
+// session_sentinel.go already uses for the same purpose.
+//
+// Best-effort semantics preserved: any unexpected I/O failure returns
+// false so a real prompt is never silently swallowed (err toward
+// emission). EEXIST is the dedup signal.
 func dedupSessionReminder(sessionID, fingerprint string) bool {
 	if sessionID == "" {
 		return false
 	}
-	dir := filepath.Join(tmpDirFn(), ".browzer-guard")
+	dir := filepath.Join(tmpDirFn(), ".browzer-guard", sessionID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false
 	}
-	file := filepath.Join(dir, sessionID+".json")
-	seen := map[string]int64{}
-	if raw, err := os.ReadFile(file); err == nil {
-		_ = json.Unmarshal(raw, &seen)
+	path := filepath.Join(dir, fingerprint)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err == nil {
+		_ = f.Close()
+		return false
 	}
-	if _, ok := seen[fingerprint]; ok {
+	if os.IsExist(err) {
 		return true
-	}
-	seen[fingerprint] = nowMs()
-	if out, err := json.Marshal(seen); err == nil {
-		_ = os.WriteFile(file, out, 0o600)
 	}
 	return false
 }
@@ -425,21 +579,6 @@ func readStringArrayFile(path string) ([]string, bool) {
 		return nil, false
 	}
 	return arr, true
-}
-
-// readExcludeFile reads the optional .browzer/search-triggers.exclude.json.
-// ok=false when the file is missing or malformed; ok=true when at least
-// the JSON parsed (individual fields default to nil).
-func readExcludeFile(path string) (excludeFile, bool) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return excludeFile{}, false
-	}
-	var ex excludeFile
-	if err := json.Unmarshal(raw, &ex); err != nil {
-		return excludeFile{}, false
-	}
-	return ex, true
 }
 
 // firstNonEmpty returns the first non-empty string from the supplied

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,25 @@ import (
 	"sync"
 	"time"
 )
+
+// transcriptRow is the typed shape extractModelFromTranscript scans
+// each JSONL line into. Only the `model` and `message.model` fields are
+// needed; everything else round-trips via the json.Decoder's silent
+// drop of unknown keys. Replaces the `map[string]any` decode path,
+// which on transcript-sized payloads (hundreds of mixed-shape rows)
+// was the highest-allocation surface in the daemon's session bootstrap.
+type transcriptRow struct {
+	Model   string `json:"model"`
+	Message struct {
+		Model string `json:"model"`
+	} `json:"message"`
+}
+
+// transcriptModelToken is the substring every JSONL line MUST carry for
+// extractModelFromTranscript to bother running json.Unmarshal — lines
+// without it definitionally have no model field at top-level or under
+// message, so the typed decode would just return zero values.
+var transcriptModelToken = []byte(`"model"`)
 
 // SessionCache maps a Claude Code session id to the model in use, by
 // scanning the transcript JSONL once on Register.
@@ -97,18 +117,27 @@ func extractModelFromTranscript(path string) (*string, error) {
 	scn := bufio.NewScanner(f)
 	scn.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scn.Scan() {
-		var row map[string]any
-		if json.Unmarshal(scn.Bytes(), &row) != nil {
+		line := scn.Bytes()
+		// Skip-fast: lines without the "model" substring cannot carry
+		// either top-level or nested model values; json.Unmarshal would
+		// just return zero values. The substring check is O(n) byte-
+		// comparison vs the full JSON parse + map[string]any allocation
+		// that previously ran on every line.
+		if !bytes.Contains(line, transcriptModelToken) {
 			continue
 		}
-		if m, ok := row["model"].(string); ok && m != "" {
+		var row transcriptRow
+		if json.Unmarshal(line, &row) != nil {
+			continue
+		}
+		if row.Model != "" {
+			m := row.Model
 			return &m, nil
 		}
-		// Some transcript shapes nest model under "message.model" or "session.model"
-		if msg, ok := row["message"].(map[string]any); ok {
-			if m, ok := msg["model"].(string); ok && m != "" {
-				return &m, nil
-			}
+		// Some transcript shapes nest model under message.model.
+		if row.Message.Model != "" {
+			m := row.Message.Model
+			return &m, nil
 		}
 	}
 	return nil, scn.Err()

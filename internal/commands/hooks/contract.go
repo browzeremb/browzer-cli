@@ -165,34 +165,33 @@ func isStrictMode() bool {
 	return false
 }
 
-// contractOffenseSeen returns true when the (sessionID, sub) pair has been
-// seen before, recording the pair if not. This mirrors the JS
-// offenseSeenThisSession function: first offense returns false (trigger ask),
-// subsequent offenses return true (trigger allow).
+// contractOffenseSeen is a once-per-(sessionID, sub) offense ledger. First
+// call for the pair returns false (caller emits `ask`); subsequent calls
+// return true (caller downgrades to `allow`). State lives in a sentinel
+// file `$TMPDIR/.browzer-guard/<sessionID>/contract-<sub>` created via
+// `O_CREATE|O_EXCL|O_WRONLY` — the same atomic-create idiom
+// session_sentinel.go uses for its banner dedup. Replaces the previous
+// JSON read-modify-write cycle (4 syscalls per Bash PreToolUse) with a
+// single mkdir + open per first call and a single open per repeat.
+//
+// Uses the package-shared tmpDirFn seam so tests can redirect the
+// sentinel directory via WithTmpDir.
 func contractOffenseSeen(sessionID, sub string) bool {
 	if sessionID == "" {
 		return false
 	}
-	dir := filepath.Join(os.TempDir(), ".browzer-guard")
+	dir := filepath.Join(tmpDirFn(), ".browzer-guard", sessionID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false
 	}
-	file := filepath.Join(dir, sessionID+".contract.json")
-
-	var seen map[string]any
-	if data, err := os.ReadFile(file); err == nil {
-		_ = json.Unmarshal(data, &seen)
+	path := filepath.Join(dir, "contract-"+sub)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err == nil {
+		_ = f.Close()
+		return false
 	}
-	if seen == nil {
-		seen = map[string]any{}
-	}
-	if _, ok := seen[sub]; ok {
+	if os.IsExist(err) {
 		return true
-	}
-
-	seen[sub] = true
-	if data, err := json.Marshal(seen); err == nil {
-		_ = os.WriteFile(file, data, 0o600)
 	}
 	return false
 }

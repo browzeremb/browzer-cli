@@ -11,8 +11,17 @@
 package tracker
 
 import (
+	"time"
+
 	internalhooks "github.com/browzeremb/browzer-cli/internal/hooks"
 )
+
+// nowRFC3339 is the time-source seam for EmitHookDelta. Production
+// stamps each Track payload with the current wall-clock UTC time so
+// `browzer gain` (whose query filters by `ts >= cutoff`) actually sees
+// the event. Tests may swap this to a fixed clock if they need
+// deterministic timestamps.
+var nowRFC3339 = func() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // hookSavedTokensBucket is the canonical source label aggregated by
 // `browzer gain --hooks --json`.
@@ -41,13 +50,28 @@ type HookDeltaArgs struct {
 // EmitHookDelta records one hook token-delta event.  No-ops on empty Hook or
 // zero SavedTokens — mirrors the JS guard's validation contract exactly.
 func EmitHookDelta(args HookDeltaArgs) {
+	payload, ok := buildHookDeltaPayload(args)
+	if !ok {
+		return
+	}
+	// Fire-and-forget: TrackEvent already handles the daemon-unreachable
+	// fallback path (pending-events JSONL + detached respawn).
+	internalhooks.TrackEvent(payload)
+}
+
+// buildHookDeltaPayload composes the Track payload that EmitHookDelta
+// emits. Split from EmitHookDelta so tests can verify the wire shape
+// without standing up a daemon socket. Returns ok=false when the args
+// would be silently dropped (empty Hook or zero SavedTokens) — same
+// validation contract as EmitHookDelta itself.
+func buildHookDeltaPayload(args HookDeltaArgs) (map[string]any, bool) {
 	hook := args.Hook
 	if hook == "" {
-		return
+		return nil, false
 	}
 	savedTokens := args.SavedTokens
 	if savedTokens == 0 {
-		return
+		return nil, false
 	}
 
 	estimationMethod := args.EstimationMethod
@@ -65,8 +89,13 @@ func EmitHookDelta(args HookDeltaArgs) {
 		pathHash = args.PathHash
 	}
 
-	payload := map[string]any{
-		"ts":               "",
+	return map[string]any{
+		// ts: RFC3339 wall-clock at emit time. The empty-string default
+		// the JS predecessor shipped left `gain` blind to every
+		// EmitHookDelta event because the SQL `WHERE ts >= ?` cutoff
+		// excludes empty strings (lexicographically less than any
+		// non-empty timestamp).
+		"ts":               nowRFC3339(),
 		"source":           hookSavedTokensBucket,
 		"command":          hook,
 		"inputBytes":       0,
@@ -79,9 +108,5 @@ func EmitHookDelta(args HookDeltaArgs) {
 		"sessionId":        sessionID,
 		"pathHash":         pathHash,
 		"estimationMethod": estimationMethod,
-	}
-
-	// Fire-and-forget: TrackEvent already handles the daemon-unreachable
-	// fallback path (pending-events JSONL + detached respawn).
-	internalhooks.TrackEvent(payload)
+	}, true
 }

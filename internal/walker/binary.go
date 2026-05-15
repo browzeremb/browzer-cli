@@ -1,6 +1,9 @@
 package walker
 
-import "os"
+import (
+	"os"
+	"sync"
+)
 
 // binaryProbeBytes is the number of leading bytes inspected.
 const binaryProbeBytes = 512
@@ -16,6 +19,18 @@ const binaryNonprintRatio = 0.3
 // we only fail on the explicit null-byte signal.
 const binaryRatioMinSample = 32
 
+// binaryProbeBufPool reuses 512-byte probe buffers across IsBinaryFile
+// calls. WalkRepo's parallel top-level fan-out (and any per-file path
+// that runs this check) was previously allocating one slice per file —
+// in a 1 k-file repo that is 512 KiB of throw-away garbage in the
+// steady-state walk. The pool keeps the allocation count flat.
+var binaryProbeBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, binaryProbeBytes)
+		return &b
+	},
+}
+
 // IsBinaryFile probes the first 512 bytes of absPath and returns true
 // if the file looks binary.
 //
@@ -24,6 +39,11 @@ const binaryRatioMinSample = 32
 //   - non-printable byte ratio > binaryNonprintRatio → binary
 //
 // Returns true on read errors so corrupt files don't crash the walker.
+//
+// Concurrency: safe to call from many goroutines simultaneously. The
+// probe buffer is drawn from a sync.Pool so concurrent callers never
+// share the underlying byte slice; the pool only reuses buffers once a
+// caller has returned them via Put.
 func IsBinaryFile(absPath string) bool {
 	f, err := os.Open(absPath)
 	if err != nil {
@@ -31,7 +51,18 @@ func IsBinaryFile(absPath string) bool {
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, binaryProbeBytes)
+	bufPtr, ok := binaryProbeBufPool.Get().(*[]byte)
+	if !ok {
+		// Defensive fallback: should be unreachable because the pool's
+		// New returns *[]byte. If something else slips in (test harness
+		// swapping the pool, etc.), allocate a fresh buffer for THIS
+		// call rather than panic.
+		buf := make([]byte, binaryProbeBytes)
+		bufPtr = &buf
+	}
+	defer binaryProbeBufPool.Put(bufPtr)
+	buf := *bufPtr
+
 	n, err := f.Read(buf)
 	if err != nil && n == 0 {
 		// Empty or unreadable — treat empty as text (matches Node).

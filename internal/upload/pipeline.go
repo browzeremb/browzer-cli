@@ -18,6 +18,7 @@ import (
 	"github.com/browzeremb/browzer-cli/internal/api"
 	"github.com/browzeremb/browzer-cli/internal/cache"
 	"github.com/browzeremb/browzer-cli/internal/walker"
+	"golang.org/x/sync/errgroup"
 )
 
 // UploadBatchSize is the number of files per multipart request.
@@ -26,6 +27,12 @@ const UploadBatchSize = 50
 // MaxDocBytes is the per-file size ceiling. Larger files are skipped
 // with a stderr warning.
 const MaxDocBytes = 5 * 1024 * 1024
+
+// readBatchParallelism caps the number of in-flight os.ReadFile calls
+// per batch. Eight strikes the balance between SSD parallel-IO gain and
+// FD pressure on macOS / Linux defaults; the batch itself is already
+// capped at UploadBatchSize=50 so the absolute fd ceiling is bounded.
+const readBatchParallelism = 8
 
 // Result is the aggregate outcome of an UploadInBatches call.
 type Result struct {
@@ -83,24 +90,61 @@ func UploadInBatches(
 		end := min(start+UploadBatchSize, len(files))
 		chunk := files[start:end]
 
+		// Per-index slot, written by exactly one goroutine, then merged
+		// in deterministic order after the errgroup waits. Disk reads
+		// run up to readBatchParallelism at a time — on an SSD this is
+		// the difference between serial walltime and IO-bound throughput
+		// while keeping the upload payload shape (and per-file error
+		// surface) byte-identical to the previous serial path.
+		type readSlot struct {
+			content []byte
+			skipped bool
+		}
+		slots := make([]readSlot, len(chunk))
+
+		// errgroup.Group{} rather than errgroup.WithContext: the per-file
+		// ReadFile goroutines below never read from a context, so the
+		// derived context produced by WithContext would only leak. The
+		// outer `ctx` is honoured by the surrounding BatchUploadDocs /
+		// PollBatchStatus calls; an in-flight ReadFile is short-lived
+		// (single syscall on an SSD-backed file) so cancellation
+		// granularity at the goroutine level is not worth the
+		// context-plumbing overhead.
+		var g errgroup.Group
+		g.SetLimit(readBatchParallelism)
+		for i, f := range chunk {
+			i, f := i, f
+			if f.Size > MaxDocBytes {
+				slots[i].skipped = true
+				fmt.Fprintf(os.Stderr, "  ⚠ skipping %s: %d bytes exceeds %d limit\n", f.RelativePath, f.Size, MaxDocBytes)
+				continue
+			}
+			g.Go(func() error {
+				content, err := os.ReadFile(f.AbsolutePath)
+				if err != nil {
+					slots[i].skipped = true
+					fmt.Fprintf(os.Stderr, "  ⚠ read %s: %v\n", f.RelativePath, err)
+					return nil
+				}
+				slots[i].content = content
+				return nil
+			})
+		}
+		// g.Wait always returns nil because the goroutines above never
+		// propagate an error (they record skips inline); ignore is
+		// safe.
+		_ = g.Wait()
+
 		uploads := make([]api.DocumentUpload, 0, len(chunk))
 		// Track which DocFile each upload corresponds to so we can
 		// update the cache by relative path after the round-trip.
 		uploadIdx := make([]int, 0, len(chunk))
-
-		for i, f := range chunk {
-			if f.Size > MaxDocBytes {
-				fmt.Fprintf(os.Stderr, "  ⚠ skipping %s: %d bytes exceeds %d limit\n", f.RelativePath, f.Size, MaxDocBytes)
+		for i, s := range slots {
+			if s.skipped {
 				res.FailedCount++
 				continue
 			}
-			content, err := os.ReadFile(f.AbsolutePath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ read %s: %v\n", f.RelativePath, err)
-				res.FailedCount++
-				continue
-			}
-			uploads = append(uploads, api.DocumentUpload{Name: f.RelativePath, Content: content})
+			uploads = append(uploads, api.DocumentUpload{Name: chunk[i].RelativePath, Content: s.content})
 			uploadIdx = append(uploadIdx, i)
 		}
 

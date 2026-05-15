@@ -25,12 +25,49 @@ func makeContractInput(t *testing.T, cmd, sessionID string) []byte {
 
 // cleanContractState removes the on-disk offense-seen state for a given
 // sessionID so tests that exercise the "first offense" path are idempotent
-// across repeated runs.
+// across repeated runs. Covers BOTH the legacy JSON ledger file (left over
+// from pre-sentinel runs) AND the current per-(sessionID) directory.
 func cleanContractState(t *testing.T, sessionID string) {
 	t.Helper()
-	file := filepath.Join(os.TempDir(), ".browzer-guard", sessionID+".contract.json")
-	_ = os.Remove(file)
-	t.Cleanup(func() { _ = os.Remove(file) })
+	legacy := filepath.Join(os.TempDir(), ".browzer-guard", sessionID+".contract.json")
+	dir := filepath.Join(os.TempDir(), ".browzer-guard", sessionID)
+	_ = os.Remove(legacy)
+	_ = os.RemoveAll(dir)
+	t.Cleanup(func() {
+		_ = os.Remove(legacy)
+		_ = os.RemoveAll(dir)
+	})
+}
+
+// TestContractOffenseSeen_Sentinel pins FR-03 / AC-03: the offense ledger
+// uses an O_CREATE|O_EXCL sentinel keyed by (sessionID, sub). First call
+// for a (session, sub) pair returns false; repeats return true; distinct
+// subs under the same session are independent first-offense decisions;
+// no JSON ledger is written on the fast path.
+func TestContractOffenseSeen_Sentinel(t *testing.T) {
+	tmpDir := t.TempDir()
+	restore := WithTmpDir(func() string { return tmpDir })
+	t.Cleanup(restore)
+
+	if r := contractOffenseSeen("session-X", "search"); r != false {
+		t.Fatalf("first call (session-X, search): expected false, got %v", r)
+	}
+	sentinel := filepath.Join(tmpDir, ".browzer-guard", "session-X", "contract-search")
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("sentinel file missing after first call: %v", err)
+	}
+	// Legacy JSON ledger MUST NOT be written by the fast path.
+	legacy := filepath.Join(tmpDir, ".browzer-guard", "session-X.contract.json")
+	if _, err := os.Stat(legacy); err == nil {
+		t.Fatalf("unexpected JSON ledger at %s", legacy)
+	}
+	if r := contractOffenseSeen("session-X", "search"); r != true {
+		t.Fatalf("repeat call (session-X, search): expected true, got %v", r)
+	}
+	// Distinct sub under the same session is its own first-offense.
+	if r := contractOffenseSeen("session-X", "deps"); r != false {
+		t.Fatalf("first call (session-X, deps): expected false (distinct sub), got %v", r)
+	}
 }
 
 // TestContractDecide_BarePipeDetected asserts that a bare-pipe invocation such

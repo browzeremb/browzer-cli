@@ -61,6 +61,28 @@ INSERT INTO events (ts, source, command, path_hash, input_bytes, output_bytes,
                     estimation_method)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
+// currentSchemaVersion identifies the migrations baked into this binary.
+// Bumped whenever ensureEstimationMethodColumn (or any future migrator)
+// changes the on-disk shape. The schema-version flag file is keyed by
+// this string so a binary that knows about newer migrations forces a
+// re-probe even when the flag is present.
+const currentSchemaVersion = "2"
+
+// schemaFlagFilename is the file name (relative to the DB directory)
+// the open path writes to signal "all known migrations applied at
+// version currentSchemaVersion". The presence-and-matching of this
+// file lets steady-state Open skip the `PRAGMA table_info` round trip
+// entirely on the hot path (FR-11 / AC-11).
+const schemaFlagFilename = "tracker.schema_v"
+
+// schemaFlagPath returns the absolute path of the schema-version
+// sentinel for the given DB file. Co-located with the DB so a wipe of
+// ~/.browzer also wipes the flag, forcing a fresh migration pass on
+// reinstall.
+func schemaFlagPath(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), schemaFlagFilename)
+}
+
 // Open creates the parent directory, opens the SQLite database in WAL mode,
 // and applies the schema. Idempotent.
 func Open(path string) (*Tracker, error) {
@@ -81,8 +103,10 @@ func Open(path string) (*Tracker, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	// Idempotent column add (NULL-safe for legacy rows).
-	if err := ensureEstimationMethodColumn(db); err != nil {
+	// Idempotent column add (NULL-safe for legacy rows). Driven by the
+	// schema-version flag so steady-state Open avoids the PRAGMA probe
+	// entirely.
+	if err := ensureEstimationMethodColumn(db, path); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate estimation_method: %w", err)
 	}
@@ -99,12 +123,27 @@ func Open(path string) (*Tracker, error) {
 // support `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so we probe via
 // PRAGMA table_info and only run the ALTER on miss. Legacy rows scan as
 // NULL through *string in the Event struct.
-func ensureEstimationMethodColumn(db *sql.DB) error {
+//
+// Performance: a sentinel file `<dbDir>/tracker.schema_v` carries the
+// schema version this binary's migrations target. When the file exists
+// and its trimmed content matches currentSchemaVersion, the PRAGMA
+// probe is skipped — every standalone CLI invocation (which reopens
+// the tracker) saves a SQL round trip + row scan on the hot path.
+// First-run, fresh installs, and binary upgrades that introduce a new
+// migration all force the re-probe.
+func ensureEstimationMethodColumn(db *sql.DB, dbPath string) error {
+	flagPath := schemaFlagPath(dbPath)
+	if data, err := os.ReadFile(flagPath); err == nil {
+		if strings.TrimSpace(string(data)) == currentSchemaVersion {
+			return nil
+		}
+	}
 	rows, err := db.Query(`PRAGMA table_info(events)`)
 	if err != nil {
 		return fmt.Errorf("table_info: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	found := false
 	for rows.Next() {
 		var (
 			cid       int
@@ -118,15 +157,22 @@ func ensureEstimationMethodColumn(db *sql.DB) error {
 			return fmt.Errorf("scan table_info: %w", err)
 		}
 		if name == "estimation_method" {
-			return nil // already present
+			found = true
+			break
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`ALTER TABLE events ADD COLUMN estimation_method TEXT`); err != nil {
-		return fmt.Errorf("add column: %w", err)
+	if !found {
+		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN estimation_method TEXT`); err != nil {
+			return fmt.Errorf("add column: %w", err)
+		}
 	}
+	// Write the sentinel best-effort. A write failure means the next
+	// Open re-runs the PRAGMA + ALTER (which is idempotent), so the
+	// correctness path is unaffected.
+	_ = os.WriteFile(flagPath, []byte(currentSchemaVersion+"\n"), 0o600)
 	return nil
 }
 

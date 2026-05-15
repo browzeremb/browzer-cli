@@ -240,7 +240,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	rdr := bufio.NewReader(conn)
 	for {
-		line, err := rdr.ReadString('\n')
+		// ReadBytes returns a freshly-allocated slice so json.Unmarshal can
+		// consume the line without the [string → []byte] copy ReadString's
+		// return path forced every request. json.Unmarshal does not retain
+		// the input bytes past its return, so the per-iteration alloc is
+		// the only ownership concern, and it is bounded by the line size.
+		line, err := rdr.ReadBytes('\n')
 		if err != nil {
 			// io.EOF on clean client close is expected; other errors logged caller-side at -vv.
 			return
@@ -248,7 +253,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		s.lastReqAt.Store(time.Now().UnixNano())
 		s.queueLen.Add(1)
 		var req rpcRequest
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
+		if err := json.Unmarshal(line, &req); err != nil {
 			s.writeErr(conn, nil, -32700, "parse_error")
 			s.queueLen.Add(-1)
 			continue

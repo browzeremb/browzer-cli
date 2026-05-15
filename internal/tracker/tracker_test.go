@@ -1,11 +1,68 @@
 package tracker
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// TestOpen_WritesSchemaVersionFlag pins FR-11 / AC-11: a successful Open
+// must drop a `tracker.schema_v` sentinel containing currentSchemaVersion
+// in the DB directory so subsequent Opens can skip the PRAGMA probe.
+func TestOpen_WritesSchemaVersionFlag(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "history.db")
+	tr, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_ = tr.Close()
+
+	data, err := os.ReadFile(filepath.Join(dir, "tracker.schema_v"))
+	if err != nil {
+		t.Fatalf("schema flag missing after Open: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != currentSchemaVersion {
+		t.Fatalf("schema flag mismatch: got %q, want %q", got, currentSchemaVersion)
+	}
+}
+
+// TestOpen_RespectsExistingFlag pins the no-op case: when the flag is
+// already written at currentSchemaVersion, Open must still succeed (no
+// crash from skipping the PRAGMA) and the flag must remain untouched.
+func TestOpen_RespectsExistingFlag(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "history.db")
+	flagPath := filepath.Join(dir, "tracker.schema_v")
+
+	// Pre-seed the flag so the second open path runs.
+	tr, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("seed Open: %v", err)
+	}
+	_ = tr.Close()
+	mt0, err := os.Stat(flagPath)
+	if err != nil {
+		t.Fatalf("flag not present after seed Open: %v", err)
+	}
+
+	// Re-open MUST NOT rewrite the flag (we'd touch its mtime).
+	tr2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	_ = tr2.Close()
+	mt1, err := os.Stat(flagPath)
+	if err != nil {
+		t.Fatalf("flag missing after re-Open: %v", err)
+	}
+	if !mt0.ModTime().Equal(mt1.ModTime()) {
+		t.Fatalf("schema flag rewritten on re-Open: mtime %v → %v", mt0.ModTime(), mt1.ModTime())
+	}
+}
 
 func TestTracker_RecordAndQuery(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "history.db")

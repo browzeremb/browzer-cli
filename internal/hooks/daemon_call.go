@@ -106,11 +106,16 @@ func DaemonCall(method string, params any) (json.RawMessage, error) {
 	if method == "" {
 		return nil, errors.New("daemon call: method required")
 	}
-	// Probe marshal-ability up front so a structurally-bad payload
-	// doesn't end up in the pending-events sink as garbage.
-	if _, err := json.Marshal(params); err != nil {
-		return nil, fmt.Errorf("daemon call: marshal params: %w", err)
-	}
+	// The previous probe `json.Marshal(params)` here was eagerly verifying
+	// payload serializability before any I/O. It cost one redundant marshal
+	// per call on the happy path (typed params marshal again inside
+	// daemon.Client.call; map params marshal again inside coerce*Params).
+	// The coerce* helpers below now own the only marshal in this layer:
+	// typed params take the fast type-assertion path with zero marshals,
+	// map / untyped params marshal at most once. A non-marshalable payload
+	// surfaces as `coerce returned !ok` and reaches the operator via the
+	// "params type %T not coercible" error — equivalent diagnostic value
+	// without paying the probe cost on every call.
 
 	sock := config.SocketPath(os.Getuid())
 	client := daemon.NewClient(sock)
@@ -179,6 +184,18 @@ func invokeDaemon(ctx context.Context, c *daemon.Client, method string, params a
 	}
 }
 
+// coerceMarshalCounter counts how many times the coerce* helpers fell
+// back to the round-trip marshal path. Test seam pinning FR-04 / AC-04:
+// the happy path with a typed payload performs zero marshals in this
+// layer; a map / untyped payload performs exactly one. Production
+// overhead is one atomic.Int64 increment per round-trip call.
+var coerceMarshalCounter atomic.Int64
+
+// CoerceMarshalCount returns the cumulative round-trip marshal count
+// for the daemon-call coerce helpers since process start. Test-only —
+// production code MUST NOT branch on the value.
+func CoerceMarshalCount() int64 { return coerceMarshalCounter.Load() }
+
 // coerceSessionRegisterParams accepts either a daemon.SessionRegisterParams
 // value or any map/struct that JSON-round-trips into one. Mirrors the
 // loose-typing tolerance in coerceTrackParams.
@@ -186,6 +203,7 @@ func coerceSessionRegisterParams(params any) (daemon.SessionRegisterParams, bool
 	if srp, ok := params.(daemon.SessionRegisterParams); ok {
 		return srp, true
 	}
+	coerceMarshalCounter.Add(1)
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return daemon.SessionRegisterParams{}, false
@@ -206,6 +224,7 @@ func coerceTrackParams(params any) (daemon.TrackParams, bool) {
 	if tp, ok := params.(daemon.TrackParams); ok {
 		return tp, true
 	}
+	coerceMarshalCounter.Add(1)
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return daemon.TrackParams{}, false

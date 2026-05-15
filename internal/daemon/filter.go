@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -84,11 +85,17 @@ func stripComments(in []byte, language string) []byte {
 //   - each symbol's signature line + its docstring lines
 //
 // Returns ok=false when the manifest has no symbols (caller falls back).
+//
+// Performance: operates on [][]byte slices directly via bytes.Split so the
+// hot path avoids the full `string(in)` copy + the additional []string
+// allocation the previous strings.Split path incurred — non-trivial for
+// the file sizes that trip the aggressive filter (>300 lines, often
+// thousands).
 func keepSignatures(in []byte, mf ManifestFile) ([]byte, bool) {
 	if len(mf.Symbols) == 0 {
 		return nil, false
 	}
-	lines := strings.Split(string(in), "\n")
+	lines := bytes.Split(in, []byte("\n"))
 	// 1. Sort symbols by StartLine for deterministic output.
 	syms := make([]ManifestSymbol, len(mf.Symbols))
 	copy(syms, mf.Symbols)
@@ -101,11 +108,11 @@ func keepSignatures(in []byte, mf ManifestFile) ([]byte, bool) {
 		}
 	}
 
-	var b strings.Builder
+	var b bytes.Buffer
 	// Pass 1: top-of-file imports (lines before the first symbol).
 	if syms[0].StartLine > 1 {
 		for i := 0; i < syms[0].StartLine-1 && i < len(lines); i++ {
-			b.WriteString(lines[i])
+			b.Write(lines[i])
 			b.WriteByte('\n')
 		}
 	}
@@ -119,9 +126,9 @@ func keepSignatures(in []byte, mf ManifestFile) ([]byte, bool) {
 		if s.Signature != "" {
 			b.WriteString(s.Signature)
 		} else if s.StartLine-1 < len(lines) {
-			b.WriteString(lines[s.StartLine-1])
+			b.Write(lines[s.StartLine-1])
 		}
 		b.WriteString(" { /* ... body stripped */ }\n\n")
 	}
-	return []byte(b.String()), true
+	return b.Bytes(), true
 }
